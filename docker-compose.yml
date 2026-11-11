@@ -127,7 +127,7 @@ services:
       - embedder-models:/models
       - ${MUSIC_ROOT}/library:/music:ro
     # loading the model onto the GPU peaks at ~3.4 GB (with the checkpoint's page cache), working ~2.5 GB.
-    # CPU needs ~7 GB: raise EMBEDDER_MEM_LIMIT in .env before switching to EMBEDDER_DEVICE=cpu.
+    # CPU needs ~6-7 GB: use 7g on an 8 GB host, 8g on 16+ GB (the installer picks it).
     mem_limit: ${EMBEDDER_MEM_LIMIT:-8g}
     memswap_limit: ${EMBEDDER_MEM_LIMIT:-8g}
     healthcheck:
