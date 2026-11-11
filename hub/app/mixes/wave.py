@@ -130,6 +130,7 @@ class State:
     out: dict[str, build.Cand] = field(default_factory=dict)  # handed out, not started (the client's queue)
     played: list[Played] = field(default_factory=list)
     heard: set[str] = field(default_factory=set)  # fingerprints of every track started: never again
+    recent: set[str] = field(default_factory=set)  # started in the last ten tracks anywhere: not next
     skips: dict[str, int] = field(default_factory=dict)  # artist key -> early skips in the session
     pos: list[str] = field(default_factory=list)  # vector keys of the session's likes and finished tracks
     neg: list[str] = field(default_factory=list)  # ... of its early skips and dislikes
@@ -145,7 +146,8 @@ class State:
         return {"version": self.version, "taste_model": self.taste_model, "seen": sorted(self.seen),
                 "signals": self.signals, "positive_weights": self.positive_weights, "space": self.space,
                 "pool": [cand_json(c) for c in self.pool.values()], "out": [cand_json(c) for c in self.out.values()],
-                "played": [p.__dict__ for p in self.played], "heard": sorted(self.heard), "skips": self.skips,
+                "played": [p.__dict__ for p in self.played], "heard": sorted(self.heard), "recent": sorted(self.recent),
+                "skips": self.skips,
                 "pos": self.pos, "neg": self.neg, "radios": self.radios, "seeds_used": self.seeds_used,
                 "started": self.started, "started_familiar": self.started_familiar, "downloads": self.downloads,
                 "gens": self.gens, "seed_artist": self.seed_artist}
@@ -160,14 +162,15 @@ class State:
                  radios=list(d.get("radios") or []), seeds_used=list(d.get("seeds_used") or []),
                  started=int(d.get("started") or 0), started_familiar=int(d.get("started_familiar") or 0),
                  downloads=list(d.get("downloads") or []), gens=dict(d.get("gens") or {}),
-                 heard=set(d.get("heard") or []), seed_artist=d.get("seed_artist"))
+                 heard=set(d.get("heard") or []), recent=set(d.get("recent") or []),
+                 seed_artist=d.get("seed_artist"))
         st.pool = {c.track.ref: c for c in map(cand_of, d.get("pool") or [])}
         st.out = {c.track.ref: c for c in map(cand_of, d.get("out") or [])}
         st.played = [Played(**p) for p in d.get("played") or []]
         return st
 
     def known_fps(self) -> set[str]:
-        return self.heard | {fp_of(c) for c in [*self.pool.values(), *self.out.values()]}
+        return self.heard | self.recent | {fp_of(c) for c in [*self.pool.values(), *self.out.values()]}
 
 
 @dataclass
@@ -580,7 +583,8 @@ def pick(st: State, p: Profile, mode: str, vectors: dict[str, list[float]], n: i
     `values` gets the `value` of every candidate ranked, by ref (the analytics of `wave_items`)."""
     pos = _weighted_center(st.positive_weights, vectors) if st.taste_model == "v2" else _center(st.pos, vectors)
     neg = None if st.taste_model == "v2" else _center(st.neg, vectors)
-    pool = [c for c in [*st.out.values(), *st.pool.values()] if c is not first and not _disliked(c, p)]
+    pool = [c for c in [*st.out.values(), *st.pool.values()]
+            if c is not first and not _disliked(c, p) and fp_of(c) not in st.recent]
     vals = {id(c): value(c, st, vectors, pos, neg, c.track.ref in queued) for c in pool}
     if values is not None:
         values.update((c.track.ref, vals[id(c)]) for c in pool)
@@ -979,6 +983,7 @@ async def start(user: User, seed: dict[str, Any] | None, mode: str | None, *, or
             raise WaveError(409, "Волне не от чего оттолкнуться: послушайте что-нибудь или выберите исполнителей")
     sid = uuid.uuid4().hex[:16]
     rt = Runtime(user_id=user.id, mode=mode, state=State(taste_model=cfg.taste_model), profile=profile)
+    rt.state.recent = await build.recent_fingerprints(user.id)
     rt.state.seeds_used = [t.key for t in seeds]
     rt.state.seed_artist = artist_key(seed_artist["name"]) if seed_artist else None
     seed_json = ({"ref": seed_track.ref, "artist": seed_track.artist, "title": seed_track.title} if seed_track
@@ -1026,6 +1031,7 @@ async def next_batch(user: User, sid: str, played: list[Any], queued: list[str])
         await _profile(rt, user)  # Must follow the event transaction, including external state changes.
         await learn(sid, rt, events)
         st = rt.state
+        st.recent = await build.recent_fingerprints(user.id)
         if len(st.pool) < POOL_LOW:
             _refill(sid, rt)
         tracks = await _hand_out(sid, rt, {q for q in queued if q in st.out})

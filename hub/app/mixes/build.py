@@ -36,7 +36,7 @@ from app.mixes import embedder, sources
 from app.mixes.resolve import resolve_hits
 from app.mixes.taste import Profile, TasteTrack, artist_key
 from app.mixes.taste_math import V2Profile
-from app.models import Import, Track, utcnow
+from app.models import Import, PlayEvent, Track, utcnow
 from app.services import svc
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ BANNED_VERSIONS = {"karaoke", "instrumental", "cover", "slowed", "sped up", "8d"
 REJECT_REASONS = ("disliked", "version", "duration", "recent", "negative_score")  # `keep_reason`
 UNFAMILIAR_MAX_LISTENS = 5
 RECENT_DAYS = 3
+RECENT_WINDOW = 10  # the player must not offer a track again within this many started tracks
 FAVORITE_REST_DAYS = 7
 STASH_REST_DAYS = 60
 SIM_WEIGHT, POP_WEIGHT, ARTIST_PENALTY = 1.5, 0.2, 0.3
@@ -366,6 +367,77 @@ def merge(results: list[GenResult]) -> dict[str, Cand]:
             elif c.track.source == "nd" and t.source == "dz":
                 c.track = t  # the catalog record is the better one
             c.gens[r.name] = min(c.gens.get(r.name, pos), pos)
+    return out
+
+
+def _metadata_fp(metadata: dict[str, Any] | None) -> str:
+    """The fingerprint of a play event's snapshot, when the client or the catalog left names in it."""
+    meta = metadata or {}
+    artist = meta.get("artist_credit")
+    if not artist:
+        artists = meta.get("artists")
+        if isinstance(artists, list) and artists and isinstance(artists[0], dict):
+            artist = artists[0].get("name")
+    title = meta.get("title")
+    return fingerprint(str(artist), str(title)) if artist and title else ""
+
+
+async def recent_fingerprints(user_id: int, limit: int = RECENT_WINDOW) -> set[str]:
+    """Fingerprints of the last `limit` distinct tracks the user started, in any context.
+
+    The mix's own filter leaves familiar songs heard in the last 3 days out, but a discovery
+    track that is not familiar yet used to come back after a few songs. This is the player's
+    shorter guard: what played in the last ten tracks is not offered again. Old events without
+    a metadata snapshot are resolved through the library or the catalog cache.
+    """
+    wanted = max(0, limit)
+    if not wanted:
+        return set()
+    async with session_scope() as s:
+        rows = (await s.execute(
+            select(PlayEvent.track_metadata, PlayEvent.ref, PlayEvent.nd_song_id)
+            .where(PlayEvent.user_id == user_id, PlayEvent.target_type == "track",
+                   PlayEvent.kind.in_(("start", "skip", "finish")), PlayEvent.reverts_event_id.is_(None))
+            .order_by(PlayEvent.ts.desc(), PlayEvent.id.desc()).limit(wanted * 8))).all()
+    out: set[str] = set()
+    unresolved: list[tuple[str | None, str | None]] = []
+    for metadata, ref, nd in rows:
+        fp = _metadata_fp(metadata)
+        if fp:
+            out.add(fp)
+        else:
+            unresolved.append((ref, nd))
+        if len(out) >= wanted:
+            return out
+    if not unresolved:
+        return out
+    nds = list(dict.fromkeys(nd for _, nd in unresolved if nd))
+    refs = list(dict.fromkeys(ref for ref, _ in unresolved if ref))
+    by_nd: dict[str, tuple[str, str]] = {}
+    by_ref: dict[str, tuple[str, str]] = {}
+    async with session_scope() as s:
+        if nds:
+            for t in (await s.execute(select(Track.nd_song_id, Track.artist, Track.title)
+                                      .where(Track.nd_song_id.in_(nds)))).all():
+                by_nd[t[0]] = (t[1] or "", t[2] or "")
+        keys = [f"mix:track:{ref}" for ref in refs] + [f"dz:track:{split_ref(ref)[1]}" for ref in refs
+                                                                                 if ref.startswith("dz:")]
+        if keys:
+            from app.models import CatalogCache
+            for row in (await s.execute(select(CatalogCache).where(CatalogCache.key.in_(keys)))).scalars():
+                raw = row.payload_json if isinstance(row.payload_json, dict) else {}
+                if raw.get("ref") in refs and raw.get("artist") and raw.get("title"):
+                    by_ref[raw["ref"]] = (raw["artist"], raw["title"])
+    for ref, nd in unresolved:
+        artist, title = by_nd.get(nd or "", ("", "")) if nd else ("", "")
+        if not artist and ref:
+            artist, title = by_ref.get(ref, ("", ""))
+        if artist and title:
+            fp = fingerprint(artist, title)
+            if fp:
+                out.add(fp)
+                if len(out) >= wanted:
+                    break
     return out
 
 
@@ -710,7 +782,7 @@ def local_now(now: datetime | None = None) -> datetime:
 
 
 async def build(p: Profile, mode: str, gens: dict[str, Gen] | None = None,
-                shadow_pool: list[Cand] | None = None) -> Built:
+                shadow_pool: list[Cand] | None = None, recent: set[str] | None = None) -> Built:
     cfg = get_settings().cfg.mixes
     t0 = time.monotonic()
     stats: dict[str, Any] = {"mode": mode, "taste_model": "v2" if isinstance(p, V2Profile) else "v1"}
@@ -733,10 +805,14 @@ async def build(p: Profile, mode: str, gens: dict[str, Gen] | None = None,
         except Exception:
             shadow_pool.append(None)  # comparison reports failure without affecting the build
     rejected = dict.fromkeys(REJECT_REASONS, 0)
+    recent = recent or set()
     kept = []
     for c in cands.values():
         if (reason := keep_reason(c, p, cfg)) is None:
-            kept.append(c)
+            if fingerprint(c.track.artist, c.track.title) in recent:
+                rejected["recent"] += 1
+            else:
+                kept.append(c)
         else:
             rejected[reason] = rejected.get(reason, 0) + 1
     stats["rejected"] = rejected

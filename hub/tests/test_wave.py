@@ -118,6 +118,13 @@ def test_disliked_since_it_came_in_is_not_picked() -> None:
     assert [c.track.ref for c in wave.pick(st, p, "discover", {}, n=3)] == ["dz:3"]
 
 
+def test_a_track_from_the_last_ten_is_not_offered_again() -> None:
+    st = state(cand(1, score=9), cand(2, score=8), cand(3, score=7))
+    st.recent = {wave.fp_of(cand(1)), wave.fp_of(cand(2))}
+
+    assert [c.track.ref for c in wave.pick(st, profile(), "discover", {}, n=3)] == ["dz:3"]
+
+
 def test_a_queued_track_is_not_swapped_for_a_hair_better_one() -> None:
     st = state(cand(1, score=1.0), cand(2, score=1.1))
 
@@ -127,7 +134,7 @@ def test_a_queued_track_is_not_swapped_for_a_hair_better_one() -> None:
 def test_state_survives_its_json() -> None:
     st = state(cand(1), played=["Арт A"])
     st.out["dz:2"] = cand(2)
-    st.skips, st.pos, st.heard = {"x": 1}, ["dz:1"], {"fp"}
+    st.skips, st.pos, st.heard, st.recent = {"x": 1}, ["dz:1"], {"fp"}, {"recent-fp"}
 
     back = wave.State.load(st.dump())
 
@@ -265,6 +272,23 @@ async def test_nothing_to_start_from(env) -> None:
     r = await env["client"].post("/api/wave/start", json={})
 
     assert r.status_code == 409, r.text
+
+
+async def test_recent_fingerprints_are_the_last_ten_tracks(env) -> None:
+    from app.matching.normalize import fingerprint
+    from tests.test_mixes import add_event, add_track
+
+    me = env["admin"]
+    started = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=30)
+    for i in range(1, 13):
+        await add_track(i)
+        await add_event(me, "finish", nd=f"nd{i}", at=started + timedelta(minutes=i))
+
+    recent = await build.recent_fingerprints(me)
+
+    assert len(recent) == 10
+    assert fingerprint("Свой 12", "Песня 12") in recent
+    assert fingerprint("Свой 2", "Песня 2") not in recent  # the eleventh oldest left the window
 
 
 async def test_a_wave_hands_out_five_and_learns_from_what_was_played(env, monkeypatch) -> None:

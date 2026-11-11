@@ -337,7 +337,8 @@ async def _fill(rt: SmartRuntime, slots: list[int]) -> list[tuple[int, build.Can
     pos = wave._weighted_center(st.positive_weights, vectors) if st.taste_model == "v2" else wave._center(st.pos, vectors)
     neg = None if st.taste_model == "v2" else wave._center(st.neg, vectors)
     neutral = _neutral(rt)
-    pool = [c for c in st.pool.values() if not wave._disliked(c, p) and not _blocked(rt)(c)]
+    pool = [c for c in st.pool.values() if not wave._disliked(c, p) and not _blocked(rt)(c)
+            and wave.fp_of(c) not in st.recent]
     vals = {c.track.ref: rec_value(rt, c, vectors, pos, neg, neutral) for c in pool}
     ranked = sorted(pool, key=lambda c: -vals[c.track.ref])
     n = len(rt.own)
@@ -484,6 +485,7 @@ async def start(user: User, context: str, songs: list[str], current: str | None,
     rt.own_refs = {x.ref for x in infos.values() if x.ref}
     rt.own_nd = {x.nd_song_id for x in infos.values() if x.nd_song_id}
     state.heard = {x.fp for x in infos.values() if x.fp} | hidden
+    state.recent = await build.recent_fingerprints(user.id)
     keys = [embedder.song_key(infos[i].nd_song_id) for i in ids if infos[i].nd_song_id][:CENTER_MAX]
     rt.center = dict.fromkeys(keys, 1.0)
     seeds = _seed_tracks(rt, seed_ids, infos)
@@ -546,6 +548,7 @@ async def next_batch(user: User, sid: str, played: list[Any], at: str | None) ->
         recorded, events = await record(rt, played)
         await wave._profile(rt, user)  # after the events were stored: it sees them
         await wave.learn(sid, rt, events)
+        rt.state.recent = await build.recent_fingerprints(user.id)
         if len(rt.state.pool) < wave.POOL_LOW:
             _refill(rt)
         index = rt.own.index(at) if at in rt.own else 0
