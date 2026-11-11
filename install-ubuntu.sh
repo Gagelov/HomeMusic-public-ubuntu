@@ -33,6 +33,9 @@ ADMIN_CREATED=0
 say() { printf '%s\n' "$*"; }
 die() { printf '\n%s\n' "$*" >&2; exit 1; }
 
+# Some home/LXC networks resolve AAAA records without working IPv6; apt then hangs on them.
+APT_GET=(apt-get -o Acquire::ForceIPv4=true)
+
 usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
@@ -65,8 +68,8 @@ fi
 if ! command -v python3 >/dev/null 2>&1 || ! command -v openssl >/dev/null 2>&1 \
   || ! command -v curl >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq python3 openssl curl
+  "${APT_GET[@]}" update -qq
+  "${APT_GET[@]}" install -y -qq python3 openssl curl
 fi
 
 get_env() {
@@ -104,16 +107,16 @@ add_profile() {
 install_docker() {
   say "Устанавливаю Docker Engine..."
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl gnupg
+  "${APT_GET[@]}" update -qq
+  "${APT_GET[@]}" install -y -qq ca-certificates curl gnupg
   if curl -fsSL --retry 3 --connect-timeout 15 https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.asc; then
     install -d -m 0755 /etc/apt/keyrings
     install -m 0644 /tmp/docker.asc /etc/apt/keyrings/docker.asc
     rm -f /tmp/docker.asc
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
       > /etc/apt/sources.list.d/docker.list
-    apt-get update -qq
-    if apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+    "${APT_GET[@]}" update -qq
+    if "${APT_GET[@]}" install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
       systemctl enable --now docker
       return
     fi
@@ -122,8 +125,8 @@ install_docker() {
   else
     say "download.docker.com недоступен — ставлю docker.io из Ubuntu."
   fi
-  apt-get update -qq
-  apt-get install -y -qq docker.io docker-compose-v2
+  "${APT_GET[@]}" update -qq
+  "${APT_GET[@]}" install -y -qq docker.io docker-compose-v2
   systemctl enable --now docker
 }
 
@@ -251,7 +254,7 @@ if [ "$WITH_VPS" = 1 ]; then
     [ -n "$VPS_HOST" ] || die "VPS_HOST не задан."
     set_env VPS_HOST "$VPS_HOST"
   fi
-  command -v ssh-keygen >/dev/null 2>&1 || apt-get install -y -qq openssh-client
+  command -v ssh-keygen >/dev/null 2>&1 || "${APT_GET[@]}" install -y -qq openssh-client
   if [ ! -f gateway/tunnel/tunnel_key ]; then
     ssh-keygen -t ed25519 -N "" -C homemusic-tunnel -f gateway/tunnel/tunnel_key
   fi
