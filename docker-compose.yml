@@ -42,7 +42,7 @@ services:
       - navidrome-data:/data
       - ./navidrome/navidrome.toml:/config/navidrome.toml:ro
       - ${MUSIC_ROOT:?set MUSIC_ROOT in .env}/library:/music:ro
-      # the Navidrome container runs as uid 1000: the installer creates this folder with that owner
+      # Navidrome may run as uid 1000; the installer makes this folder writable for it (root can write anyway)
       - ${MUSIC_ROOT}/.backups/navidrome:/backups
     logging: *logging
 

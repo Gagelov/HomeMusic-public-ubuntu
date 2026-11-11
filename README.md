@@ -384,10 +384,11 @@ curl http://localhost:8080/healthz
 
 - **`permission denied` к `/var/run/docker.sock`** — пользователь не в группе `docker`: `sudo usermod -aG docker $USER`,
   затем выйдите и войдите снова (или запускайте `sudo ./homemusic.sh`).
-- **Navidrome не видит музыку** — он работает от uid 1000 и должен читать `MUSIC_ROOT/library`:
-  `sudo chmod -R a+rX "$MUSIC_ROOT/library"`; права проверяются в `docker logs homemusic_navidrome`.
-- **Ошибки бэкапа Navidrome** — папка `MUSIC_ROOT/.backups/navidrome` должна принадлежать uid 1000:
-  `sudo chown 1000:1000 "$MUSIC_ROOT/.backups/navidrome"`.
+- **Navidrome не видит музыку** — контейнер должен читать `MUSIC_ROOT/library` (в образе 0.64.2 он работает от root,
+  в других сборках — от uid 1000): `sudo chmod -R a+rX "$MUSIC_ROOT/library"`; права проверяются в
+  `docker logs homemusic_navidrome`.
+- **Ошибки бэкапа Navidrome** — папка `MUSIC_ROOT/.backups/navidrome` должна быть записываемой для контейнера
+  (установщик отдаёт её uid 1000; root тоже может писать): `sudo chown 1000:1000 "$MUSIC_ROOT/.backups/navidrome"`.
 - **Хаб не запускает сканирование** — логин/пароль администратора в Navidrome должны совпадать с
   `NAVIDROME_ADMIN_USER` / `NAVIDROME_ADMIN_PASSWORD` из `.env`.
 - **`MUSIC_ROOT` не существует** — создайте дерево заново: `sudo ./install-ubuntu.sh --no-docker --no-start`.

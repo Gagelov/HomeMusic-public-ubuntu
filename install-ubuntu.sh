@@ -173,7 +173,7 @@ if [ -z "$ADMIN_PASSWORD" ]; then
   ADMIN_PASSWORD="$(get_env NAVIDROME_ADMIN_PASSWORD)"
 fi
 if [ -z "$ADMIN_PASSWORD" ]; then
-  ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)"
+  ADMIN_PASSWORD="$(python3 -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24)))')"
   set_env NAVIDROME_ADMIN_PASSWORD "$ADMIN_PASSWORD"
   GENERATED_ADMIN_PASSWORD=1
 fi
@@ -231,7 +231,7 @@ fi
 
 install -d -m 0755 "$MUSIC_ROOT" "$MUSIC_ROOT/library" "$MUSIC_ROOT/staging" \
   "$MUSIC_ROOT/.trash" "$MUSIC_ROOT/.backups" "$MUSIC_ROOT/.backups/hub" "$MUSIC_ROOT/.backups/navidrome"
-# Navidrome runs as uid 1000 and writes its own backups
+# Navidrome may run as uid 1000 and writes its own backups (root can write anyway)
 chown 1000:1000 "$MUSIC_ROOT/.backups/navidrome" 2>/dev/null || true
 chmod 0755 "$MUSIC_ROOT/.backups/navidrome"
 say "Папка музыки: $MUSIC_ROOT"
