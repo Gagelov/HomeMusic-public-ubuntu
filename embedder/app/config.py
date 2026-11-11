@@ -24,14 +24,16 @@ class Settings:
     # cuda | cpu | auto: the GPU when it has min_free_gpu_mb free at load time, else the model waits for the card
     # (an error in /healthz, the worker retries every retry_s); CPU only when set — ~6 GB of RAM, 50× slower
     device: str = field(default_factory=lambda: _env("EMBEDDER_DEVICE", "auto"))
-    # threads for the model on CPU: half of the PC's 12, the rest stays for the Hub and the owner's jobs
-    cpu_threads: int = field(default_factory=lambda: int(_env("EMBEDDER_CPU_THREADS", "6")))
+    # threads for the model on CPU: half of the host cores, the rest stays for the Hub and the owner's jobs
+    cpu_threads: int = field(
+        default_factory=lambda: int(_env("EMBEDDER_CPU_THREADS", str(max(1, (os.cpu_count() or 2) // 2))))
+    )
     # the model takes ~4 GB of the card by nvidia-smi with clip_batch 4 (3.4 GB reserved by torch, MIXES.md 4.2)
     min_free_gpu_mb: int = field(default_factory=lambda: int(_env("EMBEDDER_MIN_FREE_GPU_MB", "5000")))
     # fp16 — the audio tower on the GPU under fp16 autocast (vectors as fp32 ones, MIXES.md 4.2); fp32 — off
     precision: str = field(default_factory=lambda: _env("EMBEDDER_PRECISION", "fp16"))
     # songs per GPU batch and 10-second clips per forward pass. Speed hardly depends on clip_batch (14.1 songs/s at 4,
-    # 14.3 at 24), video memory does (3.4 vs 7.7 GB) — and under WSL2 video memory is charged to Windows' commit limit
+    # 14.3 at 24), video memory does (3.4 vs 7.7 GB) — and video memory is a hard limit, so keep batches small
     batch: int = field(default_factory=lambda: int(_env("EMBEDDER_BATCH", "16")))
     clip_batch: int = field(default_factory=lambda: int(_env("EMBEDDER_CLIP_BATCH", "4")))
     # fragment of a song that is embedded: this many seconds from its middle (a preview is taken whole)

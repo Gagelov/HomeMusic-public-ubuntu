@@ -66,9 +66,8 @@ class FakeModel:
 
 
 def gpu_free_mb() -> int | None:
-    """Free memory of GPU 0 as the driver sees it (NVML via nvidia-smi). Under WSL2 torch.cuda.mem_get_info()
-    counts only this process and reports a card filled by Windows programs as free; WDDM then spills into shared
-    system memory and both jobs crawl."""
+    """Free memory of GPU 0 as the driver sees it (NVML via nvidia-smi), including other processes.
+    torch.cuda.mem_get_info() may count only this process in containers and on Windows."""
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits", "-i", "0"],
@@ -85,7 +84,7 @@ class GpuBusy(RuntimeError):
 
 def pick_device(settings: Settings, free_mb=gpu_free_mb) -> str:
     """cuda | cpu as set; auto — the GPU when it has min_free_gpu_mb free, else GpuBusy. No fallback to CPU:
-    there the model needs ~6 GB of RAM and is 50× slower (MIXES.md 4.2), and the RAM is shared with Windows."""
+    there the model needs ~6 GB of RAM and is 50× slower (MIXES.md 4.2), and the RAM is shared with the Hub."""
     import torch
 
     if settings.device in ("cpu", "cuda"):
@@ -126,7 +125,7 @@ def _submodels_without_weights():
 
 
 def _drop_page_cache(path: str) -> None:
-    """The checkpoint is read once; its 2.5 GB in the page cache would only swell the WSL VM (vmmem)."""
+    """The checkpoint is read once; its 2.5 GB in the page cache would only take RAM from the Hub and the OS."""
     with contextlib.suppress(OSError, AttributeError):
         fd = os.open(path, os.O_RDONLY)
         try:

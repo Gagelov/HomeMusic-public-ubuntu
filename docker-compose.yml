@@ -1,6 +1,9 @@
 # HomeMusic: Navidrome (library + streaming) + Hub (search, downloads, uploads, AI) + reverse SSH tunnel to the VPS.
+# Target: Ubuntu 24.04 + Docker Engine (Compose v2). Windows/Docker Desktop still works, see README.
 # Start / update:  docker compose up -d --build        Stop: docker compose down
-# Settings come from .env (copy .env.example). MUSIC_ROOT is a Windows folder, e.g. B:\Music.
+# Settings come from .env (copy .env.example). MUSIC_ROOT is a Linux folder, e.g. /srv/music.
+# Optional services are enabled in .env with COMPOSE_PROFILES: "embedder" (audio vectors), "vps" (tunnel),
+# or "embedder,vps" for both.
 name: homemusic
 
 x-logging: &logging
@@ -22,9 +25,9 @@ services:
       ND_DATAFOLDER: /data
       ND_DEFAULTLANGUAGE: ru
       ND_LASTFM_LANGUAGE: ru  # artist bios from Last.fm in Russian where they exist
-      # inotify events don't cross the Windows -> WSL2 bind mount; the Hub calls startScan after every import
+      # inotify works on a native Linux bind mount; the Hub still calls startScan after every import
       ND_SCANSCHEDULE: 1h
-      ND_SCANNER_WATCHERENABLED: "false"
+      ND_SCANNER_WATCHERENABLED: "true"
       ND_AUTOIMPORTPLAYLISTS: "false"
       ND_ENABLEINSIGHTSCOLLECTOR: "false"
       ND_ENABLESHARING: "true"
@@ -39,6 +42,7 @@ services:
       - navidrome-data:/data
       - ./navidrome/navidrome.toml:/config/navidrome.toml:ro
       - ${MUSIC_ROOT:?set MUSIC_ROOT in .env}/library:/music:ro
+      # the Navidrome container runs as uid 1000: the installer creates this folder with that owner
       - ${MUSIC_ROOT}/.backups/navidrome:/backups
     logging: *logging
 
@@ -97,15 +101,18 @@ services:
 
   # Audio/text vectors (MuQ-MuLan) for mixes and «Моя волна» — MIXES.md, section 4.2. Only the compose network
   # reaches it (no published port): the Hub calls http://embedder:8090 (EMBEDDER_URL).
+  # Enabled with COMPOSE_PROFILES=embedder. CPU by default; GPU acceleration is in docker-compose.gpu.yml.
   embedder:
     build: ./embedder
     image: homemusic-embedder:local
     container_name: homemusic_embedder
+    profiles: ["embedder"]
     restart: unless-stopped
     expose:
       - "8090"
     environment:
       EMBEDDER_TOKEN: ${EMBEDDER_TOKEN:-}
+      EMBEDDER_DEVICE: ${EMBEDDER_DEVICE:-cpu}
       DATA_DIR: /data
       MODELS_DIR: /models
       HF_HOME: /models/hf
@@ -116,18 +123,10 @@ services:
       # weights (~3 GB) are downloaded on the first job and kept here, not in the image
       - embedder-models:/models
       - ${MUSIC_ROOT}/library:/music:ro
-    # loading the model onto the GPU peaks at ~3.4 GB (with the checkpoint's page cache), working ~2.5 GB; a runaway
-    # is killed here, not the whole WSL VM and Docker Desktop with it (Windows' page file is small). No swap.
-    # EMBEDDER_DEVICE=cpu needs ~7 GB: raise both limits first.
-    mem_limit: 4g
-    memswap_limit: 4g
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # loading the model onto the GPU peaks at ~3.4 GB (with the checkpoint's page cache), working ~2.5 GB.
+    # CPU needs ~7 GB: raise EMBEDDER_MEM_LIMIT in .env before switching to EMBEDDER_DEVICE=cpu.
+    mem_limit: ${EMBEDDER_MEM_LIMIT:-8g}
+    memswap_limit: ${EMBEDDER_MEM_LIMIT:-8g}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=5).status == 200 else 1)"]
       interval: 30s
@@ -137,11 +136,12 @@ services:
     logging: *logging
 
   # Reverse SSH tunnel: the VPS listens on 127.0.0.1:4533 / 127.0.0.1:8080 and Caddy serves them over HTTPS.
-  # The tunnel key only allows these two remote listens.
+  # The tunnel key only allows these two remote listens. Enabled with COMPOSE_PROFILES=vps.
   tunnel:
     build: ./gateway/tunnel
     image: homemusic-tunnel:local
     container_name: homemusic_tunnel
+    profiles: ["vps"]
     restart: unless-stopped
     init: true
     read_only: true
@@ -166,8 +166,9 @@ services:
         max-file: "3"
 
 volumes:
-  # SQLite databases live on the WSL2 ext4 disk, not on the Windows bind mount (locking/WAL are unreliable there).
-  # The Hub copies daily backups of both into MUSIC_ROOT/.backups.
+  # SQLite databases and model weights live on the Docker volume (native Linux filesystem), not on a bind mount:
+  # locking/WAL are unreliable on network and Windows/FAT mounts. The Hub copies daily backups of both into
+  # MUSIC_ROOT/.backups.
   navidrome-data:
   hub-data:
   embedder-data:

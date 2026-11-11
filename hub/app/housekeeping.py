@@ -23,7 +23,7 @@ def backup_hub_db() -> Path | None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"hub-{datetime.now():%Y%m%d}.sqlite3"
     tmp = dest_dir / ".hub-backup.part"
-    # backup into the WSL2 filesystem first, then copy: SQLite file locking on the Windows mount is unreliable
+    # backup into the Hub's data volume first, then copy: SQLite locking is unreliable on bind/network mounts
     local_tmp = s.data_dir / "backup.tmp.sqlite3"
     src = sqlite3.connect(s.db_path)
     try:

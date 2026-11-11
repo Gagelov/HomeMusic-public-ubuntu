@@ -1,0 +1,28 @@
+# NVIDIA GPU for the audio-vector service on Ubuntu 24.04.
+#
+# Host prerequisites:
+#   - NVIDIA driver (nvidia-smi works on the host);
+#   - nvidia-container-toolkit installed and the Docker runtime configured:
+#       sudo apt-get install -y nvidia-container-toolkit
+#       sudo nvidia-ctk runtime configure --runtime=docker
+#       sudo systemctl restart docker
+#   - check: docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+#
+# Use together with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# or put this in .env (Linux/macOS path separator is ":"):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+services:
+  embedder:
+    environment:
+      EMBEDDER_DEVICE: cuda
+    # the model takes ~3.4 GB of video memory; keep the container under 4 GB
+    mem_limit: 4g
+    memswap_limit: 4g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -1,5 +1,5 @@
 # Build context: embedder/ (see docker-compose.yml). PyTorch wheels bring their own CUDA 12.8 libraries;
-# the driver comes from the host (Docker Desktop + WSL2, `deploy.resources.reservations.devices`).
+# the driver comes from the host (Ubuntu: NVIDIA driver + nvidia-container-toolkit, docker-compose.gpu.yml).
 FROM python:3.12-slim-bookworm
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv UV_LINK_MODE=copy \
