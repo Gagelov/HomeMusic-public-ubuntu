@@ -68,6 +68,9 @@ services:
       NAVIDROME_URL: http://navidrome:4533
       YTDLP_POT_BASE_URL: http://youtube-pot:4416
       YTDLP_CACHE_DIR: /data/yt-dlp-cache
+    # makes the LLM_BASE_URL=http://host.docker.internal:11434/v1 fallback (local Ollama) work on Linux too
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - hub-data:/data
       - ${MUSIC_ROOT}:/music

@@ -1,6 +1,6 @@
 # HomeMusic
 
-Личный музыкальный сервис на домашнем ПК: библиотека и стриминг — **Navidrome**, плеер на телефоне — **Tempus**,
+Личный музыкальный сервис на домашнем сервере Ubuntu: библиотека и стриминг — **Navidrome**, плеер на телефоне — **Tempus**,
 поиск, скачивание, загрузка своих файлов и ИИ-ассистент — свой сервис **Хаб** (FastAPI + PWA).
 API Хаба — [hub/API.md](hub/API.md).
 
@@ -52,7 +52,10 @@ API Хаба — [hub/API.md](hub/API.md).
    Ручной вариант:
    ```
    cp .env.example .env          # заполнить секреты (см. комментарии в файле)
+   chmod 600 .env
    cp config.example.yaml config.yaml
+   sudo mkdir -p /srv/music/{library,staging,.trash,.backups/hub,.backups/navidrome}
+   sudo chown 1000:1000 /srv/music/.backups/navidrome
    docker compose up -d --build
    ```
    `MUSIC_ROOT` — абсолютный путь на нативной файловой системе Linux (не NTFS/FAT/SMB), без пробелов.
@@ -64,7 +67,10 @@ API Хаба — [hub/API.md](hub/API.md).
    ```
    ssh-keygen -t ed25519 -N "" -C homemusic-tunnel -f gateway/tunnel/tunnel_key
    ssh-keyscan -t ed25519 203.0.113.10 > gateway/tunnel/known_hosts
+   sudo chown 10001:10001 gateway/tunnel/tunnel_key gateway/tunnel/known_hosts
+   sudo chmod 600 gateway/tunnel/tunnel_key
    ```
+   В контейнере туннеля SSH работает от пользователя 10001, поэтому ключ должен быть ему доступен.
 5. VPS (один раз, идемпотентно; другие сервисы на VPS не трогает, все изменённые файлы бэкапит в `/root/homemusic-gateway-backup/`):
    ```
    scp gateway/vps/setup-vps.sh myvps:/root/homemusic-setup-vps.sh
@@ -74,9 +80,10 @@ API Хаба — [hub/API.md](hub/API.md).
    ```
    docker compose up -d --build
    ```
-7. Первый запуск Navidrome: админ создаётся в веб-интерфейсе `http://localhost:4533` (или его уже создал установщик —
-   логин/пароль в `.env`: `NAVIDROME_ADMIN_USER` / `NAVIDROME_ADMIN_PASSWORD`). Остальных пользователей заводит админ
-   в Navidrome → «Пользователи».
+7. Первый запуск Navidrome: установщик сам создаёт администратора через `/auth/createAdmin` с логином и паролем из
+   `.env` и печатает их. Если база Navidrome уже была (в ней есть пользователи), создайте или проверьте администратора
+   в `http://localhost:4533`: его логин/пароль должны совпадать с `NAVIDROME_ADMIN_USER` / `NAVIDROME_ADMIN_PASSWORD`,
+   иначе Хаб не сможет запускать сканирование библиотеки. Остальных пользователей заводит админ в Navidrome → «Пользователи».
 8. Телефон:
    - **Tempus** (https://github.com/eddyizm/tempus/releases, `app-tempus-release.apk`): сервер `https://203.0.113.10:8444`.
    - **Хаб**: открыть `https://203.0.113.10:8445` в Chrome → меню → «Установить приложение». После этого Хаб есть
@@ -372,6 +379,21 @@ curl http://localhost:8080/healthz
   ошибку вместо 30-секундного превью, а старый кэш превью больше не использует. ИИ-провайдер — `.env` (`LLM_BASE_URL`, `LLM_MODEL`;
   запасной вариант — Ollama `qwen3-vl:8b`).
 - Оценка распознавания скриншотов — [eval/README.md](eval/README.md).
+
+### Если что-то не работает (Ubuntu)
+
+- **`permission denied` к `/var/run/docker.sock`** — пользователь не в группе `docker`: `sudo usermod -aG docker $USER`,
+  затем выйдите и войдите снова (или запускайте `sudo ./homemusic.sh`).
+- **Navidrome не видит музыку** — он работает от uid 1000 и должен читать `MUSIC_ROOT/library`:
+  `sudo chmod -R a+rX "$MUSIC_ROOT/library"`; права проверяются в `docker logs homemusic_navidrome`.
+- **Ошибки бэкапа Navidrome** — папка `MUSIC_ROOT/.backups/navidrome` должна принадлежать uid 1000:
+  `sudo chown 1000:1000 "$MUSIC_ROOT/.backups/navidrome"`.
+- **Хаб не запускает сканирование** — логин/пароль администратора в Navidrome должны совпадать с
+  `NAVIDROME_ADMIN_USER` / `NAVIDROME_ADMIN_PASSWORD` из `.env`.
+- **`MUSIC_ROOT` не существует** — создайте дерево заново: `sudo ./install-ubuntu.sh --no-docker --no-start`.
+- **Docker внутри LXC не собирает образы** (`apparmor failed to apply profile: write .../apparmor/exec`) — это ограничение
+  LXC: контейнеру не дают загружать профили AppArmor. Для работы используйте обычную Ubuntu (VM или железо). Только для
+  теста можно добавить override с `security_opt: ["apparmor=unconfined"]` для всех сервисов.
 
 ## Сервис `embedder` (звуковые векторы для миксов)
 

@@ -39,7 +39,7 @@ hub_healthy() {
 
 get_env() {
   [ -f .env ] || return 0
-  awk -v key="$1" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' .env
+  awk -v key="$1" 'index($0, key "=") == 1 { v = substr($0, length(key) + 2); sub(/\r$/, "", v); print v; exit }' .env
 }
 
 public_url() {
@@ -66,8 +66,16 @@ wait_hub() {
 start_stack() {
   local profiles
   profiles="$(get_env COMPOSE_PROFILES)"
+  case ",$profiles," in
+    *",vps,"*)
+      if [ ! -s gateway/tunnel/tunnel_key ] || [ ! -s gateway/tunnel/known_hosts ]; then
+        die "Профиль vps включён, но нет gateway/tunnel/tunnel_key или known_hosts.
+Создайте их (README, «Запуск с нуля», шаг 4) или уберите vps из COMPOSE_PROFILES в .env."
+      fi
+      ;;
+  esac
   say "Запускаю HomeMusic: Navidrome, Хаб, youtube-pot${profiles:+ (профили: $profiles)}..."
-  compose up -d || die "docker compose up завершился с ошибкой — подробности выше."
+  compose up -d --remove-orphans || die "docker compose up завершился с ошибкой — подробности выше."
   say "Жду, пока Хаб ответит..."
   if ! wait_hub; then
     say "Хаб не ответил за 3 минуты. Последние строки лога:"
@@ -128,7 +136,7 @@ case "${1:-toggle}" in
     fi
     ;;
   -h|--help|help)
-    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "Неизвестная команда: $1 (start|stop|restart|status|toggle)"
