@@ -15,16 +15,19 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas import UploadCommitIn, UploadCommitOut, UploadOut
+from app.api.schemas import UploadCommitIn, UploadCommitOut, UploadOut, UploadTwin
 from app.auth import current_user
 from app.config import get_settings
 from app.db import get_session
 from app.events import bus
 from app.jobs.downloads import enqueue_scan
 from app.jobs.queue import notify
-from app.library import access, probe, tagger
+from app.library import access, acoustic, probe, tagger
+from app.library.credits import split_artists
+from app.library.owned import find_owned
+from app.library.tracks import current_file
 from app.library.importer import ImportSpec, import_file
-from app.models import Album, Upload, User
+from app.models import Album, Track, Upload, User
 
 log = logging.getLogger(__name__)
 
@@ -33,9 +36,69 @@ router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 CHUNK = 1024 * 1024
 
 
-def upload_out(u: Upload) -> UploadOut:
-    return UploadOut(id=u.id, orig_name=u.orig_name, size=u.size, status=u.status, tags=u.probed_tags_json or {},
-                     error=u.error, created_at=u.created_at)
+LOSSLESS = {"flac", "alac", "wav", "pcm_s16le", "ape", "wavpack"}
+BETTER_BY_KBPS = 48  # a lossy file is the better one when its bitrate is higher by at least this
+
+
+def _better(codec: str | None, kbps: int | None, than_codec: str | None, than_kbps: int | None) -> bool:
+    mine, theirs = (codec or "").lower() in LOSSLESS, (than_codec or "").lower() in LOSSLESS
+    if mine != theirs:
+        return mine
+    return not mine and bool(kbps and than_kbps and kbps >= than_kbps + BETTER_BY_KBPS)
+
+
+async def _find_twin(s: AsyncSession, u: Upload) -> dict | None:
+    """Look for the library's track this file is of already: by its sound; where the sound finds nothing — by the
+    same names and length, as a download is told to be owned. {track_id, by, likeness}."""
+    tags = u.probed_tags_json or {}
+    hit = await acoustic.twin(s, await _chroma(s, u), u.duration_s)
+    if hit is not None:
+        return {"track_id": hit[0].id, "by": "sound", "likeness": round(hit[2], 3)}
+    if tags.get("artist") and tags.get("title"):
+        track = await find_owned(s, artist=str(tags["artist"]), title=str(tags["title"]),
+                                 duration_s=round(u.duration_s) if u.duration_s else None)
+        if track is not None:
+            return {"track_id": track.id, "by": "name", "likeness": None}
+    return None
+
+
+async def _twin(s: AsyncSession, u: Upload) -> UploadTwin | None:
+    """The library's track this file is of already (`_find_twin`), as the form shows it. It is looked for once, when
+    the file arrives, and kept with the upload (`_twin` of its tags): a list of uploads does not go through the
+    library again. An upload from before that is looked for when it is first shown."""
+    tags = dict(u.probed_tags_json or {})
+    if "_twin" not in tags:
+        if await _chroma(s, u) is None and _abs(u).is_file():
+            sound = await acoustic.of_file(_abs(u))
+            if sound:
+                u.chroma, u.duration_s = sound[0], u.duration_s or sound[1]
+                await s.flush()
+        tags["_twin"] = await _find_twin(s, u)
+        u.probed_tags_json = tags
+        await s.flush()
+    found = tags.get("_twin")
+    track = await s.get(Track, found["track_id"]) if found else None
+    if track is None:
+        return None
+    f = await current_file(s, track.id)
+    if f is None:
+        return None
+    sure = found["by"] == "name" or (found.get("likeness") or 0) >= acoustic.SAME
+    return UploadTwin(track_id=track.id, title=track.title, artist=track.artist, album=track.album,
+                      codec=f.codec, bitrate_kbps=f.bitrate_kbps, by=found["by"], sure=sure,
+                      better=sure and _better(tags.get("codec"), tags.get("bitrate_kbps"), f.codec, f.bitrate_kbps))
+
+
+async def _chroma(s: AsyncSession, u: Upload) -> bytes | None:
+    return (await s.execute(select(Upload.chroma).where(Upload.id == u.id))).scalar_one_or_none()
+
+
+async def upload_out(s: AsyncSession, u: Upload) -> UploadOut:
+    twin = await _twin(s, u) if u.status == "uploaded" else None
+    tags = {k: v for k, v in (u.probed_tags_json or {}).items() if not k.startswith("_")}
+    return UploadOut(id=u.id, orig_name=u.orig_name, size=u.size, status=u.status, tags=tags,
+                     error=u.error, created_at=u.created_at, artists=split_artists(str(tags.get("artist") or "")),
+                     codec=tags.get("codec"), bitrate_kbps=tags.get("bitrate_kbps"), twin=twin)
 
 
 def _upload_dir(user_id: int) -> Path:
@@ -85,11 +148,22 @@ async def upload(files: list[UploadFile] = File(...), user: User = Depends(curre
             raise HTTPException(400, f"Не удалось прочитать файл {name}: {e}") from e
         if not tags.get("title"):
             tags["title"] = name.rsplit(".", 1)[0]
+        # what the file is — its codec, its bitrate, its length — and the picture of its sound: by them it is told
+        # to be a recording the library has, and whether it is the better file of the two
+        try:
+            info = await probe.probe(dest)
+            tags["codec"], tags["bitrate_kbps"] = info.codec, info.bitrate_kbps
+        except Exception as e:
+            log.info("upload %s not probed: %r", name, e)
+            info = None
+        sound = await acoustic.of_file(dest)
         u = Upload(user_id=user.id, staging_path=rel.as_posix(), orig_name=name, size=size,
-                   probed_tags_json=json.loads(json.dumps(tags, default=str)))
+                   probed_tags_json=json.loads(json.dumps(tags, default=str)),
+                   chroma=sound[0] if sound else None,
+                   duration_s=(info.duration_s if info else None) or (sound[1] if sound else None))
         s.add(u)
         await s.flush()
-        out.append(upload_out(u))
+        out.append(await upload_out(s, u))
     return out
 
 
@@ -99,7 +173,8 @@ async def list_uploads(status: str | None = "uploaded", user: User = Depends(cur
     stmt = select(Upload).where(Upload.user_id == user.id)
     if status:
         stmt = stmt.where(Upload.status == status)
-    return [upload_out(u) for u in (await s.execute(stmt.order_by(Upload.id.desc()).limit(200))).scalars()]
+    rows = list((await s.execute(stmt.order_by(Upload.id.desc()).limit(200))).scalars())
+    return [await upload_out(s, u) for u in rows]
 
 
 async def _own(s: AsyncSession, user: User, upload_id: int) -> Upload:
@@ -168,8 +243,14 @@ async def commit(payload: str = Form(...), cover: UploadFile | None = File(None)
         except Exception as e:
             log.warning("probe failed for upload %s: %r", u.id, e)
             info = None
+        # the file of a track the library has (the upload is the better one): it becomes that track's file
+        replaced = await s.get(Track, tr.replace_track_id) if tr.replace_track_id else None
+        line = tr.artist.strip() or album.album_artist
         spec = ImportSpec(
-            artist=tr.artist.strip() or album.album_artist,
+            artist=line,
+            artists=split_artists(line),
+            track_id=replaced.id if replaced is not None else None,
+            chroma=await _chroma(s, u),
             title=tr.title.strip() or u.orig_name,
             album_id=album.id,
             track_no=tr.track_no or (i + 1),

@@ -41,6 +41,9 @@ interface Transfer {
 
 interface RowState {
   include: boolean;
+  /** the library has this recording (`UploadOut.twin`) and this file takes the place of its file — else, included,
+   * it is added as a track of its own */
+  replace: boolean;
   title: string;
   artist: string;
   album: string;
@@ -70,16 +73,50 @@ const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLow
 
 function rowFromUpload(u: UploadOut): RowState {
   return {
-    include: true,
+    // a recording the library has is left out — unless this file is the better one: then it takes the old one's
+    // place. One that only sounds like a track of the library (another version of the song) is a track of its own
+    include: !u.twin || u.twin.better || !u.twin.sure,
+    replace: !!u.twin?.better,
     title: str(u.tags.title) || stripExt(u.orig_name),
     artist: str(u.tags.artist) || str(u.tags.album_artist),
     album: str(u.tags.album),
-    albumArtist: str(u.tags.album_artist),
+    // a file that does not say whose its album is: the first of its artists' — a guest on one track does not make
+    // that track an album of its own
+    albumArtist: str(u.tags.album_artist) || u.artists?.[0] || '',
     year: str(u.tags.year).slice(0, 4),
     genre: str(u.tags.genre),
     trackNo: str(u.tags.track_no),
     discNo: str(u.tags.disc_no),
   };
+}
+
+const fileWords = (codec?: string | null, kbps?: number | null) => [codec ? codec.toUpperCase() : null, kbps ? `${kbps} кбит/с` : null].filter(Boolean).join(' ');
+
+/** Under a file the library has already: which track it is, how it was told (by the sound of the two files, or by
+ * their names and length) and what the library's file is — and what to do with this one: leave it out, put it in
+ * the place of the library's file (offered first when this one is better), or add it as a track of its own. */
+function TwinNote({ u, r, onChange }: { u: UploadOut; r: RowState; onChange: (patch: Partial<RowState>) => void }) {
+  const twin = u.twin;
+  if (!twin) return null;
+  const mode = !r.include ? 'skip' : r.replace ? 'replace' : 'add';
+  const chip = (id: typeof mode, label: string, title: string, patch: Partial<RowState>) => (
+    <button type="button" title={title} aria-pressed={mode === id} onClick={() => onChange(patch)} className={cx('rounded-full px-2 py-0.5 text-[11px] transition', mode === id ? 'bg-info/20 font-semibold text-info' : 'bg-fg/5 text-muted hover:text-fg')}>
+      {label}
+    </button>
+  );
+  const theirs = fileWords(twin.codec, twin.bitrate_kbps);
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 px-2 pb-1.5 text-[11px] text-info">
+      <span className="min-w-0 truncate" title={!twin.sure ? 'Звучит похоже, но не одинаково: так бывает у версии на другом языке или кавера на ту же музыку' : twin.by === 'sound' ? 'Та же запись — определено по звучанию файлов' : 'То же название, исполнитель и длительность'}>
+        {twin.sure ? 'Уже есть' : 'Похоже на'}: «{twin.title}»{theirs ? ` · ${theirs}` : ''} · {twin.by === 'sound' ? 'по звуку' : 'по названию'}
+        {twin.better ? ' · этот файл лучше' : ''}
+        {!twin.sure ? ' · возможно, другая версия' : ''}
+      </span>
+      {chip('skip', 'не загружать', 'В библиотеке останется тот файл, что есть', { include: false })}
+      {chip('replace', 'заменить', 'Этот файл станет файлом того же трека: плейлисты, лайки и текст останутся при нём', { include: true, replace: true })}
+      {chip('add', 'добавить вторым', 'Появится отдельный трек — например, это другая версия записи', { include: true, replace: false })}
+    </div>
+  );
 }
 
 /** The files of a drop: plain files and, through the entries API, everything inside dropped folders. */
@@ -310,7 +347,7 @@ export function UploadPage() {
 
   const trackIn = (u: UploadOut, g: string | null): UploadTrackIn => {
     const r = rows[u.id];
-    return { upload_id: u.id, title: r.title.trim(), artist: r.artist.trim(), track_no: toIntOrNull(r.trackNo), disc_no: toIntOrNull(r.discNo), genre: g };
+    return { upload_id: u.id, title: r.title.trim(), artist: r.artist.trim(), track_no: toIntOrNull(r.trackNo), disc_no: toIntOrNull(r.discNo), genre: g, replace_track_id: r.replace && u.twin ? u.twin.track_id : null };
   };
 
   const commit = async () => {
@@ -571,6 +608,7 @@ export function UploadPage() {
                         {u.orig_name} · {fmtSize(u.size)}
                         {u.error ? <span className="text-danger"> · {u.error}</span> : null}
                       </div>
+                      {u.twin && <TwinNote u={u} r={r} onChange={(patch) => setRow(u.id, patch)} />}
                     </div>
                   </div>
                   <IconButton icon="trash" label={`Удалить ${u.orig_name}`} size={18} className="text-dim md:order-last" onClick={() => removeUpload(u)} />
@@ -867,6 +905,7 @@ function AlbumsView({ uploads, rows, known, setRow, patchRows, onRemove }: { upl
                         {u.orig_name} · {fmtSize(u.size)}
                         {u.error ? <span className="text-danger"> · {u.error}</span> : null}
                       </div>
+                      {u.twin && <TwinNote u={u} r={r} onChange={(patch) => setRow(u.id, patch)} />}
                     </div>
                     <IconButton icon="trash" label={`Удалить ${u.orig_name}`} size={18} className="text-dim md:order-last" onClick={() => onRemove(u)} />
                     <input className={cx(cell, 'col-start-2 md:col-start-auto', bad(r.artist))} value={r.artist} placeholder="Исполнитель" aria-label="Исполнитель" onChange={(e) => setRow(u.id, { artist: e.target.value })} />

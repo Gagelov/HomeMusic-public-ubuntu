@@ -575,6 +575,29 @@ export interface UploadOut {
   tags: UploadTags;
   error?: string | null;
   created_at: ISODateTime;
+  /** the artists read out of the file's line of them, the main one first */
+  artists?: string[];
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  /** the library has this recording already */
+  twin?: UploadTwin | null;
+}
+
+/** The library's track an uploaded file is of already. */
+export interface UploadTwin {
+  track_id: number;
+  title: string;
+  artist: string;
+  album?: string | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  /** told by the sound of the two files, or by their names and length */
+  by: 'sound' | 'name';
+  /** the same recording — or (false) only alike by its sound: a version in another language, a cover over the same
+   * music */
+  sure: boolean;
+  /** the uploaded file is the better one */
+  better: boolean;
 }
 
 export interface UploadTrackIn {
@@ -585,6 +608,15 @@ export interface UploadTrackIn {
   disc_no?: number | null;
   genre?: string | null;
   explicit?: boolean | null;
+  /** the library's track whose file this one takes the place of */
+  replace_track_id?: number | null;
+}
+
+/** Albums that are one album in pieces («Мои файлы»): `target_id` — the one the rest are joined into. */
+export interface SplitAlbums {
+  title: string;
+  target_id: number;
+  albums: { id: number; title: string; album_artist: string; year?: number | null; track_count: number; has_cover: boolean }[];
 }
 
 export interface UploadAlbumIn {

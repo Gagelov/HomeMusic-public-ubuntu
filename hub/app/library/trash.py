@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Date, DateTime, delete, select
+from sqlalchemy import Date, DateTime, LargeBinary, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -38,9 +38,12 @@ from app.models import (
 
 
 def _row(obj: Any) -> dict[str, Any]:
-    """A row as JSON: its table's columns, dates as text."""
+    """A row as JSON: its table's columns, dates as text. What is bytes is left out (the picture of a file's sound:
+    drawn again when the file is back)."""
     out = {}
     for c in obj.__table__.columns:
+        if isinstance(c.type, LargeBinary):
+            continue
         v = getattr(obj, c.name)
         out[c.name] = v.isoformat() if isinstance(v, (date, datetime)) else v
     return out

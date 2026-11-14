@@ -185,7 +185,7 @@ class FakeDeezer:
         pass
 
 
-FILE_FIELDS = ("uid", "path", "nd_song_id", "bitrate_kbps", "codec", "source", "source_url", "source_upload_date",
+FILE_FIELDS = ("uid", "path", "nd_song_id", "bitrate_kbps", "codec", "source", "source_url", "source_upload_date", "chroma",
                "acquired_at", "locked", "warnings", "added_by")
 
 

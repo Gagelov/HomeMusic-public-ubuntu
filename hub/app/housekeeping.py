@@ -83,6 +83,10 @@ async def run_daily() -> None:
 
         async with session_scope() as s:  # tracks made before a track kept the catalog's record of it
             await registry.fill_catalog(s, limit=200)
+        from app.library import acoustic
+
+        async with session_scope() as s:  # files that were there before a file kept the picture of its sound
+            await acoustic.fill(s, limit=400)
         m = await asyncio.to_thread(purge_stale_uploads)
         c = await cache_purge_expired()
         e = await purge_email_codes()

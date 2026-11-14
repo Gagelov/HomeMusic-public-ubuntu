@@ -222,6 +222,8 @@ class TrackFile(Base):
     acquired_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
     warnings: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # the picture of its sound (app/library/acoustic.py): None — not drawn yet, empty — it could not be
+    chroma: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     added_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
 
@@ -317,6 +319,9 @@ class Upload(Base):
     error: Mapped[str | None] = mapped_column(Text)
     track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # the picture of its sound and its length: by them it is told to be a recording the library has
+    chroma: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    duration_s: Mapped[float | None] = mapped_column(Float)
 
 
 class AssistantTask(Base):

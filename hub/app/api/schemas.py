@@ -562,6 +562,22 @@ class RetryIn(BaseModel):
 # --- uploads -----------------------------------------------------------------------------
 
 
+class UploadTwin(BaseModel):
+    """The library's track an uploaded file is of already."""
+
+    track_id: int
+    title: str
+    artist: str
+    album: str | None = None
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    by: Literal["sound", "name"]  # how it was told: the same recording by its sound, or the same names and length
+    # by the sound: it is the same recording — or only alike (false): a version in another language, a cover over
+    # the same music; then the file is another track, and the form only says what it is like
+    sure: bool = True
+    better: bool = False  # the uploaded file is better than the library's (lossless, or a higher bitrate)
+
+
 class UploadOut(BaseModel):
     id: int
     orig_name: str
@@ -570,6 +586,10 @@ class UploadOut(BaseModel):
     tags: dict[str, Any] = {}
     error: str | None = None
     created_at: datetime
+    artists: list[str] = []  # the artists read out of the file's line of them, the main one first
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    twin: UploadTwin | None = None  # the library has this recording
 
 
 class UploadTrackIn(BaseModel):
@@ -580,6 +600,9 @@ class UploadTrackIn(BaseModel):
     disc_no: int | None = None
     genre: str | None = None
     explicit: bool | None = None
+    # the library's track this file takes the place of the file of (the upload is the better one): it becomes
+    # that track's file, not a track of its own
+    replace_track_id: int | None = None
 
 
 class UploadAlbumIn(BaseModel):

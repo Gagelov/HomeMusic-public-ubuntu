@@ -75,6 +75,7 @@ import type {
   StarOut,
   StarredOut,
   TasteOnboardingOut,
+  SplitAlbums,
   TrackEditEntry,
   TrackEditOut,
   TrashedOut,
@@ -318,6 +319,8 @@ export const api = {
     return request<LibAlbumOut>('PUT', `/api/library/albums/${id}/cover`, { form });
   },
   mergeAlbums: (body: AlbumMergeIn) => request<LibAlbumOut>('POST', '/api/library/albums/merge', { json: body }),
+  /** Albums that are one album in pieces (the same name, artists that differ by a guest). */
+  splitAlbums: (signal?: AbortSignal) => request<SplitAlbums[]>('GET', '/api/library/albums/split', { signal }),
   moveTracks: (body: TracksMoveIn) => request<LibAlbumOut>('POST', '/api/library/tracks/move', { json: body }),
   patchTrack: (id: number, body: TrackPatchIn) =>
     request<LibTrackOut>('PATCH', `/api/library/tracks/${id}`, { json: body }),

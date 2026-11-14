@@ -118,6 +118,32 @@ async def list_albums(q: str | None = None, offset: int = 0, limit: int = Query(
     ]
 
 
+@router.get("/api/library/albums/split")
+async def split_albums(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> list[dict]:
+    """Albums that are one album in pieces: the same name, and artists that differ only by who is a guest («Три дня
+    дождя» and «Три дня дождя, Роки») — a file that names no artist of its album is filed by its own artists. Each
+    group with the one to join the rest into (the one with the most tracks). Among the files the asker looks after."""
+    from app.library.credits import main_artist
+
+    rows = (await s.execute(select(Album).where(access.albums_of(user)))).scalars().all()
+    counts = dict((await s.execute(select(Track.album_id, func.count(Track.id)).where(Track.album_id.is_not(None))
+                                   .group_by(Track.album_id))).all())
+    groups: dict[tuple[str, str], list[Album]] = {}
+    for a in rows:
+        key = (normalize_title(a.title).text, main_artist(a.album_artist).casefold())
+        if key[0] and key[1]:
+            groups.setdefault(key, []).append(a)
+    out = []
+    for albums in groups.values():
+        if len(albums) < 2:
+            continue
+        albums.sort(key=lambda a: (-counts.get(a.id, 0), a.id))
+        out.append({"title": albums[0].title, "target_id": albums[0].id,
+                    "albums": [{"id": a.id, "title": a.title, "album_artist": a.album_artist, "year": a.year,
+                                "track_count": counts.get(a.id, 0), "has_cover": _has_cover(a)} for a in albums]})
+    return sorted(out, key=lambda g: g["title"].casefold())
+
+
 @router.post("/api/library/albums", response_model=LibAlbumOut)
 async def create_album(body: AlbumCreateIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
     a = Album(uid=str(uuid.uuid4()), title=body.title.strip(), album_artist=body.album_artist.strip(), year=body.year,

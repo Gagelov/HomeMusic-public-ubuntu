@@ -61,6 +61,7 @@ class ImportSpec(BaseModel):
     warnings: list[str] = []
     added_by: int | None = None
     force: bool = False  # explicit re-download: keep the old file, add a "[vN]" version next to it
+    chroma: bytes | None = None  # the picture of the file's sound, when it is drawn already (an upload)
 
 
 def album_reldir(album: Album) -> PurePosixPath:
@@ -222,6 +223,7 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
             locked=is_original(spec.source_upload_date, spec.explicit),
             warnings=list(spec.warnings),
             added_by=spec.added_by,
+            chroma=spec.chroma,
         )
 
         await asyncio.to_thread(
@@ -240,6 +242,11 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
             album.cover_path = (album_dir_rel / "cover.jpg").as_posix()
 
         file.path = PurePosixPath(album_dir_rel, dest.name).as_posix()
+        if file.chroma is None:  # the picture of its sound: the next file that is this recording is known by it
+            from app.library import acoustic
+
+            got = await acoustic.of_file(dest)
+            file.chroma = got[0] if got else None
         s.add(track)
         await s.flush()
         file.track_id = track.id
