@@ -622,6 +622,9 @@ class UploadCommitIn(BaseModel):
     playlist_id: str | None = None
     playlist_ids: list[str] = Field(default_factory=list, max_length=50)  # several playlists at once
     star: bool = False  # the imported tracks go into «Любимое» too
+    # the playlist that keeps what was uploaded together («Загружено 14 ноября»): the user's playlist of this name,
+    # made when there is none — so the parts of one import, and the imports of one day, are one list
+    keep_in: str | None = Field(default=None, max_length=200)
     tag_ids: list[int] = Field(default_factory=list, max_length=50)  # ... and get these tags
 
 

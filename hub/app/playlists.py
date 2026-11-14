@@ -28,6 +28,14 @@ async def create(s: AsyncSession, user_id: int, name: str, *, kind: str = USER) 
     return p
 
 
+async def named(s: AsyncSession, user_id: int, name: str) -> Playlist:
+    """The user's playlist of this name — made when they have none."""
+    name = " ".join(name.split())[:200]
+    p = (await s.execute(select(Playlist).where(Playlist.user_id == user_id, Playlist.kind == USER, Playlist.name == name)
+                         .order_by(Playlist.id).limit(1))).scalar_one_or_none()
+    return p if p is not None else await create(s, user_id, name)
+
+
 async def liked(s: AsyncSession, user_id: int) -> Playlist:
     """«Любимое» of the user (made on the first call)."""
     p = (await s.execute(select(Playlist).where(Playlist.user_id == user_id, Playlist.kind == LIKED)

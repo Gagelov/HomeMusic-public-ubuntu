@@ -640,6 +640,8 @@ export interface UploadCommitIn {
   star?: boolean;
   /** ... and get these tags of one's own */
   tag_ids?: number[];
+  /** the playlist that keeps what was uploaded together: the user's playlist of this name, made when there is none */
+  keep_in?: string | null;
 }
 
 export interface UploadCommitOut {

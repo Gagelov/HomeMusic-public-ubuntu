@@ -183,6 +183,14 @@ export function UploadPage() {
     }
   };
   const [like, setLike] = useState(false);
+  // What is uploaded is kept together in a playlist of the day («Загружено 14 ноября»), so that tracks nobody put
+  // anywhere can still be found as one list. Turned off, it stays off on this device.
+  const [keep, setKeep] = useState(() => { try { return localStorage.getItem(KEEP_OFF) !== '1'; } catch { return true; } });
+  const keepName = useMemo(() => `Загружено ${new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).replace(/\s*г\.$/, '')}`, []);
+  const turnKeep = (on: boolean) => {
+    setKeep(on);
+    try { if (on) localStorage.removeItem(KEEP_OFF); else localStorage.setItem(KEEP_OFF, '1'); } catch { /* the choice lasts for this page then */ }
+  };
   const [tagIds, setTagIds] = useState<number[]>([]); // the imported tracks get these tags of one's own
   const [plPicker, setPlPicker] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -381,6 +389,7 @@ export function UploadPage() {
             playlist_ids: playlists.map((p) => p.id),
             star: like,
             tag_ids: tagIds,
+            keep_in: keep ? keepName : null,
           }, null),
         );
         if (!res) break;
@@ -403,6 +412,7 @@ export function UploadPage() {
             playlist_ids: playlists.map((p) => p.id),
             star: like,
             tag_ids: tagIds,
+            keep_in: keep ? keepName : null,
           },
           cover.kind === 'file' ? cover.file : null,
         ),
@@ -500,6 +510,23 @@ export function UploadPage() {
             </li>
           ))}
         </ul>
+      )}
+
+      {uploads.length > 0 && (
+        <AfterImport
+          className="mx-4 mt-3"
+          count={included.length}
+          like={like}
+          onLike={setLike}
+          playlists={playlists}
+          onPlaylists={setPlaylists}
+          onPickPlaylists={() => setPlPicker(true)}
+          tagIds={tagIds}
+          onTags={setTagIds}
+          keepName={keepName}
+          keep={keep}
+          onKeep={turnKeep}
+        />
       )}
 
       {pendingRes.loading && !uploads.length ? (
@@ -683,17 +710,6 @@ export function UploadPage() {
               </div>
             </>
           )}
-
-          <AfterImport
-            count={included.length}
-            like={like}
-            onLike={setLike}
-            playlists={playlists}
-            onPlaylists={setPlaylists}
-            onPickPlaylists={() => setPlPicker(true)}
-            tagIds={tagIds}
-            onTags={setTagIds}
-          />
         </>
       )}
 
@@ -790,9 +806,12 @@ function CoverOption({ selected, label, onClick, children }: { selected: boolean
   );
 }
 
+const KEEP_OFF = 'hm-upload-keep-off';
+
 /** «После загрузки»: where the imported tracks go besides the library — «Любимое», playlists, tags. The same icons
- * as the selection bar's and the same windows; what is chosen stands beside them and is taken off by its ✕. */
-export function AfterImport({ count, like, onLike, playlists, onPlaylists, onPickPlaylists, tagIds, onTags, label = 'После загрузки', className = 'mx-4 mt-5' }: { label?: string; className?: string; count: number; like: boolean; onLike: (v: boolean) => void; playlists: { id: string; name: string }[]; onPlaylists: (list: { id: string; name: string }[]) => void; onPickPlaylists: () => void; tagIds: number[]; onTags: (ids: number[]) => void }) {
+ * as the selection bar's and the same windows; what is chosen stands beside them and is taken off by its ✕. An
+ * upload also has the playlist that keeps it together (`keepName`): on unless taken off, and put back by its chip. */
+export function AfterImport({ count, like, onLike, playlists, onPlaylists, onPickPlaylists, tagIds, onTags, keepName, keep = false, onKeep, label = 'После загрузки', className = 'mx-4 mt-5' }: { keepName?: string; keep?: boolean; onKeep?: (on: boolean) => void; label?: string; className?: string; count: number; like: boolean; onLike: (v: boolean) => void; playlists: { id: string; name: string }[]; onPlaylists: (list: { id: string; name: string }[]) => void; onPickPlaylists: () => void; tagIds: number[]; onTags: (ids: number[]) => void }) {
   const tags = useTags();
   const picked = tagIds.map((id) => tags.byId.get(id)).filter((t) => !!t);
   const chip = 'flex min-w-0 items-center gap-1.5 rounded-full bg-fg/10 py-1 pl-3 pr-1 text-sm';
@@ -801,7 +820,8 @@ export function AfterImport({ count, like, onLike, playlists, onPlaylists, onPic
       <Icon name="x" size={13} stroke={2.5} />
     </button>
   );
-  const nothing = !like && !playlists.length && !picked.length;
+  const kept = !!keepName && keep;
+  const nothing = !like && !playlists.length && !picked.length && !kept;
   return (
     <div className={cx(className, 'flex flex-wrap items-center gap-x-1 gap-y-2 rounded-2xl bg-surface px-3 py-2')}>
       <span className="pr-2 text-sm text-muted">{label}</span>
@@ -817,6 +837,17 @@ export function AfterImport({ count, like, onLike, playlists, onPlaylists, onPic
             {off('Не добавлять в «Любимое»', () => onLike(false))}
           </span>
         )}
+        {keepName && onKeep && (kept ? (
+          <span className={chip} title="Плейлист создастся сам: в нём останется всё, что загружено за день">
+            <Icon name="playlist" size={14} className="shrink-0 text-accent" />
+            <span className="truncate">{keepName}</span>
+            {off('Не собирать загруженное в плейлист', () => onKeep(false))}
+          </span>
+        ) : (
+          <button type="button" onClick={() => onKeep(true)} className="rounded-full border border-dashed border-line px-3 py-1 text-sm text-muted hover:text-fg">
+            + плейлист «{keepName}»
+          </button>
+        ))}
         {playlists.map((p) => (
           <span key={p.id} className={chip}>
             <Icon name="playlist" size={14} className="shrink-0 text-muted" />

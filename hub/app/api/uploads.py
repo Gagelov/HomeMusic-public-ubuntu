@@ -280,10 +280,12 @@ async def commit(payload: str = Form(...), cover: UploadFile | None = File(None)
 
         await tags.assign_tracks(s, user.id, track_ids, body.tag_ids)
     playlist_ids = list(dict.fromkeys([*([body.playlist_id] if body.playlist_id else []), *body.playlist_ids]))
-    if playlist_ids and track_ids:  # the playlists are the Hub's: the tracks are in them at once
+    if (playlist_ids or body.keep_in) and track_ids:  # the playlists are the Hub's: the tracks are in them at once
         from app import playlists
         from app.playlists_mirror import enqueue_mirror
 
+        if body.keep_in and body.keep_in.strip():
+            playlist_ids.append(str((await playlists.named(s, user.id, body.keep_in)).id))
         for pid in playlist_ids:
             p = await playlists.own(s, user.id, int(pid)) if str(pid).isdigit() else None
             if p is not None and p.kind == playlists.USER and await playlists.add(s, p, track_ids):
