@@ -303,6 +303,17 @@ export function UploadPage() {
     }
   };
 
+  /** The files left unchecked — what the library has already, as a rule — go off the server in one go. */
+  const removeLeftOut = async () => {
+    const out = uploads.filter((u) => !rows[u.id]?.include);
+    const ok = await confirmDialog({ title: `Убрать невыбранные: ${tracksWord(out.length)}?`, body: 'Загруженные файлы без галочки удалятся с сервера. Библиотеку это не затронет.', okLabel: 'Убрать', danger: true });
+    if (!ok) return;
+    const gone = new Set<number>();
+    for (const u of out) if (await attempt(() => api.deleteUpload(u.id))) gone.add(u.id);
+    setUploads((prev) => prev.filter((u) => !gone.has(u.id)));
+    if (cover.kind === 'upload' && gone.has(cover.id)) setCover({ kind: 'none' });
+  };
+
   const setRow = (id: number, patch: Partial<RowState>) => setRows((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
 
   const included = uploads.filter((u) => rows[u.id]?.include);
@@ -517,6 +528,11 @@ export function UploadPage() {
                   </button>
                 ))}
               </div>
+            )}
+            {included.length < uploads.length && (
+              <Button small icon="trash" onClick={removeLeftOut}>
+                Убрать невыбранные · {uploads.length - included.length}
+              </Button>
             )}
             <Button small icon="edit" disabled={!included.length} onClick={() => setBulk(true)}>
               Изменить выбранные
