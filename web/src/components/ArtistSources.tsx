@@ -14,9 +14,10 @@ const NAMES: Record<string, string> = { deezer: 'Deezer', lastfm: 'Last.fm', cat
  *
  * One line says it all together — the releases, the followers in the catalog, the listeners on Last.fm. An artist
  * may be known in several places — a catalog keeps more than one record of some, Last.fm knows them by the name —
- * so before the line stand those places' small pictures, and a tap lays them out: each with its service, the name
- * the artist has there, and its own numbers; a tap on one opens the artist's page there. Whether they are laid out
- * is kept on the device, for every artist's page. */
+ * so before the line stand those places' small round pictures. A tap on them (or on the line) lays them out: each
+ * round picture grows into a plate of its own — the service, the name the artist has there, its own numbers — and
+ * a tap on a plate opens the artist's page there; the line then stands under the plates. A tap on the line folds
+ * them back. Whether they are laid out is kept on the device, for every artist's page. */
 export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[]; /** the releases of the page, each once */ releases: number }) {
   const [open, setOpen] = useState(() => {
     try {
@@ -44,66 +45,52 @@ export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[
   ].filter(Boolean).join(' · ');
   if (!sources.length) return line ? <div>{line}</div> : null;
 
-  const picture = (s: ArtistSourceOut, size: string) => (
-    <span className={cx('flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-fg/15', size)}>
-      {s.picture_url ? <img src={imageUrl(s.picture_url) as string} alt="" loading="lazy" className="h-full w-full object-cover" /> : hasBrand(s.service) ? <BrandIcon service={s.service} size={14} /> : <Icon name="user" size={13} />}
-    </span>
-  );
+  const move = 'transition-all duration-300 ease-out';
   return (
-    <div>
-      <button type="button" onClick={toggle} aria-expanded={open} title={open ? 'Свернуть' : 'Где известен исполнитель'} className="flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 text-left">
-        <span className="flex shrink-0 pl-1.5">
-          {sources.map((s, i) => (
-            <span key={`${s.service}:${s.ref ?? i}`} className="-ml-1.5 rounded-full ring-2 ring-bg">
-              {picture(s, 'h-5 w-5')}
-            </span>
-          ))}
-        </span>
-        <span>{line}</span>
-        {sources.length > 1 && (
-          <span className="flex items-center gap-0.5 opacity-80">
-            {sources.length} {plural(sources.length, ['профиль', 'профиля', 'профилей'])}
-            <Icon name="chevron" size={12} className={open ? '-rotate-90' : 'rotate-90'} />
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="flex flex-wrap gap-2 pt-2.5 [text-shadow:none]">
-          {sources.map((s, i) => {
-            const facts = [
-              s.followers ? `${num(s.followers)} ${plural(s.followers, ['поклонник', 'поклонника', 'поклонников'])}` : null,
-              s.listeners ? `${num(s.listeners)} ${plural(s.listeners, ['слушатель', 'слушателя', 'слушателей'])}` : null,
-              s.releases ? `${num(s.releases)} ${plural(s.releases, ['релиз', 'релиза', 'релизов'])}` : null,
-            ].filter(Boolean).join(' · ');
-            const body = (
-              <>
-                <span className="relative shrink-0">
-                  {picture(s, 'h-9 w-9')}
-                  {s.picture_url && hasBrand(s.service) && (
-                    <span className="absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-surface ring-1 ring-line">
-                      <BrandIcon service={s.service} size={11} />
-                    </span>
-                  )}
+    <div className="flex flex-wrap items-center gap-x-2">
+      {/* the places: round pictures, one over the edge of another — or, laid out, a plate each */}
+      <div className={cx('flex flex-wrap items-center [text-shadow:none]', open ? 'w-full pb-1' : 'cursor-pointer pl-1.5')} onClick={open ? undefined : toggle}>
+        {sources.map((s, i) => {
+          const facts = [
+            s.followers ? `${num(s.followers)} ${plural(s.followers, ['поклонник', 'поклонника', 'поклонников'])}` : null,
+            s.listeners ? `${num(s.listeners)} ${plural(s.listeners, ['слушатель', 'слушателя', 'слушателей'])}` : null,
+            s.releases ? `${num(s.releases)} ${plural(s.releases, ['релиз', 'релиза', 'релизов'])}` : null,
+          ].filter(Boolean).join(' · ');
+          const body = (
+            <>
+              <span className="relative shrink-0">
+                <span className={cx('flex items-center justify-center overflow-hidden rounded-full bg-fg/15', move, open ? 'h-9 w-9' : 'h-5 w-5 ring-2 ring-bg')}>
+                  {s.picture_url ? <img src={imageUrl(s.picture_url) as string} alt="" loading="lazy" className="h-full w-full object-cover" /> : hasBrand(s.service) ? <BrandIcon service={s.service} size={open ? 16 : 11} /> : <Icon name="user" size={12} />}
                 </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-[13px] leading-tight text-fg">{s.name}</span>
-                  <span className="block truncate text-[11px] leading-tight text-muted">{[NAMES[s.service] ?? s.service, facts].filter(Boolean).join(' · ')}</span>
-                </span>
-              </>
-            );
-            const box = 'flex min-w-0 max-w-full items-center gap-2.5 rounded-xl border border-fg/25 bg-bg/60 py-1.5 pl-1.5 pr-3';
-            return s.url ? (
-              <a key={`${s.service}:${s.ref ?? i}`} href={s.url} target="_blank" rel="noopener noreferrer" title={`Открыть в ${NAMES[s.service] ?? 'каталоге'}`} className={cx(box, 'transition hover:border-fg')}>
-                {body}
-              </a>
-            ) : (
-              <span key={`${s.service}:${s.ref ?? i}`} className={box}>
-                {body}
+                {s.picture_url && hasBrand(s.service) && (
+                  <span className={cx('absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-surface ring-1 ring-line', move, open ? 'scale-100 opacity-100' : 'scale-0 opacity-0')}>
+                    <BrandIcon service={s.service} size={11} />
+                  </span>
+                )}
               </span>
-            );
-          })}
-        </div>
-      )}
+              <span className={cx('min-w-0 overflow-hidden whitespace-nowrap', move, open ? 'max-w-[22rem] opacity-100' : 'max-w-0 opacity-0')}>
+                <span className="block truncate text-[13px] leading-tight text-fg">{s.name}</span>
+                <span className="block truncate text-[11px] leading-tight text-muted">{[NAMES[s.service] ?? s.service, facts].filter(Boolean).join(' · ')}</span>
+              </span>
+            </>
+          );
+          const box = cx('flex min-w-0 max-w-full items-center border', move, open ? 'mb-2 mr-2 gap-2.5 rounded-xl border-fg/25 bg-bg/60 py-1.5 pl-1.5 pr-3 hover:border-fg' : '-ml-1.5 gap-0 rounded-[1rem] border-transparent');
+          const key = `${s.service}:${s.ref ?? i}`;
+          return s.url ? (
+            // folded, a tap lays the places out; laid out, it opens the artist's page there
+            <a key={key} href={s.url} target="_blank" rel="noopener noreferrer" tabIndex={open ? 0 : -1} title={open ? `Открыть в ${NAMES[s.service] ?? 'каталоге'}` : undefined} onClick={(e) => !open && e.preventDefault()} className={box}>
+              {body}
+            </a>
+          ) : (
+            <span key={key} className={box}>
+              {body}
+            </span>
+          );
+        })}
+      </div>
+      <button type="button" onClick={toggle} aria-expanded={open} title={open ? 'Свернуть' : 'Где известен исполнитель'} className="text-left">
+        {line}
+      </button>
     </div>
   );
 }

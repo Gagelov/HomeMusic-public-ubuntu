@@ -7,27 +7,14 @@ import { attempt, toast } from '../lib/ui';
 import { Icon } from './Icon';
 import { Sheet, Spinner, cx } from './ui';
 
-/** The pencil at the top of an artist's page: «Фото и обложка» — how the artist is shown, for everyone here.
+/** «Фото и обложка» of an artist's ⋯: how the artist is shown, for everyone here.
  *
  * The round photo is one of those the catalog keeps with its records of the artist, the cover of an album of
  * theirs, or a picture of one's own. The wide picture over the page is found by a name, so every spelling of the
  * artist gives its own (a namesake's page may answer too): each is offered with the name it was found by and its
  * size, beside «без обложки» and a picture of one's own. «Как было» takes the choice back. `onChanged`: the page
  * is drawn anew. */
-export function ArtistLooksButton({ artistId, onChanged }: { artistId: number | null | undefined; onChanged: () => void }) {
-  const [open, setOpen] = useState(false);
-  if (!artistId) return null;
-  return (
-    <>
-      <button type="button" onClick={() => setOpen(true)} aria-label="Фото и обложка" title="Фото и обложка исполнителя" className="flex h-10 w-10 items-center justify-center rounded-full text-fg/80 hover:bg-fg/10 hover:text-fg">
-        <Icon name="edit" size={18} />
-      </button>
-      {open && <LooksWindow artistId={artistId} onChanged={onChanged} onClose={() => setOpen(false)} />}
-    </>
-  );
-}
-
-function LooksWindow({ artistId, onChanged, onClose }: { artistId: number; onChanged: () => void; onClose: () => void }) {
+export function ArtistLooksWindow({ artistId, onChanged, onClose }: { artistId: number; onChanged: () => void; onClose: () => void }) {
   const res = useAsync((s) => api.artistLooks(artistId, s), [artistId]);
   const [said, setSaid] = useState<ArtistLooksOut | null>(null);
   const [busy, setBusy] = useState<string | null>(null);

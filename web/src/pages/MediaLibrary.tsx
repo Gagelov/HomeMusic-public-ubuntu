@@ -9,8 +9,8 @@ import { ListBar } from '../components/ListBar';
 import { useListSearch, type Found } from '../components/ListSearch';
 import { CoverView, ownCover } from '../components/PlaylistMenu';
 import { SaveSelection, TagFilterChips } from '../components/Tags';
-import { ArtistLooksButton } from '../components/ArtistLooks';
-import { ArtistAlsoLine, ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
+import { ArtistLooksWindow } from '../components/ArtistLooks';
+import { ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, Cover, Empty, ErrorState, HeroSkeleton, IconButton, PageHeader, Sheet, SkeletonRows, Spinner, cx } from '../components/ui';
 import { fmtLength, tracksWord } from '../lib/format';
 import { playCount, usePlayCounts } from '../lib/stats';
@@ -493,7 +493,7 @@ export function NdArtistPage({ id }: { id: string }) {
   const [busy, setBusy] = useState(false);
   const row = useRememberScrollX(`nd-artist:${id}`);
   const names = useArtistCard(d && !d.catalog_ref ? d.artist.name : null);
-  const [naming, setNaming] = useState<'names' | 'projects' | 'menu' | null>(null);
+  const [naming, setNaming] = useState<'names' | 'projects' | 'looks' | 'menu' | null>(null);
   if (res.loading && !d) return (<><PageHeader hero title="Исполнитель" back="/artists" /><HeroSkeleton round buttons /></>);
   if (!d) return (<><PageHeader hero title="Исполнитель" back="/artists" /><ErrorState text={res.error ?? 'Исполнитель не найден'} onRetry={() => res.reload()} /></>);
   if (d.catalog_ref) return <ArtistPage refId={d.catalog_ref} />;
@@ -509,13 +509,13 @@ export function NdArtistPage({ id }: { id: string }) {
   };
   return (
     <div>
-      <ListBar title={artist.name} back="/artists" tracks={tracks} context="artist" extra={<ArtistLooksButton artistId={names.card?.id} onChanged={() => res.reload()} />} />
+      <ListBar title={artist.name} back="/artists" tracks={tracks} context="artist" />
       <Hero
         kicker="Исполнитель"
         cover={artist.cover_url ?? albums[0]?.cover_url ?? tracks[0]?.cover_small_url}
         round
         title={artist.name}
-        sub={<><ArtistAlsoLine card={names.card} className="pb-1 text-fg/85" />{[tracks.length ? tracksWord(tracks.length) : null, albums.length ? albumsWord(albums.length) : null, 'только в медиатеке'].filter(Boolean).join(' · ')}</>}
+        sub={[tracks.length ? tracksWord(tracks.length) : null, albums.length ? albumsWord(albums.length) : null, 'только в медиатеке'].filter(Boolean).join(' · ')}
         tracks={tracks}
         context="artist"
       />
@@ -551,7 +551,7 @@ export function NdArtistPage({ id }: { id: string }) {
       </div>
       <Sheet open={naming === 'menu'} onClose={() => setNaming(null)} title={artist.name}>
         <div className="-mx-1">
-          {([['names', 'edit', <span className="flex items-center gap-2">Имя и написания{artistHint(names.card) && <><span aria-hidden="true" className="h-2 w-2 rounded-full bg-info" /><span className="text-[13px] text-info">есть похожий исполнитель</span></>}</span>], ['projects', 'user', 'Другие проекты…']] as const).map(([which, icon, label]) => (
+          {([['names', 'edit', <span className="flex items-center gap-2">Имя и написания{artistHint(names.card) && <><span aria-hidden="true" className="h-2 w-2 rounded-full bg-info" /><span className="text-[13px] text-info">есть похожий исполнитель</span></>}</span>], ['projects', 'user', 'Другие проекты…'], ['looks', 'image', 'Фото и обложка']] as const).map(([which, icon, label]) => (
             <button key={which} type="button" onClick={() => setNaming(which)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5">
               <Icon name={icon} size={21} className="text-muted" />
               {label}
@@ -559,7 +559,8 @@ export function NdArtistPage({ id }: { id: string }) {
           ))}
         </div>
       </Sheet>
-      <ArtistWindow which={naming === 'menu' ? null : naming} card={names.card} onChange={names.set} onClose={() => setNaming(null)} />
+      <ArtistWindow which={naming === 'names' || naming === 'projects' ? naming : null} card={names.card} onChange={names.set} onClose={() => setNaming(null)} />
+      {naming === 'looks' && names.card && <ArtistLooksWindow artistId={names.card.id} onChanged={() => res.reload()} onClose={() => setNaming(null)} />}
 
       {tracks.length > 0 && (
         <section aria-label="Треки">

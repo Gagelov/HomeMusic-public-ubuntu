@@ -19,12 +19,6 @@ export function useArtistCard(name: string | null | undefined, ref?: string | nu
 const SOURCE: Record<string, string> = { catalog: 'каталог', library: 'из файлов', manual: 'вручную' };
 const enc = encodeURIComponent;
 
-/** «LSP, Lsp» — the artist's other spellings, right under the name (nothing: there are none). */
-export function ArtistAlsoLine({ card, className }: { card: ArtistCardOut | null; className?: string }) {
-  const also = (card?.names ?? []).filter((n) => !n.main).map((n) => n.name);
-  return also.length ? <div className={className} title="Другие написания имени">{also.join(', ')}</div> : null;
-}
-
 /** An artist's round picture in a button: the catalog's or an album's cover — else the first letter of the name. */
 function Avatar({ name, src }: { name: string; src?: string | null }) {
   return (

@@ -4,9 +4,9 @@ import type { AlbumOut, ArtistPageOut, TrackOut } from '../api/types';
 import { ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
-import { ArtistLooksButton } from '../components/ArtistLooks';
+import { ArtistLooksWindow } from '../components/ArtistLooks';
 import { ArtistSources } from '../components/ArtistSources';
-import { ArtistAlsoLine, ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
+import { ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
 import { setDisliked, useDisliked } from '../lib/dislikes';
@@ -67,7 +67,7 @@ export function ArtistNamedPage({ name }: { name: string }) {
 export function ArtistPage({ refId }: { refId: string }) {
   const res = useAsync((s) => api.artist(refId, s), [refId], true, `artist:${refId}`);
   const [menu, setMenu] = useState(false);
-  const [naming, setNaming] = useState<'names' | 'projects' | null>(null); // a window of the artist's names
+  const [naming, setNaming] = useState<'names' | 'projects' | 'looks' | null>(null); // a window of the artist's ⋯
   const [busy, setBusy] = useState<string | null>(null);
   const d: ArtistPageOut | undefined = res.data;
   const artist = d?.artist;
@@ -139,12 +139,11 @@ export function ArtistPage({ refId }: { refId: string }) {
     <div className={hidden ? 'grayscale' : undefined}>
       {/* the wide picture: before everything, so it stays at the top of the window while the page goes over it */}
       {d.banner_url && <BannerPicture src={d.banner_url} />}
-      {/* the pencil at the top of the page: the artist's photo and wide picture, as everyone sees them */}
-      <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" extra={<ArtistLooksButton artistId={names.card?.id} onChanged={() => res.reload()} />} />
+      <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" />
       {d.banner_url ? (
-        <Banner name={shownName} also={<ArtistAlsoLine card={names.card} className="mt-1 text-sm text-fg/85 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)] lg:text-base" />} sub={facts} tracks={hidden ? undefined : top} />
+        <Banner name={shownName} sub={facts} tracks={hidden ? undefined : top} />
       ) : (
-        <Hero kicker="Исполнитель" cover={artist.picture_url} round title={shownName} sub={<><ArtistAlsoLine card={names.card} className="pb-1 text-fg/85" />{facts}</>} tracks={hidden ? undefined : top} context="artist" />
+        <Hero kicker="Исполнитель" cover={artist.picture_url} round title={shownName} sub={facts} tracks={hidden ? undefined : top} context="artist" />
       )}
 
       {/* what goes up over the picture has the page's own colour under it */}
@@ -226,11 +225,16 @@ export function ArtistPage({ refId }: { refId: string }) {
             setMenu(false);
             setNaming('projects');
           })}
+          {names.card && item('image', 'Фото и обложка', () => {
+            setMenu(false);
+            setNaming('looks');
+          })}
           {item('link', 'Скопировать ссылку', () => void share())}
           {item('ban', 'Не включать этого исполнителя', () => void hide(), true)}
         </div>
       </Sheet>
-      <ArtistWindow which={naming} card={names.card} onChange={names.set} onClose={() => setNaming(null)} />
+      <ArtistWindow which={naming === 'looks' ? null : naming} card={names.card} onChange={names.set} onClose={() => setNaming(null)} />
+      {naming === 'looks' && names.card && <ArtistLooksWindow artistId={names.card.id} onChanged={() => res.reload()} onClose={() => setNaming(null)} />}
     </div>
   );
 }
@@ -276,7 +280,7 @@ function BannerPicture({ src }: { src: string }) {
 /** The head of the page over that picture: as tall as it, reaching up under the bar with «back»; the name in large
  * over its darkened foot, what is known of the artist under the name, ▶ and the shuffle beside it. The round photo
  * is not shown then — it is the same person twice. */
-function Banner({ name, also, sub, tracks }: { name: string; /** the other spellings, right under the name */ also?: ReactNode; sub: ReactNode; tracks?: readonly TrackOut[] }) {
+function Banner({ name, sub, tracks }: { name: string; sub: ReactNode; tracks?: readonly TrackOut[] }) {
   return (
     <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex items-end', BANNER_H)}>
       <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-t from-bg via-bg/45 to-black/15" />
@@ -286,7 +290,6 @@ function Banner({ name, also, sub, tracks }: { name: string; /** the other spell
           <h2 data-list-title className="line-clamp-2 break-words text-4xl font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)] lg:text-7xl">
             {name}
           </h2>
-          {also}
           {sub && <div className="mt-2 text-sm text-fg/85 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)]">{sub}</div>}
         </div>
         {!!tracks?.length && <PlayPair tracks={tracks} context="artist" />}
