@@ -2,7 +2,7 @@ import { askForQueue } from '../lib/playerQueue';
 import { openTagsSheet, tagKey } from '../lib/tags';
 import type { CSSProperties } from 'react';
 import { fmtDuration } from '../lib/format';
-import { artistTo, creditedOf, cycleRepeat, cycleShuffle, hasNext, hasPrev, next, prev, setVolume, toggle, useListen } from '../lib/listen';
+import { isUpload, artistTo, creditedOf, cycleRepeat, cycleShuffle, hasNext, hasPrev, next, prev, setVolume, toggle, useListen } from '../lib/listen';
 import { useSeek } from '../lib/seek';
 import { Link, enc } from '../lib/router';
 import { openShare } from '../lib/shareTrack';
@@ -77,7 +77,7 @@ export function DesktopPlayer() {
                     doing about it */}
                 <PlayLine phase={phase} info={info} error={error} className="block truncate text-[11px] leading-4 text-dim" />
               </span>
-              <SaveButton songId={info?.nd_song_id} refId={track.ref} listKey={tagKey({ library_track_id: info?.track_id ?? track.library_track_id })} title={track.title} data={{ ...track }} className="ml-1 !w-9" />
+              {!isUpload(track) && <SaveButton songId={info?.nd_song_id} refId={track.ref} listKey={tagKey({ library_track_id: info?.track_id ?? track.library_track_id })} title={track.title} data={{ ...track }} className="ml-1 !w-9" />}
             </>
           ) : (
             <span className="flex items-center gap-3 text-sm text-dim">
@@ -136,10 +136,10 @@ export function DesktopPlayer() {
         </div>
 
         <div className="flex min-w-0 items-center justify-end gap-1">
-          {track && <TrackMenuButton track={{ ...track, nd_song_id: info?.nd_song_id, library_track_id: info?.track_id ?? track.library_track_id }} className="!h-9 !w-9" inPlayer lean noTags />}
-          {track && <IconButton icon="share" size={18} label="Поделиться" onClick={() => openShare({ title: track.title, artist: track.artist, ref: track.ref, nd_song_id: info?.nd_song_id })} className="!h-9 !w-9 text-muted hover:text-fg" />}
+          {track && !isUpload(track) && <TrackMenuButton track={{ ...track, nd_song_id: info?.nd_song_id, library_track_id: info?.track_id ?? track.library_track_id }} className="!h-9 !w-9" inPlayer lean noTags />}
+          {track && !isUpload(track) && <IconButton icon="share" size={18} label="Поделиться" onClick={() => openShare({ title: track.title, artist: track.artist, ref: track.ref, nd_song_id: info?.nd_song_id })} className="!h-9 !w-9 text-muted hover:text-fg" />}
           {/* the tags of the track: its own mark here, not a line of ⋯ (a track the library has not got has none) */}
-          {track && (
+          {track && !isUpload(track) && (
             <IconButton
               icon="tag"
               size={18}

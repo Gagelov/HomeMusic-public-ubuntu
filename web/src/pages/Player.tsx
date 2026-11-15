@@ -13,7 +13,7 @@ import { fmtDuration, tracksWord } from '../lib/format';
 import { queueAsked } from '../lib/playerQueue';
 import { useSeek } from '../lib/seek';
 import { SeekLine } from '../components/SeekLine';
-import {
+import { isUpload,
   cycleRepeat,
   cycleShuffle,
   downloadRef,
@@ -229,7 +229,7 @@ export function PlayerPage() {
         ) : (
           <IconButton icon="download" label="Скачать в библиотеку" onClick={download} busy={busy} />
         )}
-        <SaveButton songId={info?.nd_song_id} refId={track.ref} listKey={tagKey({ library_track_id: info?.track_id ?? track.library_track_id })} title={track.title} data={{ ...track }} size={26} />
+        {!isUpload(track) && <SaveButton songId={info?.nd_song_id} refId={track.ref} listKey={tagKey({ library_track_id: info?.track_id ?? track.library_track_id })} title={track.title} data={{ ...track }} size={26} />}
       </div>
 
       {track.rec && (
@@ -291,9 +291,9 @@ export function PlayerPage() {
       </div>
 
       <div className="flex items-center justify-between px-4 pt-2">
-        <TrackMenuButton track={{ ...track, nd_song_id: info?.nd_song_id, library_track_id: info?.track_id ?? track.library_track_id }} inPlayer lean />
+        {isUpload(track) ? <span /> : <TrackMenuButton track={{ ...track, nd_song_id: info?.nd_song_id, library_track_id: info?.track_id ?? track.library_track_id }} inPlayer lean />}
         <div className="flex items-center">
-          <IconButton icon="share" label="Поделиться" onClick={() => openShare({ title: track.title, artist: track.artist, ref: track.ref, nd_song_id: info?.nd_song_id })} className="text-muted" />
+          {!isUpload(track) && <IconButton icon="share" label="Поделиться" onClick={() => openShare({ title: track.title, artist: track.artist, ref: track.ref, nd_song_id: info?.nd_song_id })} className="text-muted" />}
           <IconButton icon="queue" label={queueOpen ? 'Скрыть очередь' : 'Очередь'} aria-pressed={queueOpen} onClick={() => setQueueOpen((v) => !v)} className={queueOpen ? '!text-accent' : 'text-muted'} />
         </div>
       </div>

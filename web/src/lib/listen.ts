@@ -53,6 +53,11 @@ export interface ListenTrack {
   duration_s?: number | null;
 }
 
+/** A file on «Загрузить файлы» that is played before it is brought in (`up:<upload>`): it is no track of the library
+ * or of the catalog yet, so nothing is done with it but listening — the players show none of a track's buttons (keep,
+ * tags, share, the menu). */
+export const isUpload = (t: { ref: string } | null | undefined): boolean => !!t?.ref.startsWith('up:');
+
 /** The page of a credited artist of a playing track: the catalog's when the track says which (`ref`), the library's
  * (`nd`), else the one found by the name (`pages/Artist.tsx`, `ArtistNamedPage`) — a wave, a recommendation or a
  * line of the history names its artists and nothing more. Null: there is not even a name. */
