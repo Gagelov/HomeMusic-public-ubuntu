@@ -375,12 +375,17 @@ export function UploadPage() {
     const row = (u: UploadOut) => rows[u.id] ?? rowFromUpload(u);
     const releases = new Map<string, string>(); // name|artist -> the release's key
     const keys = new Map<number, string | null>();
+    // what a file itself calls its album: files that say the same are one album, whatever the catalog calls its artist
+    const ownAlbum = (u: UploadOut) => (u.single || !str(u.tags.album).trim() ? null : `${low(str(u.tags.album))}|${low(str(u.tags.album_artist) || u.artists?.[0])}`);
     for (const u of uploads) {
       const a = usesCatalog(u, row(u)) ? catAlbum(u) : null;
       if (!a) continue;
       const k = `c|${low(a)}|${low(u.match?.album_artist ?? u.match?.artist)}`;
       keys.set(u.id, k);
       releases.set(`${low(a)}|${low(u.match?.album_artist ?? u.match?.artist)}`, k);
+      const own = ownAlbum(u);
+      // …so a file's own album leads to the release its neighbours went into — when the release is of that name
+      if (own && same(str(u.tags.album), a) && !releases.has(own)) releases.set(own, k);
     }
     for (const u of uploads) {
       if (keys.has(u.id)) continue;
@@ -391,7 +396,7 @@ export function UploadPage() {
         continue;
       }
       const by = str(u.tags.album_artist) || u.artists?.[0] || r.artist;
-      keys.set(u.id, releases.get(`${low(a)}|${low(by)}`) ?? `o|${low(a)}|${low(by)}`);
+      keys.set(u.id, releases.get(`${low(a)}|${low(by)}`) ?? (same(a, str(u.tags.album)) ? releases.get(ownAlbum(u) ?? '') : undefined) ?? `o|${low(a)}|${low(by)}`);
     }
     const groups = new Map<string, Group>();
     for (const u of uploads) {

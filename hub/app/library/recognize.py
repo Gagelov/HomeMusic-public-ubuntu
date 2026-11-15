@@ -50,6 +50,7 @@ def single_album(album: str | None, title: str) -> bool:
     return not a or a in ("single", "singles", "сингл", "синглы") or a.endswith("- single") or a == " ".join(title.split()).casefold()
 
 
+_JOINT = re.compile(r"\s+(?:&|x|X|и|and|vs\.?)\s+")
 RELEASES_MAX = 80  # of an artist's releases gone through, the newest first
 _released: dict[str, list[Any]] = {}  # an artist's name -> the tracks of their releases (for the Hub's run: a folder
 _RELEASED_KEPT = 400                  # of one artist's files asks once)
@@ -65,9 +66,16 @@ async def _released_by(line: str) -> list[Any]:
         return _released[key]
     out: list[Any] = []
     try:
-        who = normalize_artist(name)
-        artists = [a for a in (await svc.deezer.search(_words(name), kinds=("artist",), limit=8)).artists
-                   if artist_sim(who, normalize_artist(a.name)) >= get_settings().cfg.matching.artist_min_ratio][:2]
+        # a file may name two artists as one («Medoi The Maid & Lieath») where the catalog files the release under
+        # the first: the whole name is looked for, then its first part
+        names = list(dict.fromkeys([name, _JOINT.split(name)[0].strip()]))
+        artists: list[Any] = []
+        for one in names:
+            who = normalize_artist(one)
+            artists = [a for a in (await svc.deezer.search(_words(one), kinds=("artist",), limit=8)).artists
+                       if artist_sim(who, normalize_artist(a.name)) >= get_settings().cfg.matching.artist_min_ratio][:2]
+            if artists:
+                break
         gate = asyncio.Semaphore(4)
 
         async def tracks(album: Any) -> list[Any]:
