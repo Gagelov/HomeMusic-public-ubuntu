@@ -11,7 +11,7 @@ import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from
 import { startDownload } from '../lib/actions';
 import { useDesktop } from '../lib/desktop';
 import { setDisliked, useDisliked } from '../lib/dislikes';
-import { tracksWord } from '../lib/format';
+import { plural, tracksWord } from '../lib/format';
 import { useAsync, useRememberScrollX } from '../lib/hooks';
 import { imageUrl } from '../lib/img';
 import { Link, enc, navigate } from '../lib/router';
@@ -331,6 +331,8 @@ function Discography({ artistRef, releases }: { artistRef: string; releases: Alb
         <Link to={to} className="hover:underline">
           Дискография
         </Link>
+        {/* how many there are in all — every release of every record a catalog keeps of the artist, each once */}
+        <span className="ml-2 text-xs font-normal text-dim">{releases.length} {plural(releases.length, ['релиз', 'релиза', 'релизов'])}</span>
       </h2>
       {kinds.length > 2 && (
         <div className="flex gap-2 px-4 pb-3 lg:px-6">
