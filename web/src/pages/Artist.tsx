@@ -76,6 +76,14 @@ export function ArtistPage({ refId }: { refId: string }) {
   const artist = d?.artist;
   const target = { targetType: 'artist' as const, ref: refId, data: { name: artist?.name ?? '' } };
   const followed = useLiked(target);
+  // «Подписаться» just pressed: the button says so ('said'), then folds away ('folding'), then is gone
+  const [leaving, setLeaving] = useState<'said' | 'folding' | null>(null);
+  useEffect(() => {
+    if (!leaving) return;
+    // (the artist is not followed after all — it did not work, or was taken back at once: the button stays)
+    const t = window.setTimeout(() => setLeaving(leaving === 'said' && followed ? 'folding' : null), leaving === 'said' ? 1100 : 350);
+    return () => window.clearTimeout(t);
+  }, [leaving, followed]);
   const hidden = useDisliked({ artist_ref: refId });
   const likedBy = useLikedBy(artist?.name, refId);
 
@@ -94,6 +102,8 @@ export function ArtistPage({ refId }: { refId: string }) {
   // how many of them, at the end, are Last.fm's
   const lfm = Math.max(0, Math.min(d.top_from_lastfm ?? 0, top.length - (d.top_tracks.length - (d.top_from_lastfm ?? 0))));
 
+  /** «Подписаться»: the button says «Вы подписаны» for a moment, then folds away — it is pressed once, and from
+   * then on a mark by the name says it; a word at the foot of the window takes a slip of the finger back. */
   const follow = async () => {
     setBusy('follow');
     try {
@@ -101,6 +111,13 @@ export function ArtistPage({ refId }: { refId: string }) {
     } finally {
       setBusy(null);
     }
+    setLeaving('said');
+    toast(`Вы подписаны: ${shownName}. Новые релизы появятся в «Релизах»`, 'success', { label: 'Отменить', run: () => void toggleLike(target) });
+  };
+  const unfollow = async () => {
+    setMenu(false);
+    await toggleLike(target);
+    toast(`Вы отписались: ${shownName}`, 'info', { label: 'Вернуть', run: () => void toggleLike(target) });
   };
   const downloadAll = async () => {
     setMenu(false);
@@ -145,7 +162,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           it. The wide one where the artist has it; else their own photo, out of focus — the round photo stands on it */}
       {(d.banner_url || photo) && <BannerPicture src={(d.banner_url ?? photo) as string} blurred={!d.banner_url} />}
       <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" />
-      <Banner name={shownName} photo={d.banner_url ? undefined : (photo ?? null)} tracks={hidden ? undefined : top} />
+      <Banner name={shownName} followed={followed} photo={d.banner_url ? undefined : (photo ?? null)} tracks={hidden ? undefined : top} />
 
       {/* what goes up over the picture has the page's own colour under it */}
       <div className="relative z-[1] bg-bg">
@@ -163,17 +180,23 @@ export function ArtistPage({ refId }: { refId: string }) {
         <div className="flex items-center px-4 pb-3 lg:px-6">
           {/* the buttons go sideways where they do not fit; the ⋯ stays at the right edge, whatever the width */}
           <div className="no-scrollbar -my-1 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1 pr-5 [mask-image:linear-gradient(to_right,#000_calc(100%-1.25rem),transparent)] [&>*]:shrink-0">
-          <button
-            type="button"
-            onClick={() => void follow()}
-            disabled={busy === 'follow'}
-            aria-pressed={followed}
-            title={followed ? 'Вы подписаны: новые релизы появятся в «Релизах». Нажмите, чтобы отписаться' : 'Подписаться: новые релизы появятся в «Релизах»'}
-            className={cx('flex h-9 items-center gap-1.5 rounded-full border px-4 text-sm font-semibold transition active:scale-95', followed ? 'border-accent text-accent' : 'border-fg/40 text-fg hover:border-fg')}
-          >
-            {busy === 'follow' ? <Spinner size={14} /> : followed && <Icon name="check" size={15} stroke={3} />}
-            {followed ? 'Вы подписаны' : 'Подписаться'}
-          </button>
+          {/* pressed once: an artist followed has no such button — the mark by the name says it, the ⋯ takes it back */}
+          {(!followed || leaving) && (
+            <button
+              type="button"
+              onClick={() => void follow()}
+              disabled={busy === 'follow' || followed}
+              title="Подписаться: новые релизы появятся в «Релизах»"
+              className={cx(
+                'flex h-9 items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-full border text-sm font-semibold transition-all duration-300 ease-out active:scale-95',
+                followed ? 'border-accent text-accent' : 'border-fg/40 text-fg hover:border-fg',
+                leaving === 'folding' ? '-mr-2 max-w-0 border-transparent px-0 opacity-0' : 'max-w-56 px-4',
+              )}
+            >
+              {busy === 'follow' ? <Spinner size={14} /> : followed && <Icon name="check" size={15} stroke={3} />}
+              {followed ? 'Вы подписаны' : 'Подписаться'}
+            </button>
+          )}
           {likedBy > 0 && (
             <Link
               to={`/liked?artist=${enc(artist.name)}&ref=${enc(artist.ref)}`}
@@ -225,6 +248,7 @@ export function ArtistPage({ refId }: { refId: string }) {
             void startWave({ artist_ref: artist.ref }, 'artist_page');
           })}
           {item('download', 'Скачать всё', () => void downloadAll())}
+          {followed && item('x', 'Отписаться', () => void unfollow())}
           {names.card && item('edit', <span className="flex items-center gap-2">Имя и написания{artistHint(names.card) && <><span aria-hidden="true" className="h-2 w-2 rounded-full bg-info" /><span className="text-[13px] text-info">есть похожий исполнитель</span></>}</span>, () => {
             setMenu(false);
             setNaming('names');
@@ -290,7 +314,7 @@ function BannerPicture({ src, blurred }: { src: string; /** not a wide picture b
  * they keep in the bar once the page is scrolled. Over a wide picture the round photo is not shown — it is the same
  * person twice; where there is none (`photo` given: the address, or null for no photo at all) the round photo
  * stands on the ground made of it: in the middle on a phone, before the name on a computer. */
-function Banner({ name, photo, tracks }: { name: string; photo?: string | null; tracks?: readonly TrackOut[] }) {
+function Banner({ name, followed, photo, tracks }: { name: string; /** the listener follows the artist: a mark by the name */ followed?: boolean; photo?: string | null; tracks?: readonly TrackOut[] }) {
   const round = 'absolute left-1/2 top-[calc(3.75rem+env(safe-area-inset-top))] h-28 w-28 shrink-0 -translate-x-1/2 rounded-full shadow-xl lg:static lg:h-44 lg:w-44 lg:translate-x-0';
   return (
     <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex items-end', BANNER_H)}>
@@ -308,6 +332,11 @@ function Banner({ name, photo, tracks }: { name: string; photo?: string | null; 
           <div className="hidden text-sm text-fg/80 lg:block">Исполнитель</div>
           <h2 data-list-title className="line-clamp-2 break-words text-4xl font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)] lg:text-7xl">
             {name}
+            {followed && (
+              <span title="Вы подписаны: новые релизы появятся в «Релизах»" aria-label="Вы подписаны" className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent align-middle text-black [text-shadow:none] lg:ml-3 lg:h-7 lg:w-7">
+                <Icon name="check" size={13} stroke={3.5} />
+              </span>
+            )}
           </h2>
         </div>
         {!!tracks?.length && <PlayPair tracks={tracks} context="artist" />}
