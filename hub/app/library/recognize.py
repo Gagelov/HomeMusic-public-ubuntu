@@ -133,7 +133,10 @@ def _weigh(found: list[Any], artist: str, raw_title: str, album: str | None, dur
                 and bool(t.duration_s and top.duration_s and abs(t.duration_s - top.duration_s) <= SAME_LENGTH_S))
 
     rivals = [scored[0], *[(t, sc) for t, sc in scored[1:] if not same_song(t)]]
-    return scored, classify_scores([sc.total for _, sc in rivals], cfg)
+    verdict = classify_scores([sc.total for _, sc in rivals], cfg)
+    if verdict == "not_found" and _on_the_album(top, scored[0][1], split_version(raw_title)[0] or raw_title, album):
+        verdict = "confirm"  # a song of this name on the album the file names is worth a look, whatever it scores
+    return scored, verdict
 
 
 _kinds: dict[str, str] = {}  # a track's ref -> the kind of the release it stands on (as `_released_by` read it)
@@ -179,14 +182,19 @@ def _theirs(t: Any, sc: Any, title: str, album: str | None, duration: int | None
             return False
     if sc.artist >= cfg.artist_min_ratio:
         return True
-    return _other_name(t, sc, title, album, duration)
+    return _on_the_album(t, sc, title, album)
 
 
 def _other_name(t: Any, sc: Any, title: str, album: str | None, duration: int | None) -> bool:
     """The record is the file's under another name of its artist: the same name of the song, on the album the file
     names, over the same length — three things that do not agree by chance."""
-    return (_same_name(t.album_title, album) and (sc.title >= 0.95 or _goes_on(title, t.title))
-            and bool(duration and t.duration_s and abs(duration - t.duration_s) <= SAME_LENGTH_S))
+    return _on_the_album(t, sc, title, album) and bool(duration and t.duration_s and abs(duration - t.duration_s) <= SAME_LENGTH_S)
+
+
+def _on_the_album(t: Any, sc: Any, title: str, album: str | None) -> bool:
+    """A song of the file's name on the album the file names: likely the file's song, whoever the catalog credits
+    it to and whatever its length — if not surely (`_other_name`), then to be settled by the sound."""
+    return _same_name(t.album_title, album) and (sc.title >= 0.95 or _goes_on(title, t.title))
 
 
 def _goes_on(title: str, theirs: str) -> bool:
@@ -226,7 +234,12 @@ async def of_file(tags: dict[str, Any], file_name: str, duration_s: float | None
     if has_cyrillic(wanted):
         asks.append(f"{first} {to_latin(wanted)}")
     asks.append(wanted)
-    album = None if single_album(tags.get("album"), raw_title) else tags.get("album")
+    # the album the file names, to look for the song on: a name of its own — or the track's (an album has a song
+    # of its name), only not «Single» and the like, which name nothing
+    album = None if single_album(tags.get("album"), "") else str(tags.get("album"))
+    # …and the album it names as its release: not the track's own name — that is how a single is tagged, and a
+    # single's song is filed on its album where it has one
+    release = None if single_album(tags.get("album"), raw_title) else album
     cfg = get_settings().cfg.matching
     found, seen, failed, scored, verdict = [], set(), None, [], "not_found"
     for ask in dict.fromkeys(a for a in asks if a.strip()):
@@ -253,8 +266,8 @@ async def of_file(tags: dict[str, Any], file_name: str, duration_s: float | None
             scored, verdict = _weigh(found, artist, raw_title, album, duration, version, cfg)
     if verdict == "not_found":
         return {"state": "none", "why": "каталог не ответил" if failed and not found else None, "meta": None}
-    top = _of_album(scored, album)
-    if not _same_name(top.album_title, album):
+    top = _of_album(scored, release)
+    if not _same_name(top.album_title, release):
         # The record found stands on a release the file does not name — the search gives a song's single before its
         # album. The song's other releases are gone through, among everything the artist put out: the one the file
         # names is the file's; where it names none of them (no album in its tags, or one the catalog does not
@@ -267,7 +280,7 @@ async def of_file(tags: dict[str, Any], file_name: str, duration_s: float | None
             again, verdict_again = _weigh(found, artist, raw_title, album, duration, version, cfg)
         twins = [t for t, _ in again if _words(t.title).casefold() == _words(top.title).casefold()
                  and bool(t.duration_s and top.duration_s and abs(t.duration_s - top.duration_s) <= SAME_LENGTH_S)]
-        named = next((t for t in twins if _same_name(t.album_title, album)), None)
+        named = next((t for t in twins if _same_name(t.album_title, release)), None)
         best = named or min(twins, key=_release_rank, default=top)
         if best is not top and (named is not None or _release_rank(best) < _release_rank(top)):
             scored, verdict, top = again, verdict_again if verdict_again != "not_found" else verdict, best
