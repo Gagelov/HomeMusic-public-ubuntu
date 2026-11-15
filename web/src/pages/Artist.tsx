@@ -4,6 +4,7 @@ import type { AlbumOut, ArtistPageOut, TrackOut } from '../api/types';
 import { ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
+import { ArtistLooksButton } from '../components/ArtistLooks';
 import { ArtistAlsoLine, ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
@@ -139,7 +140,8 @@ export function ArtistPage({ refId }: { refId: string }) {
     <div className={hidden ? 'grayscale' : undefined}>
       {/* the wide picture: before everything, so it stays at the top of the window while the page goes over it */}
       {d.banner_url && <BannerPicture src={d.banner_url} />}
-      <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" />
+      {/* the pencil at the top of the page: the artist's photo and wide picture, as everyone sees them */}
+      <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" extra={<ArtistLooksButton artistId={names.card?.id} onChanged={() => res.reload()} />} />
       {d.banner_url ? (
         <Banner name={shownName} also={<ArtistAlsoLine card={names.card} className="mt-1 text-sm text-fg/85 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)] lg:text-base" />} sub={facts} tracks={hidden ? undefined : top} />
       ) : (

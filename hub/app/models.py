@@ -1136,6 +1136,23 @@ class AlbumArtist(Base):
     artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
 
 
+class ArtistLook(Base):
+    """How an artist is shown, as the listeners chose (app/library/looks.py): the round photo and the wide picture
+    over their page. `*_choice` None: as by itself. The pictures chosen are kept here (JPEG)."""
+
+    __tablename__ = "artist_looks"
+
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+    photo_choice: Mapped[str | None] = mapped_column(String(80))  # profile:<ref> / album / own
+    photo_image: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)  # a picture of one's own (kept though another is chosen)
+    photo_key: Mapped[str | None] = mapped_column(String(16))
+    banner_choice: Mapped[str | None] = mapped_column(String(320))  # name:<spelling> / none / own
+    banner_image: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    banner_key: Mapped[str | None] = mapped_column(String(16))
+    by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class ArtistLink(Base):
     """Two artists that are projects of one person: each is named on the other's page. `low_id` < `high_id`."""
 

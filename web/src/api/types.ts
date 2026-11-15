@@ -1233,6 +1233,25 @@ export interface ArtistCardOut {
   rewriting?: boolean;
 }
 
+/** The photos and the wide pictures an artist may be shown with, and which is chosen (none: as by itself — the
+ * photo of the catalog's record the page is of, the wide picture the Hub finds). */
+export interface ArtistLooksOut {
+  id: number;
+  name: string;
+  photo?: string | null;
+  banner?: string | null;
+  photos: ArtistLookOption[];
+  banners: ArtistLookOption[];
+}
+
+export interface ArtistLookOption {
+  /** what is sent back to choose it */
+  choice: string;
+  label: string;
+  note: string;
+  url: string;
+}
+
 /** Another artist, as a page names them: the catalog's record that leads to their page, and a picture. */
 export interface ArtistBriefOut extends ArtistPickOut {
   ref?: string | null;

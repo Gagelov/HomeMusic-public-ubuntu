@@ -221,3 +221,73 @@ async def test_a_catalog_keeps_several_records_of_one_artist_and_a_namesake_is_s
         assert not hid("LSP", "dz:3")  # the namesake's own record says it is somebody else
     assert (await c.delete("/api/dislikes", params={"artist_ref": "dz:1"})).json() == {"removed": 1}
     assert (await c.get("/api/dislikes")).json() == []
+
+
+async def test_how_an_artist_looks_is_chosen_for_everyone(env, monkeypatch):
+    """The round photo and the wide picture of an artist are chosen: among what is found, none, or one's own."""
+    import io
+
+    from PIL import Image
+
+    from app.api import catalog
+    from app.catalog import banners
+    from app.catalog.models import ArtistPage, CatalogArtist
+
+    def picture(size):
+        out = io.BytesIO()
+        Image.new("RGB", size, (20, 40, 200)).save(out, "PNG")
+        return out.getvalue()
+
+    page = ArtistPage(artist=CatalogArtist(ref="dz:1", source="dz", id="1", name="ЛСП", nb_fans=5,
+                                           picture_url="https://img.test/big.jpg", picture_small_url="https://img.test/small.jpg"))
+
+    async def get_artist_page(ref):
+        return page.model_copy(deep=True)
+
+    async def find(artist, titles):  # the wide picture is found by a name: one spelling has it, another has not
+        return picture((1200, 500)) if artist.name == "ЛСП" else None
+
+    async def url_of(artist, titles, wait_s=3.0):
+        return "/found-by-itself"
+
+    monkeypatch.setattr(catalog, "get_artist_page", get_artist_page)
+    monkeypatch.setattr(banners, "find", find)
+    monkeypatch.setattr(banners, "url_of", url_of)
+    c = env["client"]
+
+    async def shown():
+        d = (await c.get("/api/catalog/artist/dz:1")).json()
+        return d["artist"]["picture_url"], d["banner_url"]
+
+    assert await shown() == ("https://img.test/big.jpg", "/found-by-itself")
+    a = (await c.get("/api/artists/of", params={"ref": "dz:1"})).json()
+    await c.post(f"/api/artists/{a['id']}/names", json={"name": "LSP"})
+    looks = (await c.get(f"/api/artists/{a['id']}/looks")).json()
+    assert (looks["photo"], looks["banner"]) == (None, None)
+    assert [b["choice"] for b in looks["banners"]] == ["name:ЛСП", "name:LSP"]
+    found = looks["banners"][0]["url"]
+    assert (await c.get(found)).headers["content-type"] == "image/jpeg" and (await c.get(looks["banners"][1]["url"])).status_code == 404
+
+    r = await c.put(f"/api/artists/{a['id']}/banner", json={"choice": "none"})
+    assert r.status_code == 200 and r.json()["banner"] == "none" and (await shown())[1] is None
+    assert (await c.put(f"/api/artists/{a['id']}/banner", json={"choice": "name:LSP"})).status_code == 422  # nothing by it
+    assert (await c.put(f"/api/artists/{a['id']}/banner", json={"choice": "name:Чужой"})).status_code == 422  # not a spelling of theirs
+    r = await c.put(f"/api/artists/{a['id']}/banner", json={"choice": "name:ЛСП"})
+    assert r.status_code == 200, r.text
+    url = (await shown())[1]
+    assert url.startswith(f"/api/artists/{a['id']}/banner?v=") and (await c.get(url)).headers["content-type"] == "image/jpeg"
+    r = await c.post(f"/api/artists/{a['id']}/banner", files={"file": ("b.png", picture((3000, 900)), "image/png")})
+    assert r.status_code == 200 and r.json()["banner"] == "own" and "own" in [b["choice"] for b in r.json()["banners"]]
+    assert Image.open(io.BytesIO((await c.get((await shown())[1])).content)).width == 1920  # kept no wider than a page
+
+    r = await c.post(f"/api/artists/{a['id']}/photo", files={"file": ("p.png", picture((900, 900)), "image/png")})
+    assert r.status_code == 200 and r.json()["photo"] == "own", r.text
+    photo = (await shown())[0]
+    assert photo.startswith(f"/api/artists/{a['id']}/photo?v=") and Image.open(io.BytesIO((await c.get(photo)).content)).size == (640, 640)
+    assert (await c.post(f"/api/artists/{a['id']}/photo", files={"file": ("p.txt", b"not a picture", "text/plain")})).status_code == 422
+    assert (await c.put(f"/api/artists/{a['id']}/photo", json={"choice": "profile:dz:999"})).status_code == 422
+    # back to how it was by itself
+    await c.put(f"/api/artists/{a['id']}/photo", json={"choice": None})
+    await c.put(f"/api/artists/{a['id']}/banner", json={"choice": None})
+    assert await shown() == ("https://img.test/big.jpg", "/found-by-itself")
+

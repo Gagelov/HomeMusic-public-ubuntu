@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -190,3 +191,140 @@ async def apart(artist_id: int, body: OtherIn, user: User = Depends(current_user
     a = await _artist(s, artist_id)
     await artists.apart(s, a, await _other(s, body))
     return await _done(s, user, a)
+
+
+# --- how an artist looks (app/library/looks.py) ------------------------------------------------------------------
+
+
+class LookOptionOut(BaseModel):
+    choice: str  # what to send back to choose it
+    label: str
+    note: str = ""
+    url: str  # the picture
+
+
+class LooksOut(BaseModel):
+    """The photos and the wide pictures an artist may be shown with, and which is chosen (None: as by itself — the
+    photo of the catalog's record the page is of, the wide picture the Hub finds)."""
+
+    id: int
+    name: str
+    photo: str | None = None
+    banner: str | None = None
+    photos: list[LookOptionOut] = []
+    banners: list[LookOptionOut] = []
+
+
+class ChoiceIn(BaseModel):
+    choice: str | None = Field(default=None, max_length=320)
+
+
+async def _looks(s: AsyncSession, user: User, a: Artist) -> dict[str, Any]:
+    from app.library import looks
+
+    out = await looks.options(s, a)
+    await s.commit()
+    bus.publish(user.id, "library", {"kind": "changed", "album_id": None})
+    return out
+
+
+@router.get("/{artist_id}/looks", response_model=LooksOut)
+async def get_looks(artist_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    from app.library import looks
+
+    return await looks.options(s, await _artist(s, artist_id))
+
+
+@router.put("/{artist_id}/photo", response_model=LooksOut)
+async def put_photo(artist_id: int, body: ChoiceIn, user: User = Depends(current_user),
+                    s: AsyncSession = Depends(get_session, scope="function")):
+    from app.library import looks
+
+    a = await _artist(s, artist_id)
+    try:
+        await looks.choose_photo(s, user.id, a, body.choice)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return await _looks(s, user, a)
+
+
+@router.post("/{artist_id}/photo", response_model=LooksOut)
+async def upload_photo(artist_id: int, file: UploadFile = File(...), user: User = Depends(current_user),
+                       s: AsyncSession = Depends(get_session, scope="function")):
+    from app.library import looks
+
+    a = await _artist(s, artist_id)
+    try:
+        await looks.choose_photo(s, user.id, a, "own", await file.read())
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return await _looks(s, user, a)
+
+
+@router.put("/{artist_id}/banner", response_model=LooksOut)
+async def put_banner(artist_id: int, body: ChoiceIn, user: User = Depends(current_user),
+                     s: AsyncSession = Depends(get_session, scope="function")):
+    from app.library import looks
+
+    a = await _artist(s, artist_id)
+    try:
+        await looks.choose_banner(s, user.id, a, body.choice)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:  # the place the wide pictures come from did not answer
+        raise HTTPException(502, f"Не удалось получить обложку: {e}") from e
+    return await _looks(s, user, a)
+
+
+@router.post("/{artist_id}/banner", response_model=LooksOut)
+async def upload_banner(artist_id: int, file: UploadFile = File(...), user: User = Depends(current_user),
+                        s: AsyncSession = Depends(get_session, scope="function")):
+    from app.library import looks
+
+    a = await _artist(s, artist_id)
+    try:
+        await looks.choose_banner(s, user.id, a, "own", await file.read())
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return await _looks(s, user, a)
+
+
+def _picture(image: bytes | None) -> Response:
+    if not image:
+        raise HTTPException(404, "Картинки нет")
+    return Response(image, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
+@router.get("/{artist_id}/photo")
+async def photo(artist_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    from sqlalchemy import select
+
+    from app.models import ArtistLook
+
+    return _picture((await s.execute(select(ArtistLook.photo_image).where(ArtistLook.artist_id == artist_id))).scalar_one_or_none())
+
+
+@router.get("/{artist_id}/banner")
+async def banner(artist_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    from sqlalchemy import select
+
+    from app.models import ArtistLook
+
+    return _picture((await s.execute(select(ArtistLook.banner_image).where(ArtistLook.artist_id == artist_id))).scalar_one_or_none())
+
+
+@router.get("/{artist_id}/banner-found")
+async def banner_found(artist_id: int, name: str, user: User = Depends(current_user),
+                       s: AsyncSession = Depends(get_session, scope="function")):
+    """The wide picture found for the artist asked by this spelling of theirs — what the window offers. 404: none."""
+    from app.library import looks
+
+    a = await _artist(s, artist_id)
+    try:
+        image = await looks.found_banner(s, a, name)
+    except Exception as e:
+        raise HTTPException(502, f"Не удалось получить обложку: {e}") from e
+    if not image:
+        raise HTTPException(404, "По этому имени обложка не нашлась")
+    return Response(image, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+

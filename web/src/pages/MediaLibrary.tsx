@@ -9,6 +9,7 @@ import { ListBar } from '../components/ListBar';
 import { useListSearch, type Found } from '../components/ListSearch';
 import { CoverView, ownCover } from '../components/PlaylistMenu';
 import { SaveSelection, TagFilterChips } from '../components/Tags';
+import { ArtistLooksButton } from '../components/ArtistLooks';
 import { ArtistAlsoLine, ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, Cover, Empty, ErrorState, HeroSkeleton, IconButton, PageHeader, Sheet, SkeletonRows, Spinner, cx } from '../components/ui';
 import { fmtLength, tracksWord } from '../lib/format';
@@ -508,7 +509,7 @@ export function NdArtistPage({ id }: { id: string }) {
   };
   return (
     <div>
-      <ListBar title={artist.name} back="/artists" tracks={tracks} context="artist" />
+      <ListBar title={artist.name} back="/artists" tracks={tracks} context="artist" extra={<ArtistLooksButton artistId={names.card?.id} onChanged={() => res.reload()} />} />
       <Hero
         kicker="Исполнитель"
         cover={artist.cover_url ?? albums[0]?.cover_url ?? tracks[0]?.cover_small_url}

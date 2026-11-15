@@ -78,6 +78,7 @@ import type {
   CoverInfo,
   FileRowOut,
   ArtistCardOut,
+  ArtistLooksOut,
   ArtistOtherIn,
   ArtistPickOut,
   PickOut,
@@ -365,6 +366,20 @@ export const api = {
   artistAddProject: (id: number, other: ArtistOtherIn) => request<ArtistCardOut>('POST', `/api/artists/${id}/projects`, { json: other }),
   artistDropProject: (id: number, otherId: number) => request<ArtistCardOut>('DELETE', `/api/artists/${id}/projects/${otherId}`),
   artistApart: (id: number, other: ArtistOtherIn) => request<ArtistCardOut>('POST', `/api/artists/${id}/apart`, { json: other }),
+  /** How an artist is shown — the round photo, the wide picture over the page — and what it may be changed to. */
+  artistLooks: (id: number, signal?: AbortSignal) => request<ArtistLooksOut>('GET', `/api/artists/${id}/looks`, { signal }),
+  artistPhoto: (id: number, choice: string | null) => request<ArtistLooksOut>('PUT', `/api/artists/${id}/photo`, { json: { choice } }),
+  artistBanner: (id: number, choice: string | null) => request<ArtistLooksOut>('PUT', `/api/artists/${id}/banner`, { json: { choice } }),
+  artistPhotoUpload: (id: number, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<ArtistLooksOut>('POST', `/api/artists/${id}/photo`, { form });
+  },
+  artistBannerUpload: (id: number, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<ArtistLooksOut>('POST', `/api/artists/${id}/banner`, { form });
+  },
   setTrackCover: (id: number, file: File) => {
     const form = new FormData();
     form.append('file', file);

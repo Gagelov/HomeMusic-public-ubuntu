@@ -204,14 +204,22 @@ async def shown(s: AsyncSession, found_: list[Any]) -> list[Any]:
     if not found_:
         return found_
     r = await reader(s, [a.name for a in found_], [a.ref for a in found_])
+    from app.library import looks
+
     out: list[Any] = []
     at: dict[int, int] = {}
+    photos: dict[int, tuple[str, str] | None] = {}  # the photo chosen for an artist
     for a in found_:
         hit = r.artist(a.name, a.ref)
         if hit is None:
             out.append(a)
             continue
         card_ = a.model_copy(update={"name": hit[1]}) if hit[1] != a.name else a
+        if hit[0] not in photos:
+            who_ = await s.get(Artist, hit[0])
+            photos[hit[0]] = await looks.photo(s, who_, chosen_only=True) if who_ is not None else None
+        if photos[hit[0]]:
+            card_ = card_.model_copy(update={"picture_url": photos[hit[0]][0], "picture_small_url": photos[hit[0]][1]})
         if hit[0] not in at:
             at[hit[0]] = len(out)
             out.append(card_)
@@ -346,7 +354,13 @@ async def _catalog(ref: str | None) -> Any | None:
 
 
 async def _picture(s: AsyncSession, artist: Artist, ref: str | None) -> str | None:
-    """A small picture of the artist: the catalog's, else the cover of an album of theirs here."""
+    """A small picture of the artist: the one chosen for them (app/library/looks.py), else the catalog's, else the
+    cover of an album of theirs here."""
+    from app.library import looks
+
+    chosen = await looks.photo(s, artist, chosen_only=True)
+    if chosen:
+        return chosen[1]
     a = await _catalog(ref)
     if a is not None and (a.picture_small_url or a.picture_url):
         return a.picture_small_url or a.picture_url

@@ -111,9 +111,21 @@ async def artist(ref: str, user: User = Depends(current_user), s: AsyncSession =
     await s.commit()  # who the record is of is known from now on
     albums = await annotate_albums(s, page.albums, user.id)
     albums.sort(key=lambda a: (a.release_date is not None, a.release_date), reverse=True)
+    # how the artist looks, where the listeners chose: the photo, the wide picture — or none over the page
+    from app.library import artists, looks
+
+    who = await artists.by_ref(s, records[0])
+    look = await looks.of(s, who.id) if who is not None else None
+    chosen = await looks.photo(s, who, look, chosen_only=True) if who is not None else None
+    if chosen:
+        page.artist = page.artist.model_copy(update={"picture_url": chosen[0], "picture_small_url": chosen[1]})
+    said, own_banner = looks.banner(who.id, look) if who is not None else (False, None)
+
+    async def found_banner() -> str | None:
+        return own_banner if said else await banners.url_of(page.artist, [t.title for t in page.top_tracks] + [a.title for a in page.albums])
+
     heard, extra, banner = await asyncio.gather(
-        popular.listeners(page.artist.name), popular.more(page.artist, page.top_tracks),
-        banners.url_of(page.artist, [t.title for t in page.top_tracks] + [a.title for a in page.albums]))
+        popular.listeners(page.artist.name), popular.more(page.artist, page.top_tracks), found_banner())
     return ArtistPageOut(
         artist=page.artist,
         top_tracks=await annotate_tracks(s, [*page.top_tracks, *extra], user.id),
