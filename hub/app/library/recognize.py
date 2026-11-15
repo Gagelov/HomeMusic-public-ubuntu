@@ -126,6 +126,10 @@ def _weigh(found: list[Any], artist: str, raw_title: str, album: str | None, dur
     return scored, classify_scores([sc.total for _, sc in rivals], cfg)
 
 
+def _same_name(a: str | None, b: str | None) -> bool:
+    return bool(a and b) and " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+
 def _of_album(scored: list[tuple[Any, Any]], album: str | None) -> Any:
     """The likest record — and, where the song stands on several releases (a single, then the album), the one on
     the release the file itself names: files of one album stay one album."""
@@ -224,6 +228,16 @@ async def of_file(tags: dict[str, Any], file_name: str, duration_s: float | None
     if verdict == "not_found":
         return {"state": "none", "why": "каталог не ответил" if failed and not found else None, "meta": None}
     top = _of_album(scored, album)
+    if album and not _same_name(top.album_title, album):
+        # the file names an album, and the record found stands on another release (the search gives the single):
+        # the same song is looked for on the file's album among the artist's releases
+        more = [t for t in await _released_by(artist) if t.ref not in seen]
+        if more:
+            found.extend(more)
+            again, verdict_again = _weigh(found, artist, raw_title, album, duration, version, cfg)
+            there = _of_album(again, album) if again else top
+            if _same_name(there.album_title, album) and _words(there.title).casefold() == _words(top.title).casefold():
+                scored, verdict, top = again, verdict_again if verdict_again != "not_found" else verdict, there
     why: str | None = None
     close = bool(duration and top.duration_s and abs(duration - top.duration_s) <= SAME_LENGTH_S)
     # a name that only goes on in the catalog — «(prod. by …)», «(feat. …)» — over the same length is the same song
