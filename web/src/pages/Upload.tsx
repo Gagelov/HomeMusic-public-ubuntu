@@ -3,7 +3,7 @@ import { api, errorMessage, uploadCoverUrl } from '../api/client';
 import type { CoverInfo, TrackOut, UploadAlbumIn, UploadOut, UploadTrackIn } from '../api/types';
 import { Icon } from '../components/Icon';
 import { PlaylistsPick } from '../components/PlaylistsButton';
-import { Button, Checkbox, Cover, Empty, ErrorState, Field, IconButton, Loading, PageHeader, ProgressBar, Sheet, Spinner, cx } from '../components/ui';
+import { Button, Cover, Empty, ErrorState, Field, IconButton, Loading, PageHeader, ProgressBar, Sheet, Spinner, cx } from '../components/ui';
 import { useDesktop } from '../lib/desktop';
 import { fmtDuration, fmtSize, plural, toIntOrNull, tracksWord } from '../lib/format';
 import { useAsync, useDebounced } from '../lib/hooks';
@@ -24,9 +24,13 @@ import { attempt, confirmDialog, toast } from '../lib/ui';
  * player, the name with everyone credited, the length — and what the catalog changes in the track, in a few words.
  * The singles follow, each with its own picture to choose. A row opens to be put right by hand (its ⋯).
  *
- * «Перенести» brings in every file of the page. The ticks at the left do not choose what goes in: they pick files
- * to act on together, as the rows of a playlist are picked — a tick, a drag over the ⋯ of the rows, Ctrl+A for all
- * that are shown — and a bar comes up with what can be done with them: taken off the list.
+ * «Перенести» brings in every file of the page. The rows are a playlist's: on a computer a table whose columns of
+ * the file itself (its name, its size, what it is) can be hidden; a row's ⋯ is its menu — its names put right by
+ * hand, the catalog's record taken, left or changed, the file put into another album or taken off the list. Rows
+ * are picked to act on together as a playlist's are — a click on a row's number, a drag from it over the rows,
+ * Ctrl+click, Shift+click, Ctrl+A for all that are shown; on a phone «Выбрать» of the menu, then taps — and a bar
+ * comes up with what can be done with several at once: gathered into one album, left as the files say, looked for
+ * in the catalog again, taken off the list.
  *
  * A file the catalog only has something *like* is not asked about: it goes in under its own names, and the second
  * step — «Качество звука» (`pages/Quality.tsx`) — settles by the sound whether the record is its own. Nothing here
@@ -65,7 +69,19 @@ interface RowState {
   artist: string;
   album: string;
   year: string;
+  /** put into an album by hand: that album's key (not said: the album the file is of by itself) */
+  group?: string;
 }
+
+/** The columns of the table that say what the file itself is: they can be hidden (the choice stays on the device). */
+interface Columns {
+  file: boolean;
+  size: boolean;
+  quality: boolean;
+}
+const COLUMNS: [keyof Columns, string][] = [['file', 'Файл'], ['size', 'Размер'], ['quality', 'Качество']];
+const COLS_KEY = 'hm-upload-cols';
+const grid = (c: Columns) => ({ gridTemplateColumns: ['2.25rem', '2.5rem', 'minmax(0,1.5fr)', 'minmax(0,1.1fr)', c.file ? 'minmax(0,1.1fr)' : null, c.size ? '4.5rem' : null, c.quality ? '5.5rem' : null, '3rem', '2.5rem'].filter(Boolean).join(' ') });
 
 /** What was chosen in an album's head (nothing said: the page's own pick — `Group.title` and the rest). */
 interface AlbumChoice {
@@ -240,7 +256,20 @@ export function UploadPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
   const [only, setOnly] = useState<Only>('all');
-  const [open, setOpen] = useState<number | null>(null); // the row that is being put right
+  const [menu, setMenu] = useState<number | null>(null); // the row whose menu is open
+  const [editing, setEditing] = useState<number | null>(null); // the file whose names are being written
+  const [toAlbum, setToAlbum] = useState<number[] | null>(null); // the files an album is being chosen for
+  const [cols, setColsState] = useState<Columns>(() => {
+    try {
+      return { file: false, size: true, quality: true, ...(JSON.parse(localStorage.getItem(COLS_KEY) ?? '{}') as Partial<Columns>) };
+    } catch {
+      return { file: false, size: true, quality: true };
+    }
+  });
+  const setCols = (next: Columns) => {
+    setColsState(next);
+    try { localStorage.setItem(COLS_KEY, JSON.stringify(next)); } catch { /* it lasts for this page then */ }
+  };
   const [finding, setFinding] = useState<UploadOut | null>(null); // the file a record is being picked for
   const [playlists, setPlaylists] = useState<{ id: string; name: string }[]>([]);
   const [like, setLike] = useState(false);
@@ -256,7 +285,8 @@ export function UploadPage() {
   const [plPicker, setPlPicker] = useState(false);
   const [moving, setMoving] = useState<{ done: number; of: number } | null>(null);
   const [picked, setPicked] = useState<Set<number>>(new Set()); // the files picked to act on together
-  const drag = useRef<{ from: number; moved: boolean } | null>(null); // a drag over the rows' ⋯ picks the rows passed
+  const drag = useRef<{ from: number; moved: boolean } | null>(null); // a drag from a row's number picks the rows passed
+  const anchor = useRef<number | null>(null); // the row a Shift+click picks from
 
   const addUploads = useCallback((list: UploadOut[]) => {
     setUploads((prev) => {
@@ -405,6 +435,12 @@ export function UploadPage() {
       const by = str(u.tags.album_artist) || u.artists?.[0] || r.artist;
       keys.set(u.id, releases.get(`${low(a)}|${low(by)}`) ?? (same(a, str(u.tags.album)) ? releases.get(ownAlbum(u) ?? '') : undefined) ?? `o|${low(a)}|${low(by)}`);
     }
+    // …and a file put into an album by hand is of that album, whatever it says
+    const natural = new Map(keys);
+    for (const u of uploads) {
+      const said = row(u).group;
+      if (said !== undefined) keys.set(u.id, said);
+    }
     const groups = new Map<string, Group>();
     for (const u of uploads) {
       const k = keys.get(u.id);
@@ -413,7 +449,8 @@ export function UploadPage() {
       g.files.push(u);
     }
     for (const g of groups.values()) {
-      const taken = g.files.filter((u) => usesCatalog(u, row(u)) && !!catAlbum(u));
+      // the release is the album's own files' — not that of a file brought in from elsewhere by hand
+      const taken = g.files.filter((u) => usesCatalog(u, row(u)) && !!catAlbum(u) && natural.get(u.id) === g.key);
       g.release = taken[0] ?? null;
       const m = g.release?.match;
       const own = g.files.filter((u) => !u.single);
@@ -496,6 +533,44 @@ export function UploadPage() {
   const order = [...shownGroups.flatMap((x) => x.files), ...shownSingles];
   const play = (u: UploadOut) => listen(asTrack(u), order.map(asTrack), 'upload');
 
+  /** Put these files into one album: one of the page's, or a new one of this name. */
+  const gather = (ids: number[], into: { key: string } | { title: string; artist: string }) => {
+    const key = 'key' in into ? into.key : `m|${Date.now()}`;
+    if (!('key' in into)) setChosen((prev) => ({ ...prev, [key]: { title: into.title, artist: into.artist } }));
+    setRows((prev) => ({ ...prev, ...Object.fromEntries(ids.map((id) => [id, { ...(prev[id] ?? rowFromUpload(uploads.find((u) => u.id === id)!)), group: key }])) }));
+    setToAlbum(null);
+    setPicked(new Set());
+  };
+  const chosenFiles = () => uploads.filter((u) => picked.has(u.id));
+  /** The picked files as the files say, or — when none of them is the catalog's just now — as the catalog says. */
+  const flipCatalog = () => {
+    const list = chosenFiles().filter((u) => !!u.match?.ref);
+    const off = list.some((u) => usesCatalog(u, rowOf(u)));
+    setRows((prev) => ({ ...prev, ...Object.fromEntries(list.map((u) => [u.id, { ...(prev[u.id] ?? rowFromUpload(u)), catalog: !off, cover: !off && u.match?.cover_url ? 'catalog' as const : 'file' as const }])) }));
+    toast(off ? `Как в файле: ${tracksWord(list.length)}` : `Данные каталога: ${tracksWord(list.length)}`, 'success');
+  };
+  const rematchPicked = async () => {
+    const list = chosenFiles();
+    toast(`Сверяю заново: ${tracksWord(list.length)}…`, 'info');
+    for (const u of list) await rematch(u);
+    toast('Сверка закончена', 'success');
+  };
+  /** A click on a row while rows are being picked, or with Ctrl / Shift: it picks, as in a playlist. */
+  const rowClick = (u: UploadOut, e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
+    if (e.shiftKey && anchor.current !== null) {
+      const ids = order.map((x) => x.id);
+      const a = ids.indexOf(anchor.current);
+      const b = ids.indexOf(u.id);
+      if (a >= 0 && b >= 0) setPicked((prev) => new Set([...prev, ...ids.slice(Math.min(a, b), Math.max(a, b) + 1)]));
+      return true;
+    }
+    if (e.ctrlKey || e.metaKey || picked.size > 0) {
+      anchor.current = u.id;
+      togglePick(u.id);
+      return true;
+    }
+    return false;
+  };
   const togglePick = (id: number) =>
     setPicked((prev) => {
       const next = new Set(prev);
@@ -616,17 +691,30 @@ export function UploadPage() {
       u={u}
       r={rowOf(u)}
       desktop={desktop}
+      cols={cols}
       inAlbum={!!g}
       number={g ? ((usesCatalog(u, rowOf(u)) && u.match?.track_no) || toIntOrNull(str(u.tags.track_no))) : at + 1}
       picture={pictureOf(u)}
-      open={open === u.id}
       picked={picked.has(u.id)}
-      onPick={() => togglePick(u.id)}
+      menu={menu === u.id}
+      onMenu={(on) => setMenu(on ? u.id : null)}
+      onPick={() => {
+        anchor.current = u.id;
+        togglePick(u.id);
+      }}
+      onRowClick={(e) => rowClick(u, e)}
       onDragStart={() => (drag.current = { from: u.id, moved: false })}
       onDragOver={() => dragOver(u.id)}
+      dragged={() => !!drag.current?.moved}
       onPlay={() => play(u)}
-      onOpen={() => !drag.current?.moved && setOpen(open === u.id ? null : u.id)}
       onChange={(patch) => setRow(u.id, patch)}
+      onEdit={() => {
+        const r = rowOf(u);
+        // the names are written by hand from what the row shows now: the catalog's, where its record was taken
+        if (usesCatalog(u, r)) setRow(u.id, { catalog: false, cover: 'file', title: same(u.title, u.match?.title) ? u.title : (u.match?.title ?? r.title), artist: (u.match?.artists?.length ? u.match.artists : [u.match?.artist ?? r.artist]).join(', ') });
+        setEditing(u.id);
+      }}
+      onAlbum={() => setToAlbum([u.id])}
       onFind={() => setFinding(u)}
       onAgain={() => void rematch(u)}
       onRemove={() => void removeUpload(u)}
@@ -750,16 +838,17 @@ export function UploadPage() {
           )}
           {only === 'doubt' && <p className="px-4 pt-2 text-xs text-muted lg:px-6">В каталоге есть похожая запись, но не точно эта: другая длина или версия. Такие треки переносятся со своими тегами, а на шаге 2 запись каталога скачивается и сравнивается с вашим файлом по звуку.</p>}
 
+          {desktop && shown.length > 0 && <TableHead cols={cols} onCols={setCols} />}
           {shown.length === 0 && <div className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6"><Empty icon="search" title="Под эту метку ничего не подходит" /></div>}
           {shownGroups.map(({ g, files }) => (
-            <section key={g.key} className="mx-4 mt-3 overflow-hidden rounded-2xl bg-surface lg:mx-6" aria-label={`Альбом «${albumOf(g).title}»`}>
+            <section key={g.key} className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6" aria-label={`Альбом «${albumOf(g).title}»`}>
               <AlbumHead g={g} now={albumOf(g)} said={chosen[g.key] ?? {}} onChoose={(patch) => choose(g, patch)} shown={files.length} />
               {files.map((u, i) => row(u, g, i))}
             </section>
           ))}
           {shownSingles.length > 0 && (
-            <section className="mx-4 mt-3 overflow-hidden rounded-2xl bg-surface lg:mx-6" aria-label="Синглы и треки без альбома">
-              <div className="border-b border-line/60 bg-fg/[0.04] px-4 py-2 text-xs text-muted">
+            <section className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6" aria-label="Синглы и треки без альбома">
+              <div className="rounded-t-2xl border-b border-line/60 bg-fg/[0.04] px-4 py-2 text-xs text-muted">
                 <span className="text-sm font-semibold text-fg">Синглы и треки без альбома</span> · <span className="tabular-nums">{shownSingles.length}</span>
               </div>
               {shownSingles.map((u, i) => row(u, null, i))}
@@ -772,11 +861,25 @@ export function UploadPage() {
         <div className="pointer-events-none fixed bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+12px+env(safe-area-inset-bottom))] left-(--side-w) right-0 z-40 flex justify-center px-3" role="region" aria-label="Выбранные файлы">
           <div className="anim-up pointer-events-auto flex max-w-full items-center gap-1 rounded-2xl border border-line bg-raised py-1.5 pl-4 pr-1.5 shadow-2xl">
             <span className="mr-2 whitespace-nowrap text-sm font-semibold">{picked.size} {plural(picked.size, ['файл', 'файла', 'файлов'])}</span>
+            <IconButton icon="folder" size={20} label="В один альбом…" onClick={() => setToAlbum([...picked])} className="!h-10 !w-10 text-muted hover:text-fg" />
+            <IconButton icon="note" size={20} label={chosenFiles().some((u) => usesCatalog(u, rowOf(u))) ? 'Оставить как в файле' : 'Взять данные каталога'} onClick={flipCatalog} className="!h-10 !w-10 text-muted hover:text-fg" />
+            <IconButton icon="refresh" size={20} label="Сверить с каталогом заново" onClick={() => void rematchPicked()} className="!h-10 !w-10 text-muted hover:text-fg" />
             <IconButton icon="trash" size={20} label="Убрать из списка" onClick={() => void removePicked()} className="!h-10 !w-10 text-muted hover:text-danger" />
             <span className="mx-1 h-6 w-px bg-line" aria-hidden="true" />
             <IconButton icon="x" size={18} label="Снять выделение" onClick={() => setPicked(new Set())} className="!h-10 !w-10 text-muted hover:text-fg" />
           </div>
         </div>
+      )}
+      {editing !== null && uploads.some((u) => u.id === editing) && (
+        <EditNames u={uploads.find((u) => u.id === editing)!} r={rowOf(uploads.find((u) => u.id === editing)!)} inAlbum={!!all.keys.get(editing)} onChange={(patch) => setRow(editing, patch)} onClose={() => setEditing(null)} />
+      )}
+      {toAlbum && (
+        <AlbumPick
+          count={toAlbum.length}
+          albums={[...all.groups.values()].map((g) => ({ key: g.key, title: albumOf(g).title, artist: albumOf(g).artist, files: g.files.length }))}
+          onClose={() => setToAlbum(null)}
+          onPick={(into) => gather(toAlbum, into)}
+        />
       )}
       {plPicker && (
         <PlaylistsPick
@@ -866,7 +969,7 @@ function AlbumHead({ g, now, said, onChoose, shown }: { g: Group; now: { title: 
     );
   };
   return (
-    <div className="border-b border-line/60 bg-fg/[0.04] px-4 pb-3 pt-2">
+    <div className="rounded-t-2xl border-b border-line/60 bg-fg/[0.04] px-4 pb-3 pt-2">
       <div className="pb-1 text-[11px] text-dim">
         Альбом · {g.files.length} {plural(g.files.length, ['файл', 'файла', 'файлов'])}
         {shown < g.files.length ? ` · показано ${shown}` : ''}
@@ -907,11 +1010,51 @@ function PictureOption({ p, on, only, onClick }: { p: Picture; on: boolean; only
   );
 }
 
-const ROW = { gridTemplateColumns: '2.75rem 1.75rem 2.5rem minmax(0,1.4fr) minmax(0,1fr) 3rem 2.5rem' };
+/** The head of the table (a computer): the names of the columns, and — its ⋯ — which of the file's own are shown. */
+function TableHead({ cols, onCols }: { cols: Columns; onCols: (next: Columns) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === 'Escape' : !ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative mx-4 mt-3 grid h-8 items-center gap-2.5 pr-1 text-xs text-dim lg:mx-6" style={grid(cols)}>
+      <span className="text-center">#</span>
+      <span />
+      <span>Название</span>
+      <span>Что изменится</span>
+      {cols.file && <span>Файл</span>}
+      {cols.size && <span>Размер</span>}
+      {cols.quality && <span>Качество</span>}
+      <span className="text-right">Время</span>
+      <IconButton icon="more" size={16} label="Колонки таблицы" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="!h-8 !w-8 text-dim hover:text-fg" />
+      {open && (
+        <div role="menu" aria-label="Колонки таблицы" className="anim-up absolute right-0 top-full z-30 w-52 rounded-2xl bg-raised p-1.5 text-sm text-fg shadow-2xl">
+          {COLUMNS.map(([id, label]) => (
+            <button key={id} type="button" role="menuitemcheckbox" aria-checked={cols[id]} onClick={() => onCols({ ...cols, [id]: !cols[id] })} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-fg/10">
+              <span className="flex w-4 justify-center">{cols[id] && <Icon name="check" size={15} />}</span>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
-/** A file as a track of a list: its number, the cover that plays it in the app's player, its name with everyone
- * credited, what the catalog changes in it, its length. Open, it is put right by hand. */
-function FileRow({ u, r, desktop, inAlbum, number, picture, open, picked, onPick, onDragStart, onDragOver, onPlay, onOpen, onChange, onFind, onAgain, onRemove }: { u: UploadOut; r: RowState; desktop: boolean; inAlbum: boolean; number: number | null | false | 0 | undefined; picture: string | null; open: boolean; /** picked to act on with others */ picked: boolean; onPick: () => void; /** a drag over the rows' ⋯ picks the rows passed */ onDragStart: () => void; onDragOver: () => void; onPlay: () => void; onOpen: () => void; onChange: (patch: Partial<RowState>) => void; onFind: () => void; onAgain: () => void; onRemove: () => void }) {
+/** A file as a row of a playlist: its number (a click on it picks the row, a drag from it the rows passed), the
+ * cover that plays it in the app's player, its name with everyone credited, what the catalog changes in it, what
+ * the file itself is, its length, and the ⋯ of its menu. On a phone the file's own is said in the menu. */
+function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, onMenu, onPick, onRowClick, onDragStart, onDragOver, dragged, onPlay, onChange, onEdit, onAlbum, onFind, onAgain, onRemove }: { u: UploadOut; r: RowState; desktop: boolean; cols: Columns; inAlbum: boolean; number: number | null | false | 0 | undefined; picture: string | null; picked: boolean; menu: boolean; onMenu: (on: boolean) => void; onPick: () => void; /** true: the click was a pick, not the row's own */ onRowClick: (e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => boolean; onDragStart: () => void; onDragOver: () => void; dragged: () => boolean; onPlay: () => void; onChange: (patch: Partial<RowState>) => void; onEdit: () => void; onAlbum: () => void; onFind: () => void; onAgain: () => void; onRemove: () => void }) {
   const m = u.match;
   const has = !!m?.ref;
   const by = usesCatalog(u, r);
@@ -923,13 +1066,14 @@ function FileRow({ u, r, desktop, inAlbum, number, picture, open, picked, onPick
   const notes: ReactNode[] = [];
   if (by) for (const c of changesOf(u, inAlbum)) notes.push(<span key={c} className="max-w-full truncate rounded-full bg-fg/10 px-2 py-0.5 text-[11px] text-muted">{c}</span>);
   else if (unsure(u, r)) notes.push(<span key="q" title={`В каталоге похожая запись: «${m?.title}» — ${m?.artist}. ${m?.why ?? ''}`} className="rounded-full bg-warn/15 px-2 py-0.5 text-[11px] text-warn">уточню по звуку на шаге 2</span>);
-  else if (has) notes.push(<span key="off" className="text-[11px] text-dim">данные каталога отключены</span>);
+  else if (has) notes.push(<span key="off" className="text-[11px] text-dim">как в файле</span>);
   else notes.push(<span key="none" className="text-[11px] text-dim">трека нет в каталоге</span>);
+  const quality = fileWords(u.codec, u.bitrate_kbps);
   // a single chooses its own picture, where there are two
   const mine = u.tags.has_cover ? uploadCoverUrl(u.id) : null;
   const theirs = by && m?.cover_url ? (imageUrl(m.cover_url) as string) : null;
   const pictures = !inAlbum && mine && theirs && (
-    <span className="flex shrink-0 items-center gap-1" title="Обложка сингла">
+    <span className="flex shrink-0 items-center gap-1" title="Обложка сингла" data-own>
       {([['catalog', theirs], ['file', mine]] as const).map(([which, url]) => (
         <button key={which} type="button" aria-pressed={r.cover === which} aria-label={which === 'catalog' ? 'Обложка из каталога' : 'Обложка из файла'} title={which === 'catalog' ? 'Обложка из каталога' : 'Обложка из файла'} onClick={() => onChange({ cover: which })} className={cx('rounded transition', r.cover === which ? 'ring-2 ring-accent' : 'opacity-45 hover:opacity-100')}>
           <Cover src={url} size={22} alt="" />
@@ -938,7 +1082,7 @@ function FileRow({ u, r, desktop, inAlbum, number, picture, open, picked, onPick
     </span>
   );
   const cover = (
-    <button type="button" aria-label={playing ? 'Пауза' : `Слушать «${title}»`} onClick={onPlay} className="group/c relative flex h-10 w-10 shrink-0 items-center justify-center">
+    <button type="button" data-own aria-label={playing ? 'Пауза' : `Слушать «${title}»`} onClick={onPlay} className="group/c relative flex h-10 w-10 shrink-0 items-center justify-center">
       <Cover src={picture} size={40} alt="" />
       <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center rounded-md bg-black/60 text-white', !phase && 'opacity-0 group-hover/c:opacity-100')}>
         {phase === 'resolving' || phase === 'loading' ? <Spinner size={16} /> : <Icon name={playing ? 'pause' : 'play'} size={16} filled />}
@@ -946,7 +1090,7 @@ function FileRow({ u, r, desktop, inAlbum, number, picture, open, picked, onPick
     </button>
   );
   const names = lacks ? (
-    <span className="flex min-w-0 flex-col gap-1.5 py-0.5 md:flex-row">
+    <span className="flex min-w-0 flex-col gap-1.5 py-0.5 md:flex-row" data-own>
       <input className={cx('input !h-8 !py-1 text-sm', !r.title.trim() && '!border-danger')} placeholder="Название" aria-label="Название" value={r.title} onChange={(e) => onChange({ title: e.target.value })} />
       <input className={cx('input !h-8 !py-1 text-sm', !r.artist.trim() && '!border-danger')} placeholder="Исполнитель" aria-label="Исполнитель" value={r.artist} onChange={(e) => onChange({ artist: e.target.value })} />
     </span>
@@ -956,21 +1100,93 @@ function FileRow({ u, r, desktop, inAlbum, number, picture, open, picked, onPick
       <span className="block truncate text-[13px] text-muted">{artists}</span>
     </span>
   );
+  const item = (icon: Parameters<typeof Icon>[0]['name'], label: string, run: () => void, danger = false) => (
+    <button key={label} type="button" role="menuitem" onClick={() => { onMenu(false); run(); }} className={cx('flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-fg/10', danger && 'text-danger')}>
+      <Icon name={icon} size={18} />
+      {label}
+    </button>
+  );
+  const items = (
+    <>
+      {item('edit', 'Изменить название и исполнителей', onEdit)}
+      {has && item('note', by ? 'Оставить как в файле' : m?.state === 'doubt' ? 'Это она — взять данные каталога' : 'Взять данные каталога', () => onChange({ catalog: !by, cover: !by && m?.cover_url ? 'catalog' : 'file' }))}
+      {item('search', has ? 'Другая запись каталога…' : 'Найти в каталоге вручную', onFind)}
+      {!m?.by_hand && item('refresh', 'Сверить заново', onAgain)}
+      {item('folder', 'В другой альбом…', onAlbum)}
+      {item(picked ? 'x' : 'check', picked ? 'Снять выделение' : 'Выбрать', onPick)}
+      {item('trash', 'Убрать из списка', onRemove, true)}
+    </>
+  );
+  const about = (
+    <span className="block text-xs text-dim">
+      <span className="block truncate" title={u.orig_name}>{u.orig_name}</span>
+      {[fmtSize(u.size), quality, fmtDuration(u.duration_s)].filter(Boolean).join(' · ')}
+      {has && (
+        <span className="block truncate pt-1">
+          В каталоге{m?.state === 'doubt' ? ' похожая' : ''}: «{m?.title}» — {(m?.artists?.length ? m.artists : [m?.artist]).join(', ')}
+          {m?.album ? ` · «${m.album}»` : ''}
+          {m?.why ? ` · ${m.why}` : ''}
+        </span>
+      )}
+    </span>
+  );
+  const dots = <IconButton icon="more" size={18} label="Меню файла" aria-expanded={menu} data-own onClick={() => onMenu(!menu)} className="text-dim hover:text-fg" />;
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu || !desktop) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === 'Escape' : !ref.current?.contains(e.target as Node)) onMenu(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menu, desktop]);
   return (
-    <div role="row" aria-selected={picked} onPointerEnter={onDragOver} className={cx('border-b border-line/60 last:border-0', picked && 'bg-accent/10', !r.include && 'opacity-60')}>
-      <div className="grid min-h-14 items-center gap-2.5 py-1.5 pr-1" style={desktop ? ROW : { gridTemplateColumns: '2.75rem 2.5rem minmax(0,1fr) 2.5rem' }}>
-        <Checkbox checked={picked} onChange={onPick} label={`Выбрать «${u.title}»`} />
-        {desktop && <span className="text-center text-sm tabular-nums text-dim">{number || '—'}</span>}
+    <div
+      role="row"
+      aria-selected={picked}
+      onPointerEnter={onDragOver}
+      onClick={(e) => {
+        // the row's own buttons do their own job; the rest of the row picks while rows are being picked
+        if ((e.target as HTMLElement).closest('[data-own], [role="menu"], input')) return;
+        if (onRowClick(e)) e.preventDefault();
+      }}
+      className={cx('relative border-b border-line/60 last:rounded-b-2xl last:border-0', picked && 'bg-accent/10', !r.include && 'opacity-60')}
+    >
+      <div className="grid min-h-14 items-center gap-2.5 py-1.5 pr-1" style={desktop ? grid(cols) : { gridTemplateColumns: '0.25rem 2.5rem minmax(0,1fr) 2.5rem' }}>
+        {desktop ? (
+          <button
+            type="button"
+            data-own
+            aria-label={picked ? `Снять выделение: «${title}»` : `Выбрать «${title}»`}
+            title="Нажмите, чтобы выбрать; потяните по строкам, чтобы выбрать несколько"
+            onPointerDown={(e) => {
+              (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); // the rows under the pointer hear it pass
+              onDragStart();
+            }}
+            onClick={() => !dragged() && onPick()}
+            className="flex h-10 touch-none select-none items-center justify-center text-sm tabular-nums text-dim hover:text-fg"
+          >
+            {picked ? <Icon name="check" size={16} className="text-accent" /> : number || '—'}
+          </button>
+        ) : (
+          <span />
+        )}
         {cover}
         {desktop ? (
           names
         ) : (
           <span className="min-w-0">
             {names}
-            <span className="mt-0.5 flex flex-wrap items-center gap-1">
+            <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
               {notes}
               {pictures}
               <span className="text-[11px] tabular-nums text-dim">{fmtDuration(u.duration_s)}</span>
+              {u.weak && <span className="text-[11px] text-warn">{quality}</span>}
             </span>
           </span>
         )}
@@ -980,76 +1196,109 @@ function FileRow({ u, r, desktop, inAlbum, number, picture, open, picked, onPick
             {pictures}
           </span>
         )}
+        {desktop && cols.file && <span className="truncate text-[13px] text-muted" title={u.orig_name}>{u.orig_name}</span>}
+        {desktop && cols.size && <span className="text-[13px] tabular-nums text-muted">{fmtSize(u.size)}</span>}
+        {desktop && cols.quality && <span><span className={cx('whitespace-nowrap text-[13px]', u.weak ? 'rounded-full bg-warn/15 px-2 py-0.5 text-warn' : 'text-muted')} title={u.weak ? 'Слабый файл: на шаге 2 поищу лучше' : undefined}>{quality || '—'}</span></span>}
         {desktop && <span className="text-right text-xs tabular-nums text-dim">{fmtDuration(u.duration_s)}</span>}
-        <IconButton
-          icon={open ? 'down' : 'more'}
-          size={18}
-          label={open ? 'Свернуть' : 'Изменить · потяните по строкам, чтобы выбрать несколько'}
-          aria-expanded={open}
-          onPointerDown={(e) => {
-            (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); // the rows under the pointer hear it pass
-            onDragStart();
-          }}
-          onClick={onOpen}
-          className="touch-none text-dim hover:text-fg"
-        />
+        {dots}
       </div>
-      {u.twin && <div className="pb-2 pl-12 pr-4 md:pl-[7.5rem]"><TwinNote u={u} r={r} onChange={onChange} /></div>}
-      {open && (
-        <div className="space-y-3 border-t border-line/60 bg-fg/[0.03] px-4 py-3 md:pl-[7.5rem]">
-          {has && (
-            <p className="text-sm text-muted">
-              {by ? 'Название, исполнители и номер берутся из каталога' : `В каталоге ${m?.state === 'doubt' ? 'похожая запись' : 'запись'}`}: «{m?.title}» — {(m?.artists?.length ? m.artists : [m?.artist]).join(', ')}
-              {m?.album ? ` · «${m.album}»` : ''} · {fmtDuration(m?.duration_s)}
-              {m?.why ? ` · ${m.why}` : ''}
-              {m?.by_hand ? ' · выбрана вручную' : ''}
-            </p>
-          )}
-          {!by && (
-            <div className={cx('grid gap-3', inAlbum ? 'md:grid-cols-2' : 'md:grid-cols-[2fr_2fr_2fr_5rem]')}>
-              <Field label="Название">
-                <input className="input" value={r.title} onChange={(e) => onChange({ title: e.target.value })} />
-              </Field>
-              <Field label="Исполнители (через запятую)">
-                <input className="input" value={r.artist} onChange={(e) => onChange({ artist: e.target.value })} />
-              </Field>
-              {!inAlbum && (
-                <>
-                  <Field label="Альбом">
-                    <input className="input" value={r.album} placeholder="Пусто — сингл" onChange={(e) => onChange({ album: e.target.value })} />
-                  </Field>
-                  <Field label="Год">
-                    <input className="input" inputMode="numeric" value={r.year} onChange={(e) => onChange({ year: e.target.value.replace(/\D/g, '').slice(0, 4) })} />
-                  </Field>
-                </>
-              )}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {has && (
-              <Button small onClick={() => onChange({ catalog: !by, cover: !by && m?.cover_url ? 'catalog' : 'file' })}>
-                {by ? 'Оставить как в файле' : m?.state === 'doubt' ? 'Это она — взять данные каталога' : 'Взять данные каталога'}
-              </Button>
-            )}
-            <Button small icon="search" onClick={onFind}>
-              {has ? 'Другая запись каталога…' : 'Найти в каталоге вручную'}
-            </Button>
-            {!m?.by_hand && (
-              <Button small icon="refresh" onClick={onAgain}>
-                Сверить заново
-              </Button>
-            )}
-            <Button small icon="trash" onClick={onRemove}>
-              Убрать файл
-            </Button>
-          </div>
-          <p className="truncate text-xs text-dim" title={u.orig_name}>
-            {u.orig_name} · {fmtSize(u.size)} · {fileWords(u.codec, u.bitrate_kbps)}
-            {inAlbum ? '' : ''}
-          </p>
+      {u.twin && <div className="pb-2 pl-12 pr-4 md:pl-[5.75rem]" data-own><TwinNote u={u} r={r} onChange={onChange} /></div>}
+      {menu && desktop && (
+        <div ref={ref} role="menu" aria-label={`Меню: ${title}`} className="anim-up absolute right-2 top-12 z-30 w-80 rounded-2xl bg-raised p-1.5 shadow-2xl">
+          <div className="px-3 pb-2 pt-1.5">{about}</div>
+          {items}
         </div>
       )}
+      {!desktop && (
+        <Sheet open={menu} onClose={() => onMenu(false)} title={title || u.orig_name}>
+          <div className="pb-2">
+            <span className="block truncate pb-2 text-sm text-muted">{artists}</span>
+            {about}
+          </div>
+          <div role="menu">{items}</div>
+        </Sheet>
+      )}
     </div>
+  );
+}
+
+/** The names of a file written by hand: its own, not the catalog's. A single also says its album here — a name
+ * makes it an album's file. */
+function EditNames({ u, r, inAlbum, onChange, onClose }: { u: UploadOut; r: RowState; inAlbum: boolean; onChange: (patch: Partial<RowState>) => void; onClose: () => void }) {
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title="Название и исполнители"
+      footer={
+        <Button variant="primary" block disabled={!r.title.trim() || !r.artist.trim()} onClick={onClose}>
+          Готово
+        </Button>
+      }
+    >
+      <p className="truncate pb-3 text-xs text-muted" title={u.orig_name}>{u.orig_name}</p>
+      <div className="space-y-3">
+        <Field label="Название">
+          <input className="input" autoFocus value={r.title} onChange={(e) => onChange({ title: e.target.value })} />
+        </Field>
+        <Field label="Исполнители (через запятую)">
+          <input className="input" value={r.artist} onChange={(e) => onChange({ artist: e.target.value })} />
+        </Field>
+        {!inAlbum && (
+          <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-3">
+            <Field label="Альбом">
+              <input className="input" value={r.album} placeholder="Пусто — сингл" onChange={(e) => onChange({ album: e.target.value })} />
+            </Field>
+            <Field label="Год">
+              <input className="input" inputMode="numeric" value={r.year} onChange={(e) => onChange({ year: e.target.value.replace(/\D/g, '').slice(0, 4) })} />
+            </Field>
+          </div>
+        )}
+      </div>
+      {u.match?.ref && <p className="pt-3 text-xs text-dim">Данные каталога для этого файла отключены. Вернуть — «Взять данные каталога» в меню строки.</p>}
+    </Sheet>
+  );
+}
+
+/** The album files are put into by hand: one of the page's, or a new one. */
+function AlbumPick({ count, albums, onClose, onPick }: { count: number; albums: { key: string; title: string; artist: string; files: number }[]; onClose: () => void; onPick: (into: { key: string } | { title: string; artist: string }) => void }) {
+  const [title, setTitle] = useState('');
+  const [artist, setArtist] = useState('');
+  const [q, setQ] = useState('');
+  const shown = albums.filter((a) => !q.trim() || `${a.title} ${a.artist}`.toLocaleLowerCase('ru').includes(q.trim().toLocaleLowerCase('ru')));
+  return (
+    <Sheet open onClose={onClose} title={`${tracksWord(count)} — в альбом`}>
+      <div className="rounded-xl bg-fg/5 p-3">
+        <p className="pb-2 text-sm font-semibold">Новый альбом</p>
+        <div className="grid gap-2 md:grid-cols-2">
+          <input className="input" placeholder="Название альбома" aria-label="Название альбома" value={title} onChange={(e) => setTitle(e.target.value)} />
+          <input className="input" placeholder="Исполнитель альбома" aria-label="Исполнитель альбома" value={artist} onChange={(e) => setArtist(e.target.value)} />
+        </div>
+        <Button small variant="primary" className="mt-2" disabled={!title.trim() || !artist.trim()} onClick={() => onPick({ title: title.trim(), artist: artist.trim() })}>
+          Создать и перенести
+        </Button>
+      </div>
+      {albums.length > 0 && (
+        <>
+          <p className="pb-2 pt-4 text-sm font-semibold">Альбом из этой загрузки</p>
+          {albums.length > 8 && <input className="input mb-2" type="search" placeholder="Найти альбом" aria-label="Найти альбом" value={q} onChange={(e) => setQ(e.target.value)} />}
+          <ul>
+            {shown.map((a) => (
+              <li key={a.key}>
+                <button type="button" onClick={() => onPick({ key: a.key })} className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-fg/10">
+                  <Icon name="disc" size={18} className="shrink-0 text-muted" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[15px]">{a.title || 'без названия'}</span>
+                    <span className="block truncate text-[13px] text-muted">{a.artist}</span>
+                  </span>
+                  <span className="shrink-0 text-xs tabular-nums text-dim">{a.files}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Sheet>
   );
 }
 

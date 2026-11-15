@@ -121,7 +121,7 @@ const ROUTES: RouteDef[] = [
   ['/assistant', 'assistant', (_, r) => <AssistantPage chatId={Number(r.query.get('chat')) || null} />, 'text'],
   ['/assistant/chats', 'assistant', () => <AssistantChatsPage />, 'text'],
   ['/assistant/:id', 'assistant', (p) => <AssistantTaskPage key={p.id} id={Number(p.id)} />, 'text'],
-  ['/upload', 'more', () => <UploadPage />, 'text'],
+  ['/upload', 'more', () => <UploadPage />],
   ['/playlists', STANDALONE ? 'library' : 'more', () => <PlaylistsPage />],
   ['/file/:id', 'library', (p) => <FileJournalPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/import', 'more', (_, r) => <ImportsPage key={r.query.get('from') ?? ''} from={(['yandex', 'spotify', 'vk'] as const).find((x) => x === r.query.get('from')) ?? null} />, 'text'],
