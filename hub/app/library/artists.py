@@ -120,6 +120,22 @@ def put_right(o: Any, names_: dict[str, str]) -> None:
         o.artists = [names_.get(key(a), a) if isinstance(a, str) else a for a in v]
 
 
+async def shown(s: AsyncSession, found: list[Any]) -> list[Any]:
+    """A catalog's artists (each with a `ref` and a `name`) under the names they have here: by what the catalog
+    calls its own artist, else by the spelling. The ones the Hub calls the same are returned as they came."""
+    if not found:
+        return found
+    by_ref = dict((await s.execute(
+        select(ArtistRef.ref, Artist.name).join(Artist, Artist.id == ArtistRef.artist_id)
+        .where(ArtistRef.ref.in_([a.ref for a in found if getattr(a, "ref", None)])))).all())
+    spelt = await mapping(s, [a.name for a in found])
+    out = []
+    for a in found:
+        name = by_ref.get(getattr(a, "ref", None)) or spelt.get(key(a.name))
+        out.append(a.model_copy(update={"name": name}) if name and name != a.name else a)
+    return out
+
+
 async def seed(s: AsyncSession) -> int:
     """Every artist the library names is an artist here (run when the Hub starts: the names are few)."""
     have = set((await s.execute(select(ArtistName.key))).scalars())

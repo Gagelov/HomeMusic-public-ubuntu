@@ -137,7 +137,7 @@ async def search(q: str = Query(min_length=1), user: User = Depends(current_user
             log.warning("hitmoz catalog search failed: %r", e)
             out.errors.append("Каталог hitmoz недоступен")
     if res is not None:
-        out.artists = res.artists
+        out.artists = await artist_names.shown(s, res.artists)  # under the names they have here
         out.albums = await annotate_albums(s, res.albums, user.id)
         out.tracks = await annotate_tracks(s, _unique(res.tracks), user.id)
     return out

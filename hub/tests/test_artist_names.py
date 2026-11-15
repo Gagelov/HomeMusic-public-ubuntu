@@ -75,6 +75,16 @@ async def test_two_artists_are_joined_and_one_may_be_set_apart(env):
     again = (await c.get("/api/artists/of", params={"name": "LSP", "ref": "dz:artist:7"})).json()
     assert (again["id"], again["name"]) == (a["id"], "ЛСП")
     assert [x["name"] for x in (await c.get("/api/artists/find", params={"q": "lsp"})).json()] == ["ЛСП"]
+    # a catalog's own card of the artist is shown under the name here
+    from app.catalog.models import CatalogArtist
+    from app.db import session_scope
+    from app.library import artists
+
+    async with session_scope() as s:
+        got = await artists.shown(s, [CatalogArtist(ref="dz:artist:7", source="dz", id="7", name="LSP"),
+                                      CatalogArtist(ref="dz:artist:8", source="dz", id="8", name="Lsp"),
+                                      CatalogArtist(ref="dz:artist:9", source="dz", id="9", name="Кино")])
+        assert [a.name for a in got] == ["ЛСП", "ЛСП", "Кино"]
 
     lsp = next(n for n in again["names"] if n["name"] == "LSP")
     r = await c.delete(f"/api/artists/{a['id']}/names/{lsp['id']}")
