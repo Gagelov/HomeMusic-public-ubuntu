@@ -21,7 +21,13 @@ import { attempt, confirmDialog, toast } from '../lib/ui';
  * its year are chosen among what the files and the catalog say (or written), and its cover among every picture
  * found — the catalog's and the ones inside the files, each with its size in pixels, its kind and its weight. Under
  * the head its files stand as the tracks of a playlist: the number, the cover that plays the file in the app's own
- * player, the name with everyone credited, the length — and what the catalog changes in the track, in a few words.
+ * player, the name with everyone credited, the length.
+ *
+ * What the catalog says is told apart where it stands, by one rule for the heads and the rows alike: a value that
+ * came from the catalog is in a blue pill, what the file said in its place is struck out beside it, and what did
+ * not change is plain. So a number the file had not is a pill; a guest the catalog adds is a pill after the file's
+ * own artist; a name the catalog writes otherwise is the file's struck out and the catalog's in a pill. In a head
+ * the struck-out value is a button: it takes the file's word back.
  * A single stands the same way — a head of its own with its artist, its year and its picture to choose, only
  * without a name (a single is called as its track is), and its one file under it. A row opens to be put right by hand (its ⋯).
  *
@@ -82,7 +88,7 @@ interface Columns {
 }
 const COLUMNS: [keyof Columns, string][] = [['file', 'Файл'], ['size', 'Размер'], ['quality', 'Качество']];
 const COLS_KEY = 'hm-upload-cols';
-const grid = (c: Columns) => ({ gridTemplateColumns: ['2.25rem', '2.5rem', 'minmax(0,1.5fr)', 'minmax(0,1.1fr)', c.file ? 'minmax(0,1.1fr)' : null, c.size ? '4.5rem' : null, c.quality ? '5.5rem' : null, '3rem', '2.5rem'].filter(Boolean).join(' ') });
+const grid = (c: Columns) => ({ gridTemplateColumns: ['3.75rem', '2.5rem', 'minmax(0,1.6fr)', c.file ? 'minmax(0,1.1fr)' : null, c.size ? '4.5rem' : null, c.quality ? '5.5rem' : null, '3rem', '2.5rem'].filter(Boolean).join(' ') });
 
 /** What was chosen in an album's head (nothing said: the page's own pick — `Group.title` and the rest). */
 interface AlbumChoice {
@@ -114,6 +120,10 @@ interface Group {
   titles: string[];
   artists: string[];
   years: string[];
+  /** what the catalog says of the release (none: it does not know it) — shown in a pill where the files say otherwise */
+  cat: { title: string | null; artist: string | null; year: string | null };
+  /** a file of the album says the same as the catalog: the value is no news, and stands plain */
+  agree: { title: boolean; artist: boolean; year: boolean };
   pictures: Picture[];
   /** the page's pick, where the listener said nothing */
   title: string;
@@ -448,7 +458,7 @@ export function UploadPage() {
     for (const u of uploads) {
       const k = keys.get(u.id);
       if (!k) continue;
-      const g = groups.get(k) ?? groups.set(k, { key: k, single: k.startsWith('s|'), files: [], release: null, titles: [], artists: [], years: [], pictures: [], title: '', artist: '', year: '', cover: null }).get(k)!;
+      const g = groups.get(k) ?? groups.set(k, { key: k, single: k.startsWith('s|'), files: [], release: null, titles: [], artists: [], years: [], cat: { title: null, artist: null, year: null }, agree: { title: false, artist: false, year: false }, pictures: [], title: '', artist: '', year: '', cover: null }).get(k)!;
       g.files.push(u);
     }
     for (const g of groups.values()) {
@@ -464,6 +474,12 @@ export function UploadPage() {
       g.title = (m ? catAlbum(g.release!) : null) ?? g.titles[0] ?? '';
       g.artist = m?.album_artist ?? (g.single ? m?.artist : null) ?? g.artists[0] ?? '';
       g.year = m?.year ? String(m.year) : (g.years[0] ?? '');
+      g.cat = { title: m ? catAlbum(g.release!) : null, artist: m ? (m.album_artist ?? (g.single ? (m.artist ?? null) : null)) : null, year: m?.year ? String(m.year) : null };
+      g.agree = {
+        title: own.some((u) => same(str(u.tags.album), g.cat.title)),
+        artist: own.some((u) => same(str(u.tags.album_artist) || u.artists?.[0], g.cat.artist)),
+        year: own.some((u) => str(u.tags.year).slice(0, 4) === g.cat.year),
+      };
       const pics = new Map<string, Picture>();
       const withCat = taken.find((u) => u.match?.cover_url);
       if (withCat) pics.set('catalog', { key: 'catalog', url: imageUrl(withCat.match!.cover_url!) as string, from: 'catalog', upload: withCat.id, count: 0 });
@@ -932,18 +948,20 @@ export function Steps({ at }: { at: 1 | 2 }) {
 function AlbumHead({ g, now, said, onChoose, shown }: { g: Group; now: { title: string; artist: string; year: string; cover: Picture | null }; said: AlbumChoice; onChoose: (patch: AlbumChoice) => void; shown: number }) {
   const [writing, setWriting] = useState<'title' | 'artist' | 'year' | null>(null);
   const field = (name: 'title' | 'artist' | 'year', label: string, variants: string[], value: string, none: string) => {
-    const own = said[name] !== undefined && !variants.includes(said[name] as string);
-    const chip = (v: string) => (
-      <button key={v} type="button" aria-pressed={value === v} onClick={() => { setWriting(null); onChoose({ [name]: v }); }} className={cx('max-w-full truncate rounded-full px-3 py-1 text-sm transition', value === v ? 'bg-info/20 font-semibold text-info' : 'bg-fg/10 text-muted hover:text-fg')}>
-        {v}
-      </button>
-    );
+    const cat = g.cat[name];
+    const fromFiles = variants.filter((v) => v !== cat); // what the files say otherwise than the catalog
+    const others = [...new Set([...(cat && cat !== value ? [cat] : []), ...fromFiles.filter((v) => v !== value)])];
+    const big = name === 'title' ? 'text-[15px] font-semibold' : 'text-sm';
     return (
       <div className="grid items-center gap-2 py-1 md:grid-cols-[6.5rem_minmax(0,1fr)]">
         <span className="text-xs text-muted">{label}</span>
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {variants.length <= 1 && !own && writing !== name ? <span className={cx('truncate', name === 'title' ? 'text-[15px] font-semibold' : 'text-sm')}>{value || none}</span> : variants.map(chip)}
-          {own && writing !== name && chip(said[name] as string)}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          {/* what the files said, struck out: a tap takes it instead — and the catalog's, when the files' word stands */}
+          {writing !== name && others.map((v) => (
+            <button key={v} type="button" title={v === cat ? 'Вернуть значение из каталога' : 'Взять это значение из файлов'} onClick={() => onChoose({ [name]: v === g[name] ? undefined : v })} className={cx('max-w-full truncate transition hover:text-fg', v === cat ? 'rounded-full bg-info/10 px-2 text-sm text-info/70 line-through' : 'text-sm text-dim line-through')}>
+              {v}
+            </button>
+          ))}
           {writing === name ? (
             <input
               className="input !h-8 w-56 !py-1 text-sm"
@@ -951,17 +969,27 @@ function AlbumHead({ g, now, said, onChoose, shown }: { g: Group; now: { title: 
               inputMode={name === 'year' ? 'numeric' : undefined}
               placeholder={label}
               aria-label={`${label}: своё`}
-              defaultValue={own ? value : ''}
+              defaultValue={value}
               onBlur={(e) => {
                 const v = name === 'year' ? e.target.value.replace(/\D/g, '').slice(0, 4) : e.target.value.trim();
-                if (v) onChoose({ [name]: v });
+                if (v) onChoose({ [name]: v === g[name] ? undefined : v });
                 setWriting(null);
               }}
               onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
             />
           ) : (
+            <span className={cx('truncate', big, value && value === cat && !g.agree[name] ? 'rounded-full bg-info/20 px-2 text-info' : '')} title={value && value === cat && !g.agree[name] ? 'Из каталога' : undefined}>
+              {value || none}
+            </span>
+          )}
+          {writing !== name && (
             <button type="button" aria-label={`${label}: вписать своё`} title="Вписать своё" onClick={() => setWriting(name)} className="flex h-7 w-7 items-center justify-center rounded-full text-dim hover:bg-fg/10 hover:text-fg">
               <Icon name="edit" size={14} />
+            </button>
+          )}
+          {said[name] !== undefined && writing !== name && (
+            <button type="button" className="text-[11px] text-dim hover:text-fg hover:underline" onClick={() => onChoose({ [name]: undefined })}>
+              сбросить
             </button>
           )}
         </div>
@@ -1041,7 +1069,6 @@ function TableHead({ cols, onCols }: { cols: Columns; onCols: (next: Columns) =>
       <span className="text-center">#</span>
       <span />
       <span>Название</span>
-      <span>Что изменится</span>
       {cols.file && <span>Файл</span>}
       {cols.size && <span>Размер</span>}
       {cols.quality && <span>Качество</span>}
@@ -1073,11 +1100,18 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   const playing = phase === 'playing' || phase === 'resolving' || phase === 'loading';
   const title = by ? (same(u.title, m?.title) ? u.title : m?.title) : r.title;
   const artists = by ? (m?.artists?.length ? m.artists : [m?.artist ?? '']).join(' · ') : r.artist;
-  const notes: ReactNode[] = [];
-  if (by) for (const c of changesOf(u, inAlbum)) notes.push(<span key={c} className="max-w-full truncate rounded-full bg-fg/10 px-2 py-0.5 text-[11px] text-muted">{c}</span>);
-  else if (unsure(u, r)) notes.push(<span key="q" title={`В каталоге похожая запись: «${m?.title}» — ${m?.artist}. ${m?.why ?? ''}`} className="rounded-full bg-warn/15 px-2 py-0.5 text-[11px] text-warn">уточню по звуку на шаге 2</span>);
-  else if (has) notes.push(<span key="off" className="text-[11px] text-dim">как в файле</span>);
-  else notes.push(<span key="none" className="text-[11px] text-dim">трека нет в каталоге</span>);
+  // what the catalog says is in a pill, what the file said in its place is struck out beside it
+  const pill = (text: ReactNode, key?: string | number) => <span key={key} className="rounded-full bg-info/20 px-1.5 text-info" title="Из каталога">{text}</span>;
+  const was = (text: ReactNode) => <span className="text-dim line-through" title="Было в файле">{text}</span>;
+  const doubt = unsure(u, r) && (
+    <span title={`В каталоге похожая запись: «${m?.title}» — ${m?.artist}. ${m?.why ?? ''}`} className="ml-2 rounded-full bg-warn/15 px-2 py-0.5 align-middle text-[11px] text-warn">уточню по звуку на шаге 2</span>
+  );
+  const theirs = (m?.artists?.length ? m.artists : [m?.artist ?? '']).filter(Boolean);
+  const mine = (u.artists ?? []).map(low);
+  const kept = mine.length > 0 && mine.every((a) => theirs.map(low).includes(a)); // the catalog only adds to the file's artists
+  const sameArtists = mine.join('|') === theirs.map(low).join('|');
+  const fileNo = toIntOrNull(str(u.tags.track_no));
+  const catNo = by && inAlbum && m?.track_no ? m.track_no : null;
   const quality = fileWords(u.codec, u.bitrate_kbps);
   const cover = (
     <button type="button" data-own aria-label={playing ? 'Пауза' : `Слушать «${title}»`} onClick={onPlay} className="group/c relative flex h-10 w-10 shrink-0 items-center justify-center">
@@ -1094,8 +1128,13 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
     </span>
   ) : (
     <span className="min-w-0">
-      <span className={cx('block truncate text-[15px]', phase && 'text-accent')}>{title}</span>
-      <span className="block truncate text-[13px] text-muted">{artists}</span>
+      <span className={cx('block truncate text-[15px]', phase && 'text-accent')}>
+        {by && !same(u.title, m?.title) ? <>{was(u.title)} {pill(m?.title)}</> : title}
+        {doubt}
+      </span>
+      <span className="block truncate text-[13px] text-muted">
+        {!by || sameArtists ? artists : kept ? theirs.map((a, i) => <span key={a}>{i > 0 && ' '}{mine.includes(low(a)) ? a : pill(a)}</span>) : <>{was(u.artist)} {theirs.map((a, i) => <span key={a}>{i > 0 && ' '}{pill(a)}</span>)}</>}
+      </span>
     </span>
   );
   const item = (icon: Parameters<typeof Icon>[0]['name'], label: string, run: () => void, danger = false) => (
@@ -1128,7 +1167,23 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
       )}
     </span>
   );
-  const dots = <IconButton icon="more" size={18} label="Меню файла" aria-expanded={menu} data-own onClick={() => onMenu(!menu)} className="text-dim hover:text-fg" />;
+  const dots = (
+    <span
+      data-own
+      className="contents"
+      onMouseDown={(e) => {
+        if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey) return;
+        e.preventDefault(); // no text is selected while the mouse drags
+        onDragStart();
+      }}
+    >
+      {picked ? (
+        <IconButton icon="check" size={18} label="Снять выделение" onClick={() => !dragged() && onPick()} className="!text-accent" />
+      ) : (
+        <IconButton icon="more" size={18} label="Меню файла · потяните по строкам, чтобы выбрать несколько" aria-expanded={menu} onClick={() => !dragged() && onMenu(!menu)} className="text-dim hover:text-fg" />
+      )}
+    </span>
+  );
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!menu || !desktop) return;
@@ -1157,20 +1212,9 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
     >
       <div className="grid min-h-14 items-center gap-2.5 py-1.5 pr-1" style={desktop ? grid(cols) : { gridTemplateColumns: '0.25rem 2.5rem minmax(0,1fr) 2.5rem' }}>
         {desktop ? (
-          <button
-            type="button"
-            data-own
-            aria-label={picked ? `Снять выделение: «${title}»` : `Выбрать «${title}»`}
-            title="Нажмите, чтобы выбрать; потяните по строкам, чтобы выбрать несколько"
-            onPointerDown={(e) => {
-              (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); // the rows under the pointer hear it pass
-              onDragStart();
-            }}
-            onClick={() => !dragged() && onPick()}
-            className="flex h-10 touch-none select-none items-center justify-center text-sm tabular-nums text-dim hover:text-fg"
-          >
-            {picked ? <Icon name="check" size={16} className="text-accent" /> : number || '—'}
-          </button>
+          <span className="flex items-center justify-center gap-1 text-sm tabular-nums text-dim">
+            {catNo && catNo !== fileNo ? <>{fileNo ? was(fileNo) : null}{pill(catNo)}</> : fileNo || (inAlbum ? '—' : number || '—')}
+          </span>
         ) : (
           <span />
         )}
@@ -1181,15 +1225,9 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
           <span className="min-w-0">
             {names}
             <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
-              {notes}
               <span className="text-[11px] tabular-nums text-dim">{fmtDuration(u.duration_s)}</span>
               {u.weak && <span className="text-[11px] text-warn">{quality}</span>}
             </span>
-          </span>
-        )}
-        {desktop && (
-          <span className="flex min-w-0 flex-wrap items-center gap-1">
-            {notes}
           </span>
         )}
         {desktop && cols.file && <span className="truncate text-[13px] text-muted" title={u.orig_name}>{u.orig_name}</span>}
