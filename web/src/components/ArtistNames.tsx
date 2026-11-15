@@ -139,7 +139,11 @@ function NamesWindow({ card, onChange, onClose }: { card: ArtistCardOut; onChang
             <p className="pb-1 text-muted">Похоже на того же исполнителя:</p>
             {card.suggestions.map((x) => (
               <p key={x.id} className="flex flex-wrap items-center gap-x-3 py-0.5">
-                <span className="text-sm">{x.name}</span>
+                {/* who it is: their own page, to look before the two are joined */}
+                <Link to={x.ref ? `/artist/${enc(x.ref)}` : `/artist-named/${enc(x.name)}`} onClick={onClose} className="text-sm hover:underline">
+                  {x.name}
+                  {x.nb_fans ? <span className="text-dim"> · {x.nb_fans.toLocaleString('ru-RU')} в каталоге</span> : null}
+                </Link>
                 <button type="button" className="text-info hover:underline" onClick={() => void merge({ other_id: x.id }, x.name)}>объединить</button>
                 <button type="button" className="text-info hover:underline" onClick={() => void run(() => api.artistAddProject(card.id, { other_id: x.id }))}>это его проект</button>
                 <button type="button" className="text-muted hover:underline" onClick={() => void run(() => api.artistApart(card.id, { other_id: x.id }))}>это другой</button>
@@ -151,15 +155,15 @@ function NamesWindow({ card, onChange, onClose }: { card: ArtistCardOut; onChang
           <p className="pb-1.5 text-[13px] text-muted">Имя, под которым исполнителя видят все, и другие написания — по ним он тоже находится.</p>
           <div className="flex flex-wrap gap-1.5">
             {card.names.map((n) => (
-              <span key={n.id} className={cx(chip, n.main && 'border-accent text-accent')}>
+              <span key={n.id ?? n.name} className={cx(chip, n.main && 'border-accent text-accent')}>
                 <span className="truncate">{n.name}</span>
                 <span className={cx('text-[11px]', n.main ? 'text-accent' : 'text-dim')}>{n.main ? 'основное' : (SOURCE[n.source] ?? n.source)}</span>
-                {!n.main && (
+                {!n.main && n.id != null && (
                   <>
-                    <button type="button" className="rounded-full px-1.5 text-[11px] text-info hover:bg-fg/10 hover:underline" onClick={() => void makeMain(n.id, n.name)}>
+                    <button type="button" className="rounded-full px-1.5 text-[11px] text-info hover:bg-fg/10 hover:underline" onClick={() => void makeMain(n.id as number, n.name)}>
                       сделать основным
                     </button>
-                    <button type="button" className={mini} aria-label={`Убрать написание: ${n.name}`} title={n.source === 'manual' ? 'Убрать' : 'Это другой исполнитель — отделить'} onClick={() => void dropName(n.id, n.name, n.source)}>
+                    <button type="button" className={mini} aria-label={`Убрать написание: ${n.name}`} title={n.source === 'manual' ? 'Убрать' : 'Это другой исполнитель — отделить'} onClick={() => void dropName(n.id as number, n.name, n.source)}>
                       <Icon name="x" size={12} />
                     </button>
                   </>
@@ -167,6 +171,11 @@ function NamesWindow({ card, onChange, onClose }: { card: ArtistCardOut; onChang
               </span>
             ))}
           </div>
+          {card.held_by && (
+            <p className="pt-2 text-[12px] text-dim">
+              Так же пишется «{card.held_by}». Музыка из каталога приходит к своему исполнителю, а файл, в котором указано только это имя, считается музыкой «{card.held_by}».
+            </p>
+          )}
           <div className="flex gap-2 pt-2">
             <input className="input min-w-0 flex-1" placeholder="Ещё написание: LSP" aria-label="Ещё написание" value={spelling} onChange={(e) => setSpelling(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void addSpelling()} maxLength={300} autoComplete="off" />
             <Button small disabled={!spelling.trim()} onClick={() => void addSpelling()}>

@@ -1,16 +1,24 @@
-"""Who an artist is, however the name is written — and what else a song is called.
+"""Who an artist is — whatever the name is written as, whichever page of a catalog it is — and what else a song is
+called.
 
-An artist has one name here, for everyone, and any number of other spellings («ЛСП» is «LSP» to a catalog). The
-library is written in the one name: a track that comes under a spelling is filed under the artist's name, its file
-tagged so, and when the name changes (a spelling is made the name, two artists turn out to be one) every track and
-album of theirs is rewritten (`rewrite`, a job). So the search, a shared link, Navidrome and the files agree.
+An artist (`Artist`) is somebody the Hub knows, with one name everyone sees. Who a track or an album is by is said
+by links to artists (`TrackArtist`, `AlbumArtist`), in the order of the credits; the lines written in the rows and
+in the files' tags («ЛСП, Pharaoh») are those artists' names, so a new name, or two artists found to be one,
+rewrites the lines of exactly their music (`rewrite`, a job) — nobody else's, whatever they are called.
 
-Spellings that differ only in the letters' case are one artist by themselves. Others are joined by a listener:
-the Hub only says who looks like the same one (`suggestions`: the names read alike once in Latin letters), and
-remembers «это другой». What a catalog calls its own artist (`ArtistRef`) leads to the artist here.
+An artist is told in two ways, and they are kept apart:
+
+* by a catalog's own record of them (`ArtistRef`: "dz:8874422") — exact. A catalog may keep several records of
+  one artist (the old releases under «LSP», the new under «ЛСП»): each is tied to the artist here, and their page
+  is drawn of all of them. A record is tied by itself only when it is the first the artist has; a second record
+  under a name the artist is spelt by may as well be a namesake's, so it becomes an artist of its own, and the Hub
+  only says the two look alike (`suggestions`) — a listener joins them (`merge`) or says «это другой».
+* by a bare spelling (`ArtistName`: a dictionary, one artist per spelling, the letters' case aside) — for music
+  that says only a name: an uploaded file, a line typed by hand. A namesake of whoever holds a spelling is still
+  an artist, with that very name: only bare text of that spelling is not taken for them.
 
 A side project is not a spelling: «M00NCHILD» has releases of its own and stays an artist of its own — the two are
-only linked (`ArtistLink`), each named on the other's page.
+only linked (`ArtistLink`), and the projects of one person are one group.
 
 A track, too, has one name and others it is known by (`TrackName`): the name it had before it was put right, what
 its file called it, one a listener adds («Марафоны» for «Спорт»). The search reads them all (`found`).
@@ -20,12 +28,25 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.library.credits import split_artists
 from app.matching.normalize import _clean, _prep, fingerprint, to_latin
-from app.models import Album, Artist, ArtistApart, ArtistLink, ArtistName, ArtistRef, Edit, Track, TrackFile, TrackName
+from app.models import (
+    Album,
+    AlbumArtist,
+    Artist,
+    ArtistApart,
+    ArtistLink,
+    ArtistName,
+    ArtistRef,
+    Edit,
+    Track,
+    TrackArtist,
+    TrackFile,
+    TrackName,
+)
 
 
 class Taken(Exception):
@@ -51,119 +72,211 @@ def _pair(a: int, b: int) -> tuple[int, int]:
     return (a, b) if a < b else (b, a)
 
 
-# ---------------------------------------------------------------- artists
+# ---------------------------------------------------------------- who an artist is
 
 
-async def known(s: AsyncSession, name: str | None) -> Artist | None:
+async def holder(s: AsyncSession, name: str | None) -> Artist | None:
+    """Whose a bare spelling is (none: nobody's yet)."""
     k = key(name)
     if not k:
         return None
     return (await s.execute(select(Artist).join(ArtistName, ArtistName.artist_id == Artist.id).where(ArtistName.key == k))).scalar_one_or_none()
 
 
-async def resolve(s: AsyncSession, name: str, source: str = "library") -> Artist:
-    """The artist of this spelling; one nobody was called yet is a new artist of that name."""
-    a = await known(s, name)
-    if a is None:
-        a = Artist(name=" ".join(name.split()))
-        s.add(a)
-        await s.flush()
-        s.add(ArtistName(artist_id=a.id, name=a.name, key=key(name), source=source))
+async def by_ref(s: AsyncSession, ref: str | None) -> Artist | None:
+    if not ref:
+        return None
+    return (await s.execute(select(Artist).join(ArtistRef, ArtistRef.artist_id == Artist.id).where(ArtistRef.ref == ref))).scalar_one_or_none()
+
+
+async def profiles(s: AsyncSession, artist_id: int) -> list[str]:
+    """The catalog's records of the artist, the first one tied first."""
+    return list((await s.execute(select(ArtistRef.ref).where(ArtistRef.artist_id == artist_id).order_by(ArtistRef.tied_at, ArtistRef.ref))).scalars())
+
+
+async def _new(s: AsyncSession, name: str, source: str, *, spelling: bool) -> Artist:
+    a = Artist(name=" ".join(name.split()))
+    s.add(a)
+    await s.flush()
+    if spelling:
+        s.add(ArtistName(artist_id=a.id, name=a.name, key=key(a.name), source=source))
         await s.flush()
     return a
 
 
-async def mapping(s: AsyncSession, names: Iterable[str | None]) -> dict[str, str]:
-    """Spelling (as `key`) → the artist's name, for the spellings that are not the name itself. Nothing is made."""
-    keys = {key(n) for n in names if n}
-    if not keys:
-        return {}
-    rows = (await s.execute(select(ArtistName.key, Artist.name).join(Artist, Artist.id == ArtistName.artist_id).where(ArtistName.key.in_(keys)))).all()
-    return {k: main for k, main in rows if key(main) != k}
+async def who(s: AsyncSession, name: str | None, ref: str | None = None, source: str = "library") -> Artist | None:
+    """The artist that a name — and, where a catalog said it, the catalog's record — stands for; somebody not met
+    yet becomes an artist. None: neither was given.
+
+    A record the Hub has tied says who it is, whatever the name. One not tied yet is the artist's of that
+    spelling when they have no record so far (their first), and a new artist's otherwise — perhaps a namesake."""
+    a = await by_ref(s, ref)
+    if a is not None:
+        return a
+    if not key(name):
+        return None
+    a = await holder(s, name)
+    if ref is None:
+        return a or await _new(s, name, source, spelling=True)
+    if a is None:
+        a = await _new(s, name, source, spelling=True)
+    elif await profiles(s, a.id):
+        a = await _new(s, name, source, spelling=False)
+    s.add(ArtistRef(ref=ref, artist_id=a.id))
+    await s.flush()
+    return a
 
 
-def _in_names(parts: list[str], names: dict[str, str]) -> list[str]:
-    out: list[str] = []
-    for p in parts:
-        n = names.get(key(p), p)
-        if key(n) not in {key(x) for x in out}:
-            out.append(n)
-    return out
+class Reader:
+    """Names as they are here, for what a catalog says (`reader`): nothing is made, nobody is tied."""
+
+    def __init__(self, tied: dict[str, tuple[int, str]], held: dict[str, tuple[int, str, bool]]):
+        self.tied, self.held = tied, held
+
+    def artist(self, name: str | None, ref: str | None = None) -> tuple[int, str] | None:
+        """(the artist's id, their name) for a name and the catalog's record of them; None: not somebody known —
+        or a record not tied, under a spelling of an artist who has records of their own (a namesake, perhaps)."""
+        if ref and ref in self.tied:
+            return self.tied[ref]
+        hit = self.held.get(key(name))
+        if hit is None or (ref and hit[2]):
+            return None
+        return hit[0], hit[1]
+
+    def name(self, name: str | None, ref: str | None = None) -> str | None:
+        hit = self.artist(name, ref)
+        return hit[1] if hit else name
 
 
-async def line(s: AsyncSession, text: str | None, source: str = "library") -> str:
-    """A line of artists in the artists' names; every one of them is known from now on."""
-    parts = split_artists(text)
-    if not parts:
-        return (text or "").strip()
-    theirs = {key(p): (await resolve(s, p, source)).name for p in parts}
-    if all(theirs[key(p)] == p for p in parts):
-        return (text or "").strip()  # nothing to put right: the line stays as it was written («A feat. B»)
-    return ", ".join(_in_names(parts, theirs))
+async def reader(s: AsyncSession, names_: Iterable[str | None], refs: Iterable[str | None] = ()) -> Reader:
+    keys = {key(n) for n in names_ if n} - {""}
+    refs = {r for r in refs if r}
+    tied = {r: (i, n) for r, i, n in (await s.execute(
+        select(ArtistRef.ref, Artist.id, Artist.name).join(Artist, Artist.id == ArtistRef.artist_id).where(ArtistRef.ref.in_(refs)))).all()} if refs else {}
+    held: dict[str, tuple[int, str, bool]] = {}
+    if keys:
+        rows = (await s.execute(select(ArtistName.key, Artist.id, Artist.name).join(Artist, Artist.id == ArtistName.artist_id).where(ArtistName.key.in_(keys)))).all()
+        with_records = set((await s.execute(select(ArtistRef.artist_id).where(ArtistRef.artist_id.in_({i for _, i, _ in rows})))).scalars()) if rows else set()
+        held = {k: (i, n, i in with_records) for k, i, n in rows}
+    return Reader(tied, held)
 
 
-async def names(s: AsyncSession, parts: Iterable[str], source: str = "library") -> list[str]:
-    parts = [p for p in parts if p and p.strip()]
-    return _in_names(parts, {key(p): (await resolve(s, p, source)).name for p in parts})
-
-
-def put_right(o: Any, names_: dict[str, str]) -> None:
+def put_right(o: Any, r: Reader) -> None:
     """What a catalog says of a track or an album, in the artists' names here."""
-    if not names_:
-        return
-    for field in ("artist", "album_artist"):
-        v = getattr(o, field, None)
-        if isinstance(v, str) and key(v) in names_:
-            setattr(o, field, names_[key(v)])
-    v = getattr(o, "artists", None)
-    if isinstance(v, list) and any(isinstance(a, str) and key(a) in names_ for a in v):
-        o.artists = [names_.get(key(a), a) if isinstance(a, str) else a for a in v]
+    main_ref = getattr(o, "artist_ref", None)
+    main = getattr(o, "artist", None)
+    if isinstance(main, str):
+        o.artist = r.name(main, main_ref)
+        own = getattr(o, "album_artist", None)
+        if isinstance(own, str):
+            o.album_artist = r.name(own, main_ref if key(own) == key(main) else None)
+    names_ = getattr(o, "artists", None)
+    if isinstance(names_, list) and names_:
+        refs = list(getattr(o, "artist_refs", None) or [])
+        refs += [None] * (len(names_) - len(refs))
+        o.artists = [r.name(n, ref) if isinstance(n, str) else n for n, ref in zip(names_, refs)]
 
 
-async def shown(s: AsyncSession, found: list[Any]) -> list[Any]:
-    """A catalog's artists (each with a `ref` and a `name`) under the names they have here: by what the catalog
-    calls its own artist, else by the spelling. The ones the Hub calls the same are returned as they came."""
-    if not found:
-        return found
-    by_ref = dict((await s.execute(
-        select(ArtistRef.ref, Artist.name).join(Artist, Artist.id == ArtistRef.artist_id)
-        .where(ArtistRef.ref.in_([a.ref for a in found if getattr(a, "ref", None)])))).all())
-    spelt = await mapping(s, [a.name for a in found])
-    out = []
-    for a in found:
-        name = by_ref.get(getattr(a, "ref", None)) or spelt.get(key(a.name))
-        out.append(a.model_copy(update={"name": name}) if name and name != a.name else a)
+async def shown(s: AsyncSession, found_: list[Any]) -> list[Any]:
+    """A catalog's artists (each with a `ref` and a `name`) as they are here: under their names, and once each —
+    the several records a catalog keeps of one artist are one card, that of the record with the most followers."""
+    if not found_:
+        return found_
+    r = await reader(s, [a.name for a in found_], [a.ref for a in found_])
+    out: list[Any] = []
+    at: dict[int, int] = {}
+    for a in found_:
+        hit = r.artist(a.name, a.ref)
+        if hit is None:
+            out.append(a)
+            continue
+        card_ = a.model_copy(update={"name": hit[1]}) if hit[1] != a.name else a
+        if hit[0] not in at:
+            at[hit[0]] = len(out)
+            out.append(card_)
+        elif (getattr(a, "nb_fans", None) or 0) > (getattr(out[at[hit[0]]], "nb_fans", None) or 0):
+            out[at[hit[0]]] = card_
     return out
+
+
+# ---------------------------------------------------------------- who the music is by
+
+
+def refs_of(catalog: dict[str, Any] | None) -> dict[str, str]:
+    """Spelling (as `key`) -> the catalog's record, as the catalog's word of a track says."""
+    c = catalog or {}
+    out = {key(n): r for n, r in zip(c.get("artists") or [], c.get("artist_refs") or []) if n and r}
+    if c.get("artist") and c.get("artist_ref"):
+        out.setdefault(key(c["artist"]), c["artist_ref"])
+    return out
+
+
+def _line(text: str | None, parts: list[str], theirs: list[Artist]) -> str:
+    """A line of credits in the artists' names; one that names them rightly already stays as it was written."""
+    if all(a.name == p for a, p in zip(theirs, parts)):
+        return (text or "").strip()
+    out: list[str] = []
+    for a in theirs:
+        if key(a.name) not in {key(x) for x in out}:
+            out.append(a.name)
+    return ", ".join(out)
+
+
+async def credits(s: AsyncSession, text: str | None, refs: dict[str, str] | None = None, source: str = "library") -> tuple[str, list[Artist]]:
+    """Who a line of credits names, and the line in their names. `refs`: the catalog's records by spelling."""
+    parts = split_artists(text)
+    theirs = [a for a in [await who(s, p, (refs or {}).get(key(p)), source) for p in parts] if a is not None]
+    if len(theirs) != len(parts) or not parts:
+        return (text or "").strip(), theirs
+    return _line(text, parts, theirs), theirs
+
+
+async def _set(s: AsyncSession, table: Any, column: Any, owner_id: int, theirs: list[Artist]) -> None:
+    await s.execute(delete(table).where(column == owner_id))
+    seen: set[int] = set()
+    for a in theirs:
+        if a.id not in seen:
+            s.add(table(**{column.key: owner_id, "position": len(seen), "artist_id": a.id}))
+            seen.add(a.id)
+    await s.flush()
+
+
+async def credit_track(s: AsyncSession, track: Track, theirs: list[Artist] | None = None) -> None:
+    """Say who the track is by — as given, or as its line and the catalog's word of it tell."""
+    if theirs is None:
+        _, theirs = await credits(s, track.artist, refs_of(track.catalog))
+    await _set(s, TrackArtist, TrackArtist.track_id, track.id, theirs)
+
+
+async def credit_album(s: AsyncSession, album: Album, theirs: list[Artist] | None = None) -> None:
+    if theirs is None:
+        _, theirs = await credits(s, album.album_artist)
+    await _set(s, AlbumArtist, AlbumArtist.album_id, album.id, theirs)
 
 
 async def seed(s: AsyncSession) -> int:
-    """Every artist the library names is an artist here (run when the Hub starts: the names are few)."""
-    have = set((await s.execute(select(ArtistName.key))).scalars())
-    seen: dict[str, str] = {}
-    for a, aa in (await s.execute(select(Track.artist, Track.album_artist))).all():
-        for n in split_artists(a) + split_artists(aa):
-            seen.setdefault(key(n), n)
-    for (aa,) in (await s.execute(select(Album.album_artist))).all():
-        for n in split_artists(aa):
-            seen.setdefault(key(n), n)
-    new = [n for k, n in seen.items() if k and k not in have]
-    for n in new:
-        await resolve(s, n)
-    return len(new)
+    """Every track and album of the library says who it is by (run when the Hub starts: it heals what was made
+    before the links, and costs nothing once all are said)."""
+    n = 0
+    said = select(TrackArtist.track_id).where(TrackArtist.track_id == Track.id).exists()
+    for t in (await s.execute(select(Track).where(~said, Track.artist != ""))).scalars().all():
+        await credit_track(s, t)
+        n += 1
+    said = select(AlbumArtist.album_id).where(AlbumArtist.album_id == Album.id).exists()
+    for a in (await s.execute(select(Album).where(~said, Album.album_artist != ""))).scalars().all():
+        # an album is by whom its tracks say, where they name the same artist
+        own = (await s.execute(
+            select(Artist).join(TrackArtist, TrackArtist.artist_id == Artist.id).join(Track, Track.id == TrackArtist.track_id)
+            .where(Track.album_id == a.id))).scalars().all()
+        by = {key(x.name): x for x in own}
+        parts = split_artists(a.album_artist)
+        theirs = [by.get(key(p)) or await who(s, p) for p in parts]
+        await credit_album(s, a, [x for x in theirs if x is not None])
+        n += 1
+    return n
 
 
-async def of_ref(s: AsyncSession, ref: str | None, name: str | None) -> Artist | None:
-    """The artist a catalog's page is of: by what the catalog calls its own (`ref`), else by the name — and the
-    catalog's own is remembered to be theirs."""
-    a = None
-    if ref:
-        a = (await s.execute(select(Artist).join(ArtistRef, ArtistRef.artist_id == Artist.id).where(ArtistRef.ref == ref))).scalar_one_or_none()
-    if a is None and name and name.strip():
-        a = await resolve(s, name, "catalog")
-        if ref:
-            s.add(ArtistRef(ref=ref, artist_id=a.id))
-            await s.flush()
-    return a
+# ---------------------------------------------------------------- an artist's card
 
 
 async def _linked(s: AsyncSession, artist_id: int) -> set[int]:
@@ -190,48 +303,65 @@ async def _apart(s: AsyncSession, artist_id: int) -> set[int]:
 async def suggestions(s: AsyncSession, artist: Artist) -> list[Artist]:
     """Artists that look like this one: a name of theirs reads the same in Latin letters. Not the ones linked as
     projects, nor those a listener said are somebody else."""
-    rows = (await s.execute(select(ArtistName.artist_id, ArtistName.name))).all()
+    rows = [*(await s.execute(select(ArtistName.artist_id, ArtistName.name))).all(), *(await s.execute(select(Artist.id, Artist.name))).all()]
     mine = {fold(n) for i, n in rows if i == artist.id} - {""}
     skip = {artist.id} | await _linked(s, artist.id) | await _apart(s, artist.id)
     ids = {i for i, n in rows if i not in skip and fold(n) in mine}
     return list((await s.execute(select(Artist).where(Artist.id.in_(ids)).order_by(Artist.name))).scalars()) if ids else []
 
 
-async def _picture(s: AsyncSession, artist: Artist, ref: str | None) -> str | None:
-    """A small picture of the artist: the catalog's, else the cover of an album of theirs here."""
+async def _catalog(ref: str | None) -> Any | None:
+    """The catalog's own card of a record (kept by the catalog's client); None: no such record, or the catalog is away."""
     from app.catalog.models import split_ref
     from app.services import svc
 
-    if ref and svc.deezer is not None:
-        try:
-            src, id_ = split_ref(ref)
-            if src == "dz":
-                a = await svc.deezer.get_artist(id_)
-                if a.picture_small_url or a.picture_url:
-                    return a.picture_small_url or a.picture_url
-        except Exception:  # the catalog is away, or knows the artist no more: the library's picture then
-            pass
-    album_id = (await s.execute(select(Album.id).where(Album.album_artist == artist.name, Album.cover_path.is_not(None)).limit(1))).scalar_one_or_none()
+    if not ref or svc.deezer is None:
+        return None
+    try:
+        src, id_ = split_ref(ref)
+        return await svc.deezer.get_artist(id_) if src == "dz" else None
+    except Exception:
+        return None
+
+
+async def _picture(s: AsyncSession, artist: Artist, ref: str | None) -> str | None:
+    """A small picture of the artist: the catalog's, else the cover of an album of theirs here."""
+    a = await _catalog(ref)
+    if a is not None and (a.picture_small_url or a.picture_url):
+        return a.picture_small_url or a.picture_url
+    album_id = (await s.execute(
+        select(Album.id).join(AlbumArtist, AlbumArtist.album_id == Album.id)
+        .where(AlbumArtist.artist_id == artist.id, Album.cover_path.is_not(None)).limit(1))).scalar_one_or_none()
     return f"/api/library/albums/{album_id}/cover" if album_id else None
 
 
+async def _brief(s: AsyncSession, a: Artist) -> dict[str, Any]:
+    refs = await profiles(s, a.id)
+    cat = await _catalog(refs[0]) if refs else None
+    return {"id": a.id, "name": a.name, "ref": refs[0] if refs else None, "nb_fans": getattr(cat, "nb_fans", None),
+            "picture_url": await _picture(s, a, refs[0] if refs else None)}
+
+
 async def card(s: AsyncSession, artist: Artist) -> dict[str, Any]:
-    """What an artist's page says of the name: the spellings, the other projects, who looks like the same one."""
+    """What an artist's page says of who they are: the name and the spellings, the catalog's records, the other
+    projects, and who looks like the same artist."""
     rows = (await s.execute(select(ArtistName).where(ArtistName.artist_id == artist.id).order_by(ArtistName.id))).scalars().all()
     main = key(artist.name)
-    linked = await _linked(s, artist.id)
-    projects = list((await s.execute(select(Artist).where(Artist.id.in_(linked)).order_by(Artist.name))).scalars()) if linked else []
-    refs = dict((await s.execute(select(ArtistRef.artist_id, ArtistRef.ref).where(ArtistRef.artist_id.in_([p.id for p in projects])))).all()) if projects else {}
-    spelt = {p.id: [] for p in projects}
-    if projects:
-        for i, n in (await s.execute(select(ArtistName.artist_id, ArtistName.name).where(ArtistName.artist_id.in_(list(spelt))).order_by(ArtistName.id))).all():
-            spelt[i].append(n)
+    names_ = [{"id": r.id, "name": r.name, "source": r.source, "main": r.key == main} for r in sorted(rows, key=lambda r: r.key != main)]
+    held_by = None
+    if not any(n["main"] for n in names_):  # a namesake of whoever holds the spelling: the name is theirs all the same
+        other = await holder(s, artist.name)
+        held_by = other.name if other is not None else None
+        names_.insert(0, {"id": None, "name": artist.name, "source": "catalog", "main": True})
+    projects = list((await s.execute(select(Artist).where(Artist.id.in_(await _linked(s, artist.id))).order_by(Artist.name))).scalars())
+    out_projects = []
+    for p in projects:
+        also = (await s.execute(select(ArtistName.name).where(ArtistName.artist_id == p.id).order_by(ArtistName.id))).scalars().all()
+        out_projects.append({**await _brief(s, p), "also": [n for n in also if key(n) != key(p.name)]})
     return {
-        "id": artist.id, "name": artist.name,
-        "names": [{"id": r.id, "name": r.name, "source": r.source, "main": r.key == main} for r in sorted(rows, key=lambda r: r.key != main)],
-        "projects": [{"id": p.id, "name": p.name, "ref": refs.get(p.id), "also": [n for n in spelt[p.id] if key(n) != key(p.name)],
-                      "picture_url": await _picture(s, p, refs.get(p.id))} for p in projects],
-        "suggestions": [{"id": a.id, "name": a.name} for a in await suggestions(s, artist)],
+        "id": artist.id, "name": artist.name, "names": names_, "held_by": held_by,
+        "profiles": await profiles(s, artist.id), "projects": out_projects,
+        "suggestions": [await _brief(s, a) for a in await suggestions(s, artist)],
     }
 
 
@@ -240,12 +370,16 @@ async def find(s: AsyncSession, q: str, limit: int = 12) -> list[dict[str, Any]]
     want = fold(q)
     if not want:
         return []
-    rows = (await s.execute(select(ArtistName.artist_id, ArtistName.name, Artist.name).join(Artist, Artist.id == ArtistName.artist_id))).all()
+    rows = [*(await s.execute(select(ArtistName.artist_id, ArtistName.name, Artist.name).join(Artist, Artist.id == ArtistName.artist_id))).all(),
+            *(await s.execute(select(Artist.id, Artist.name, Artist.name))).all()]
     out: dict[int, dict[str, Any]] = {}
     for i, n, main in sorted(rows, key=lambda r: (not fold(r[1]).startswith(want), len(r[1]))):
         if want in fold(n) and i not in out:
             out[i] = {"id": i, "name": main}
     return list(out.values())[:limit]
+
+
+# ---------------------------------------------------------------- what a listener changes
 
 
 def _journal(s: AsyncSession, user_id: int | None, artist_id: int, changes: dict[str, list[Any]]) -> None:
@@ -271,7 +405,7 @@ async def add_name(s: AsyncSession, user_id: int | None, artist: Artist, name: s
 
 
 async def set_main(s: AsyncSession, user_id: int | None, artist: Artist, name_id: int) -> bool:
-    """A spelling becomes the artist's name; the library is then rewritten in it (the caller queues `rewrite`)."""
+    """A spelling becomes the artist's name; their music is then rewritten in it (the caller queues `rewrite`)."""
     row = await s.get(ArtistName, name_id)
     if row is None or row.artist_id != artist.id:
         raise ValueError("У исполнителя нет такого написания")
@@ -285,7 +419,8 @@ async def set_main(s: AsyncSession, user_id: int | None, artist: Artist, name_id
 
 async def drop_name(s: AsyncSession, user_id: int | None, artist: Artist, name_id: int) -> Artist | None:
     """A spelling leaves the artist. One a listener wrote in is forgotten; one that came with music becomes an
-    artist of its own again (returned) — what comes under it from now on is theirs. The artist's own name stays."""
+    artist of its own again (returned) — what comes under it from now on is theirs; the music already the
+    artist's stays so. The artist's own name stays."""
     row = await s.get(ArtistName, name_id)
     if row is None or row.artist_id != artist.id:
         raise ValueError("У исполнителя нет такого написания")
@@ -305,14 +440,24 @@ async def drop_name(s: AsyncSession, user_id: int | None, artist: Artist, name_i
     return own
 
 
+async def _hand_over(s: AsyncSession, table: Any, column: Any, into: int, other: int) -> None:
+    """The music `other` is credited for is `into`'s — once, where it names them both."""
+    both = select(column).where(table.artist_id == into)
+    await s.execute(delete(table).where(table.artist_id == other, column.in_(both)))
+    await s.execute(update(table).where(table.artist_id == other).values(artist_id=into))
+
+
 async def merge(s: AsyncSession, user_id: int | None, into: Artist, other: Artist) -> None:
-    """Two artists are one: `other`'s spellings, catalog pages and projects are `into`'s (the caller queues `rewrite`)."""
+    """Two artists are one: `other`'s spellings, catalog records, music and projects are `into`'s (the caller
+    queues `rewrite`, which writes that music in the name)."""
     if into.id == other.id:
         return
-    for row in (await s.execute(select(ArtistName).where(ArtistName.artist_id == other.id))).scalars():
-        row.artist_id = into.id
-    for row in (await s.execute(select(ArtistRef).where(ArtistRef.artist_id == other.id))).scalars():
-        row.artist_id = into.id
+    await s.execute(update(ArtistName).where(ArtistName.artist_id == other.id).values(artist_id=into.id))
+    if await holder(s, other.name) is None:  # a namesake held no spelling: now its name is one of the artist's
+        s.add(ArtistName(artist_id=into.id, name=other.name, key=key(other.name), source="catalog"))
+    await s.execute(update(ArtistRef).where(ArtistRef.artist_id == other.id).values(artist_id=into.id))
+    await _hand_over(s, TrackArtist, TrackArtist.track_id, into.id, other.id)
+    await _hand_over(s, AlbumArtist, AlbumArtist.album_id, into.id, other.id)
     theirs = (await _linked(s, other.id)) - {into.id}
     mine = await _linked(s, into.id)
     await s.execute(delete(ArtistLink).where(or_(ArtistLink.low_id == other.id, ArtistLink.high_id == other.id)))
@@ -356,28 +501,26 @@ async def apart(s: AsyncSession, a: Artist, b: Artist) -> None:
         await s.flush()
 
 
+async def _names_of(s: AsyncSession, table: Any, column: Any, owner_id: int) -> list[Artist]:
+    return list((await s.execute(select(Artist).join(table, table.artist_id == Artist.id).where(column == owner_id).order_by(table.position))).scalars())
+
+
 async def rewrite(s: AsyncSession, artist: Artist, user_id: int | None = None) -> int:
-    """Write the library in the artist's name: every track and album that names them by another spelling — the
-    rows and the files' tags. An album that becomes the same as one the artist has is joined with it. Returns how
-    many tracks and albums changed. It may be run again: what is already right is left."""
+    """Write the artist's music in their name: the lines of the tracks and albums credited to them — the rows and
+    the files' tags. An album that becomes the same as one the artist has is joined with it. Returns how many
+    tracks and albums changed. It may be run again: what is already right is left."""
     from app.library import editor
     from app.library.importer import find_album
 
-    rows = (await s.execute(select(ArtistName.name).where(ArtistName.artist_id == artist.id))).scalars().all()
-    spelt = {key(n): artist.name for n in rows if key(n) != key(artist.name)}
-    if not spelt:
-        return 0
-
-    def right(text: str | None) -> str | None:
-        parts = split_artists(text)
-        if not any(key(p) in spelt for p in parts):
-            return None
-        return ", ".join(_in_names(parts, spelt))
-
     changed = 0
-    for album in (await s.execute(select(Album))).scalars().all():
-        new = right(album.album_artist)
-        if new is None or new == album.album_artist:
+    albums = (await s.execute(select(Album).join(AlbumArtist, AlbumArtist.album_id == Album.id).where(AlbumArtist.artist_id == artist.id))).scalars().all()
+    for album in albums:
+        parts = split_artists(album.album_artist)
+        theirs = await _names_of(s, AlbumArtist, AlbumArtist.album_id, album.id)
+        if len(theirs) != len(parts):
+            continue
+        new = _line(album.album_artist, parts, theirs)
+        if new == album.album_artist:
             continue
         same = await find_album(s, title=album.title, album_artist=new, deezer_album_id=album.deezer_album_id)
         s.add(Edit(target_type="album", target_id=album.id, user_id=user_id, changes_json={"album_artist": [album.album_artist, new]}))
@@ -386,17 +529,21 @@ async def rewrite(s: AsyncSession, artist: Artist, user_id: int | None = None) -
         else:
             await editor.update_album(s, album, album_artist=new)
         changed += 1
-    for track in (await s.execute(select(Track))).scalars().all():
-        new = right(track.artist)
-        if new is not None and new != track.artist:
-            s.add(Edit(target_type="track", target_id=track.id, user_id=user_id, changes_json={"artist": [track.artist, new]}))
-            await editor.update_track(s, track, artist=new)
-            track.fingerprint = fingerprint(track.artist, track.title)
-            changed += 1
-        if track.album_id is None:
-            own = right(track.album_artist)
-            if own is not None:
-                track.album_artist = own
+    tracks = (await s.execute(select(Track).join(TrackArtist, TrackArtist.track_id == Track.id).where(TrackArtist.artist_id == artist.id))).scalars().all()
+    for track in tracks:
+        parts = split_artists(track.artist)
+        theirs = await _names_of(s, TrackArtist, TrackArtist.track_id, track.id)
+        if len(theirs) == len(parts):
+            new = _line(track.artist, parts, theirs)
+            if new != track.artist:
+                s.add(Edit(target_type="track", target_id=track.id, user_id=user_id, changes_json={"artist": [track.artist, new]}))
+                await editor.update_track(s, track, artist=new)
+                track.fingerprint = fingerprint(track.artist, track.title)
+                changed += 1
+        if track.album_id is None and track.album_artist and key(track.album_artist) != key(artist.name):
+            own = await holder(s, track.album_artist)
+            if own is not None and own.id == artist.id:
+                track.album_artist = artist.name
     await s.flush()
     return changed
 
@@ -448,30 +595,27 @@ async def found(s: AsyncSession, q: str, limit: int = 20) -> list[tuple[Track, l
     other: dict[int, list[str]] = {}
     for tid, n in (await s.execute(select(TrackName.track_id, TrackName.name))).all():
         other.setdefault(tid, []).append(n)
-    spelt: dict[str, list[str]] = {}  # an artist's name (as key) -> the other spellings
-    by_artist: dict[int, list[str]] = {}
-    mains: dict[int, str] = dict((await s.execute(select(Artist.id, Artist.name))).all())
+    spelt: dict[int, list[str]] = {}  # an artist -> every spelling of theirs
     for aid, n in (await s.execute(select(ArtistName.artist_id, ArtistName.name))).all():
-        by_artist.setdefault(aid, []).append(n)
-    for aid, all_names in by_artist.items():
-        main = mains.get(aid)
-        if main:
-            spelt[key(main)] = [n for n in all_names if key(n) != key(main)]
+        spelt.setdefault(aid, []).append(n)
+    by: dict[int, list[int]] = {}  # a track -> who it is by
+    for tid, aid in (await s.execute(select(TrackArtist.track_id, TrackArtist.artist_id).order_by(TrackArtist.position))).all():
+        by.setdefault(tid, []).append(aid)
     has_file = select(TrackFile.id).where(TrackFile.track_id == Track.id).exists()
     hits: list[tuple[int, Track, list[str]]] = []
     for t in (await s.execute(select(Track).where(has_file))).scalars():
-        shown = fold(f"{t.artist} {t.title} {t.album or ''}")
+        shown_ = fold(f"{t.artist} {t.title} {t.album or ''}")
         also = [*other.get(t.id, []), *([(t.catalog or {}).get("title")] if (t.catalog or {}).get("title") else [])]
-        for a in split_artists(t.artist):
-            also += spelt.get(key(a), [])
+        for aid in by.get(t.id, []):
+            also += spelt.get(aid, [])
         folded = [(n, fold(n)) for n in also]
-        if not all(w in shown or any(w in f for _, f in folded) for w in words):
+        if not all(w in shown_ or any(w in f for _, f in folded) for w in words):
             continue
-        by = []
+        told = []
         for n, f in folded:
-            if any(w in f and w not in shown for w in words) and n not in by:
-                by.append(n)
+            if any(w in f and w not in shown_ for w in words) and n not in told:
+                told.append(n)
         # a name that begins with the query before one that only has it inside; what the row shows before the rest
-        hits.append((int(bool(by)) * 2 + int(not fold(t.title).startswith(words[0])), t, by))
+        hits.append((int(bool(told)) * 2 + int(not fold(t.title).startswith(words[0])), t, told))
     hits.sort(key=lambda h: h[0])
-    return [(t, by) for _, t, by in hits[:limit]]
+    return [(t, told) for _, t, told in hits[:limit]]

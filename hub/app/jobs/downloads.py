@@ -172,6 +172,7 @@ def meta_from_catalog(t: CatalogTrack, album: CatalogAlbum | None = None) -> dic
     m: dict[str, Any] = {
         "track_ref": t.ref,
         "artists": t.artists or [t.artist],
+        "artist_refs": (t.artist_refs if t.artists else [t.artist_ref]) or [],
         "album": t.album_title,
         "album_artist": t.album_artist,
         "track_no": t.track_no,
@@ -636,6 +637,7 @@ async def import_downloaded(item_id: int, user_id: int, q: TrackQuery, meta: dic
         artist=q.artist,
         title=q.title,
         artists=meta.get("artists") or [],
+        artist_refs=meta.get("artist_refs") or [],
         album=meta.get("album") or q.title,
         album_artist=meta.get("album_artist") or q.artist,
         year=meta.get("year") or (release_date.year if release_date else cand.year),

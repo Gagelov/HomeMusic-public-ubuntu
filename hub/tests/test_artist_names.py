@@ -53,7 +53,7 @@ async def test_a_spelling_made_the_name_rewrites_the_library_and_its_files(env):
     from app.library import artists
 
     async with session_scope() as s:
-        assert await artists.line(s, "кино, Ноль") == "Kino, Ноль"
+        assert (await artists.credits(s, "кино, Ноль"))[0] == "Kino, Ноль"
 
 
 async def test_two_artists_are_joined_and_one_may_be_set_apart(env):
@@ -84,7 +84,8 @@ async def test_two_artists_are_joined_and_one_may_be_set_apart(env):
         got = await artists.shown(s, [CatalogArtist(ref="dz:artist:7", source="dz", id="7", name="LSP"),
                                       CatalogArtist(ref="dz:artist:8", source="dz", id="8", name="Lsp"),
                                       CatalogArtist(ref="dz:artist:9", source="dz", id="9", name="Кино")])
-        assert [a.name for a in got] == ["ЛСП", "ЛСП", "Кино"]
+        # …and another record under their spelling is not theirs by the name alone: a namesake, perhaps
+        assert [a.name for a in got] == ["ЛСП", "Lsp", "Кино"]
 
     lsp = next(n for n in again["names"] if n["name"] == "LSP")
     r = await c.delete(f"/api/artists/{a['id']}/names/{lsp['id']}")
@@ -139,3 +140,65 @@ async def test_a_track_is_found_by_its_other_names(env):
     kept = next(n for n in info["names"] if n["id"])
     r = await c.delete(f"/api/library/tracks/{t.id}/names/{kept['id']}")
     assert r.status_code == 200 and kept["id"] not in [n["id"] for n in r.json()["names"]]
+
+
+async def test_a_catalog_keeps_several_records_of_one_artist_and_a_namesake_is_somebody_else(env, monkeypatch):
+    """The first record of the catalog is the artist's by itself; another under their spelling is a namesake until
+    a listener joins the two — then the page is drawn of both records, and the namesake's music stays theirs."""
+    from datetime import date
+
+    from app.api import catalog
+    from app.catalog.models import ArtistPage, CatalogAlbum, CatalogArtist, CatalogTrack
+    from app.db import session_scope
+    from app.library import artists
+    from app.library.owned import annotate_tracks
+
+    def page(id_, name, fans, albums, top=()):
+        a = CatalogArtist(ref=f"dz:{id_}", source="dz", id=str(id_), name=name, nb_fans=fans)
+        return ArtistPage(artist=a, albums=[CatalogAlbum(ref=f"dz:al{n}", source="dz", id=f"al{n}", title=title, artist=name, artist_ref=a.ref,
+                                                         record_type="album", release_date=date(year, 1, 1)) for n, title, year in albums],
+                          top_tracks=[CatalogTrack(ref=f"dz:t{n}", source="dz", id=f"t{n}", title=title, artist=name, artists=[name],
+                                                   artist_refs=[a.ref], artist_ref=a.ref, rank=rank) for n, title, rank in top])
+
+    pages = {"dz:1": page(1, "ЛСП", 1000, [(1, "Искра", 2026), (2, "Общий", 2020)], [(1, "Новое", 5)]),
+             "dz:2": page(2, "LSP", 10, [(3, "Magic City", 2015), (4, "Obschiy", 2020)], [(2, "Staroe", 9)]),
+             "dz:3": page(3, "LSP", 500, [(5, "Boots and Suits", 2026)], [(3, "Boots", 7)])}
+
+    async def get_artist_page(ref):
+        return pages[ref]
+
+    monkeypatch.setattr(catalog, "get_artist_page", get_artist_page)
+    c = env["client"]
+    one = (await c.get("/api/catalog/artist/dz:1")).json()
+    two = (await c.get("/api/catalog/artist/dz:2")).json()  # «LSP»: nobody's spelling yet — an artist of its own
+    assert (one["artist"]["name"], one["profiles"], two["artist"]["name"], two["profiles"]) == ("ЛСП", ["dz:1"], "LSP", ["dz:2"])
+    a = (await c.get("/api/artists/of", params={"ref": "dz:1"})).json()
+    b = (await c.get("/api/artists/of", params={"ref": "dz:2"})).json()
+    assert [x["name"] for x in a["suggestions"]] == ["LSP"] and a["suggestions"][0]["ref"] == "dz:2"
+    r = await c.post(f"/api/artists/{a['id']}/merge", json={"other_id": b["id"]})
+    assert r.status_code == 200 and r.json()["profiles"] == ["dz:1", "dz:2"], r.text
+
+    # one page, whichever record it is opened by: the name here, the releases of both, the followers of both
+    for ref in ("dz:1", "dz:2"):
+        d = (await c.get(f"/api/catalog/artist/{ref}")).json()
+        assert (d["artist"]["name"], d["artist"]["ref"], d["artist"]["nb_fans"], d["profiles"]) == ("ЛСП", "dz:1", 1010, ["dz:1", "dz:2"])
+        assert {x["title"] for x in d["albums"]} == {"Искра", "Общий", "Magic City"}  # «Obschiy» of 2020 is «Общий»
+        assert [t["title"] for t in d["top_tracks"]] == ["Staroe"] and d["top_tracks"][0]["artist"] == "ЛСП"
+
+    # a third record under a spelling of theirs: not theirs by the name alone
+    three = (await c.get("/api/catalog/artist/dz:3")).json()
+    assert (three["artist"]["name"], three["profiles"]) == ("LSP", ["dz:3"])
+    band = (await c.get("/api/artists/of", params={"ref": "dz:3"})).json()
+    assert band["id"] != a["id"] and band["held_by"] == "ЛСП" and band["names"][0] == {"id": None, "name": "LSP", "source": "catalog", "main": True}
+    assert [x["ref"] for x in (await c.get("/api/artists/of", params={"ref": "dz:1"})).json()["suggestions"]] == ["dz:3"]
+    async with session_scope() as s:
+        told = await annotate_tracks(s, [pages["dz:2"].top_tracks[0], pages["dz:3"].top_tracks[0]])
+        assert [t.artist for t in told] == ["ЛСП", "LSP"]  # the artist's own record, and the namesake's
+        cards = await artists.shown(s, [pages[r].artist for r in ("dz:2", "dz:1", "dz:3")])
+        assert [(x.ref, x.name) for x in cards] == [("dz:1", "ЛСП"), ("dz:3", "LSP")]  # one card an artist
+        # music that says only the name is the artist's whose spelling it is; the catalog's record says otherwise
+        assert (await artists.credits(s, "LSP"))[0] == "ЛСП"
+        assert (await artists.credits(s, "LSP", {"lsp": "dz:3"}))[0] == "LSP"
+        await s.rollback()
+    r = await c.post(f"/api/artists/{a['id']}/apart", json={"other_id": band["id"]})
+    assert r.status_code == 200 and r.json()["suggestions"] == []

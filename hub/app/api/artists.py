@@ -19,23 +19,27 @@ router = APIRouter(prefix="/api/artists", tags=["artists"])
 
 
 class ArtistNameOut(BaseModel):
-    id: int
+    id: int | None = None  # None: the name of a namesake, which is not a spelling of theirs to change
     name: str
     source: str  # catalog / library / manual
     main: bool = False
 
 
-class ArtistProjectOut(BaseModel):
-    id: int
-    name: str
-    ref: str | None = None  # the catalog's page of the project (none: only the name leads to it)
-    also: list[str] = []
-    picture_url: str | None = None
-
-
 class ArtistPickOut(BaseModel):
     id: int
     name: str
+
+
+class ArtistBriefOut(ArtistPickOut):
+    """Another artist, as a page names them: the catalog's record that leads to their page, and a picture."""
+
+    ref: str | None = None  # none: only the name leads to them
+    nb_fans: int | None = None
+    picture_url: str | None = None
+
+
+class ArtistProjectOut(ArtistBriefOut):
+    also: list[str] = []
 
 
 class ArtistCardOut(BaseModel):
@@ -45,8 +49,10 @@ class ArtistCardOut(BaseModel):
     id: int
     name: str
     names: list[ArtistNameOut] = []
+    held_by: str | None = None  # a namesake: bare text of this name is taken for that artist
+    profiles: list[str] = []  # the catalog's records of the artist
     projects: list[ArtistProjectOut] = []
-    suggestions: list[ArtistPickOut] = []
+    suggestions: list[ArtistBriefOut] = []
     rewriting: bool = False
 
 
@@ -76,7 +82,7 @@ async def _other(s: AsyncSession, body: OtherIn) -> Artist:
     if body.other_id:
         return await _artist(s, body.other_id)
     if body.name and body.name.strip():
-        return await artists.resolve(s, body.name, "manual")
+        return await artists.who(s, body.name, None, "manual")
     raise HTTPException(400, "Не указан исполнитель")
 
 
@@ -95,7 +101,7 @@ async def _done(s: AsyncSession, user: User, a: Artist, *, rewrite: bool = False
 async def of(name: str | None = None, ref: str | None = None, user: User = Depends(current_user),
              s: AsyncSession = Depends(get_session, scope="function")):
     """The artist a page is of: by the catalog's own (`ref`) or by a name. None: neither was given."""
-    a = await artists.of_ref(s, ref, name)
+    a = await artists.who(s, name, ref, "catalog")
     if a is None:
         return None
     out = await artists.card(s, a)

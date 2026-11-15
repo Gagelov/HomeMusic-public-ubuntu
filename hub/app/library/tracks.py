@@ -54,6 +54,8 @@ async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = 
     """The track of this catalog track; made if the Hub does not know the song. A track the Hub has under no
     catalog name yet (an uploaded file, say) that is this very song — the same ISRC, or the same names and length —
     takes the name instead of a second track being made."""
+    from app.library import artists
+
     ref = c.ref if c.source != "nd" else None
     track = await by_ref(s, ref)
     if track is not None:
@@ -62,6 +64,7 @@ async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = 
             for k, v in _names(c).items():
                 setattr(track, k, v)
             track.catalog = c.model_dump(mode="json")
+            await artists.credit_track(s, track)
         return track
     unnamed = select(Track).where(Track.ref.is_(None)).order_by(Track.id.desc())
     if c.isrc:
@@ -80,6 +83,7 @@ async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = 
     s.add(track)
     await s.flush()
     await s.refresh(track)  # what is read with a track (its song, its path) is there to be read: none, for now
+    await artists.credit_track(s, track)
     return track
 
 

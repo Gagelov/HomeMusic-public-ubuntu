@@ -426,6 +426,8 @@ class ArtistPageOut(BaseModel):
     banner_url: str | None = None  # the wide picture over the page (None: there is none — the round photo then)
     # how many of the last `top_tracks` are Last.fm's popular ones, added where the catalog's own list is short
     top_from_lastfm: int = 0
+    # the catalog's records the page is drawn of — one artist may have several; the first is the page's own address
+    profiles: list[str] = []
 
 
 class NamesakeIn(BaseModel):
@@ -453,6 +455,7 @@ class DiscographyOut(BaseModel):
     artist: CatalogArtist
     albums: list[AlbumOut] = []
     excluded: int = 0  # releases said to be a namesake's: not among `albums`
+    profiles: list[str] = []  # as `ArtistPageOut.profiles`
 
 
 class SearchOut(BaseModel):

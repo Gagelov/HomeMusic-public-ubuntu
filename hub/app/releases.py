@@ -112,8 +112,17 @@ async def follows(s: AsyncSession, user_id: int) -> list[Follow]:
 
 
 async def followed(s: AsyncSession, user_id: int) -> dict[str, str]:
-    """catalog ref -> name of the artists the user follows."""
-    return {f.ref: f.name for f in await follows(s, user_id)}
+    """catalog ref -> name of the artists the user follows: every record the catalog keeps of each of them (one
+    artist may have several, and a new release may come out under any — app/library/artists.py)."""
+    from app.library import artists
+
+    out: dict[str, str] = {}
+    for f in await follows(s, user_id):
+        out.setdefault(f.ref, f.name)
+        who = await artists.by_ref(s, f.ref)
+        for ref in await artists.profiles(s, who.id) if who is not None else []:
+            out.setdefault(ref, f.name)
+    return out
 
 
 async def refresh(user_id: int, *, only_new: bool = False) -> int:

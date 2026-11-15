@@ -9,7 +9,7 @@ import { Button, Checkbox, Cover, Empty, ErrorState, Loading, PageHeader, Segmen
 import { tracksWord } from '../lib/format';
 import { useAsync } from '../lib/hooks';
 import { attempt, toast } from '../lib/ui';
-import { Link, enc } from '../lib/router';
+import { Link, enc, navigate } from '../lib/router';
 
 /** «Дискография» (`/artist/<ref>/discography`): everything an artist released, newest first — each release with its
  * tracks, so it is also «all the tracks of the artist». Filtered by the kind of release; the search of the bar looks
@@ -55,6 +55,11 @@ export function DiscographyPage({ refId }: { refId: string }) {
   };
   const needle = sf.q.trim().toLocaleLowerCase('ru');
   const d = res.data;
+  // the artist's page has one address, whichever record of the catalog it was opened by
+  const own = d?.profiles?.[0];
+  useEffect(() => {
+    if (own && own !== refId) navigate(`/artist/${enc(own)}/discography`, { replace: true });
+  }, [own, refId]);
   const back = `/artist/${enc(refId)}`;
 
   const albums = useMemo(() => (d?.albums ?? []).filter((a) => kind === 'all' || kindOf(a) === kind), [d, kind]);

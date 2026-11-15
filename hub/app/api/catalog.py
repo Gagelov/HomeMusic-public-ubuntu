@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas import AlbumOut, ArtistPageOut, DiscographyOut, NamesakeIn, NamesakeOut
 from app.catalog import banners, namesakes, popular
 from app.auth import current_user
-from app.catalog.models import ArtistPage, CatalogAlbum, split_ref
+from app.catalog.models import ArtistPage, CatalogAlbum, CatalogTrack, split_ref
 from app.db import get_session
 from app.library.owned import annotate_albums, annotate_tracks
 from app.models import User
@@ -45,6 +46,50 @@ async def get_artist_page(ref: str) -> ArtistPage:
     raise HTTPException(404, "Исполнитель не найден")
 
 
+async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str]]:
+    """The artist a record of the catalog is of, as one page: a catalog may keep several records of one artist (old
+    releases under one spelling, new under another), and the Hub knows which are theirs (app/library/artists.py).
+    Returns the page — the name they have here, the releases of all the records (one that two of them carry, once),
+    the most listened of them all — and the records, the one with the most followers first: that one's picture is
+    the artist's, and its address is the page's own."""
+    from app.library import artists
+
+    page = await get_artist_page(ref)
+    who = await artists.who(s, page.artist.name, ref, "catalog")
+    refs = [r for r in (await artists.profiles(s, who.id) if who is not None else []) if r != ref]
+
+    async def other(r: str) -> ArtistPage | None:
+        try:
+            return await get_artist_page(r)
+        except HTTPException as e:  # a record the catalog has dropped does not take the artist's page with it
+            log.info("artist %s: the record %s is not read: %s", ref, r, e.detail)
+            return None
+
+    pages = [page, *[p for p in await asyncio.gather(*(other(r) for r in refs)) if p is not None]]
+    pages.sort(key=lambda p: p.artist.nb_fans or 0, reverse=True)
+    main = pages[0]
+    albums: list[CatalogAlbum] = []
+    seen: set[Any] = set()
+    for p in pages:
+        for a in p.albums:
+            same = (artists.fold(a.title), a.record_type, a.release_date.year if a.release_date else a.year)
+            if a.ref in seen or same in seen:
+                continue
+            seen.update((a.ref, same))
+            albums.append(a)
+    top: dict[str, CatalogTrack] = {}
+    for p in pages:
+        for t in p.top_tracks:
+            top.setdefault(t.ref, t)
+    tracks = list(top.values())
+    if len(pages) > 1:  # the most listened of them all, by the catalog's own count of it
+        tracks = sorted(tracks, key=lambda t: t.rank or 0, reverse=True)[:max(len(p.top_tracks) for p in pages)]
+    fans = [p.artist.nb_fans for p in pages if p.artist.nb_fans]
+    artist = main.artist.model_copy(update={"name": who.name if who is not None else main.artist.name,
+                                             "nb_fans": sum(fans) if fans else main.artist.nb_fans})
+    return ArtistPage(artist=artist, top_tracks=tracks, albums=albums), [p.artist.ref for p in pages]
+
+
 async def get_album(ref: str, *, credited: bool = False) -> CatalogAlbum:
     """`credited`: with everyone credited on each track (an album's own page; costs a request a track, once)."""
     src, id_ = _split(ref)
@@ -62,7 +107,8 @@ async def get_album(ref: str, *, credited: bool = False) -> CatalogAlbum:
 
 @router.get("/artist/{ref}", response_model=ArtistPageOut)
 async def artist(ref: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
-    page = await get_artist_page(ref)
+    page, records = await whole_artist(s, ref)
+    await s.commit()  # who the record is of is known from now on
     albums = await annotate_albums(s, page.albums, user.id)
     albums.sort(key=lambda a: (a.release_date is not None, a.release_date), reverse=True)
     heard, extra, banner = await asyncio.gather(
@@ -75,7 +121,7 @@ async def artist(ref: str, user: User = Depends(current_user), s: AsyncSession =
         albums=[a for a in albums if a.record_type == "album"],
         singles=[a for a in albums if a.record_type in ("single", "ep")],
         compilations=[a for a in albums if a.record_type == "compile"],
-        excluded=len(namesakes.of(ref)),
+        excluded=sum(len(namesakes.of(r)) for r in records), profiles=records,
     )
 
 
@@ -139,7 +185,8 @@ async def discography(ref: str, user: User = Depends(current_user),
     """Every release of the artist with its tracks, newest first. The catalog gives the tracks a release at a time;
     they are asked for here, a few at once, and kept — the first opening of a long discography takes seconds, the
     next ones none. A release whose tracks the catalog does not give comes without them."""
-    page = await get_artist_page(ref)
+    page, records = await whole_artist(s, ref)
+    await s.commit()
     gate = asyncio.Semaphore(DISCOGRAPHY_PARALLEL)
 
     async def whole(a: CatalogAlbum) -> CatalogAlbum:
@@ -162,7 +209,7 @@ async def discography(ref: str, user: User = Depends(current_user),
             o.owned_count = owned
             o.owned_status = "full" if owned and owned >= len(o.tracks) else ("partial" if owned else "none")
     outs.sort(key=lambda a: (a.release_date is not None, a.release_date), reverse=True)
-    return DiscographyOut(artist=page.artist, albums=outs, excluded=len(namesakes.of(ref)))
+    return DiscographyOut(artist=page.artist, albums=outs, excluded=sum(len(namesakes.of(r)) for r in records), profiles=records)
 
 
 @router.get("/album/{ref}", response_model=AlbumOut)

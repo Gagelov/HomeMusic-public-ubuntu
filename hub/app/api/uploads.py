@@ -323,6 +323,7 @@ async def _catalog_spec(meta: dict, *, with_cover: bool = True) -> ImportSpec:
     ref = str(meta.get("track_ref") or "")
     return ImportSpec(
         artist=meta.get("artist") or "", title=meta.get("title") or "", artists=meta.get("artists") or [],
+        artist_refs=meta.get("artist_refs") or [],
         album=meta.get("album") or meta.get("title"), album_artist=meta.get("album_artist") or meta.get("artist"),
         year=meta.get("year") or (released.year if released else None), release_date=released,
         release_type={"compile": "compilation"}.get(meta.get("record_type", ""), meta.get("record_type"))

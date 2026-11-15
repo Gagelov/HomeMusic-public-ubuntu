@@ -243,6 +243,8 @@ export interface ArtistPageOut {
   banner_url?: string | null;
   /** how many of the last `top_tracks` are Last.fm's, added where the catalog's own list is short */
   top_from_lastfm?: number;
+  /** the catalog's records the page is drawn of — one artist may have several; the first is the page's own address */
+  profiles?: string[];
 }
 
 /** A release the catalog files under an artist that is a namesake's — said so by someone here, for everyone. */
@@ -879,6 +881,8 @@ export interface DiscographyOut {
   albums: AlbumOut[];
   /** releases said to be a namesake's: not among `albums` */
   excluded?: number;
+  /** as `ArtistPageOut.profiles` */
+  profiles?: string[];
 }
 
 export interface NdArtistPageOut {
@@ -1218,10 +1222,22 @@ export interface TrackNameOut {
 export interface ArtistCardOut {
   id: number;
   name: string;
-  names: { id: number; name: string; source: string; main: boolean }[];
-  projects: { id: number; name: string; ref?: string | null; also: string[]; picture_url?: string | null }[];
-  suggestions: ArtistPickOut[];
+  /** `id` null: the name of a namesake — not a spelling of theirs to change */
+  names: { id: number | null; name: string; source: string; main: boolean }[];
+  /** a namesake: bare text of this name is taken for that artist */
+  held_by?: string | null;
+  /** the catalog's records of the artist */
+  profiles?: string[];
+  projects: (ArtistBriefOut & { also: string[] })[];
+  suggestions: ArtistBriefOut[];
   rewriting?: boolean;
+}
+
+/** Another artist, as a page names them: the catalog's record that leads to their page, and a picture. */
+export interface ArtistBriefOut extends ArtistPickOut {
+  ref?: string | null;
+  nb_fans?: number | null;
+  picture_url?: string | null;
 }
 
 export interface ArtistPickOut {

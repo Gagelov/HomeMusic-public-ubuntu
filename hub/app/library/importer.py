@@ -34,6 +34,7 @@ class ImportSpec(BaseModel):
     artist: str
     title: str
     artists: list[str] = []
+    artist_refs: list[str | None] = []  # the catalog's records of `artists`, in their order (None: not said)
     album: str | None = None
     album_artist: str | None = None
     album_id: int | None = None  # existing Hub album (uploads, editor)
@@ -174,12 +175,17 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
     commits)."""
     from app.library import artists
 
-    # the library is written in the artists' names: a spelling that is somebody's is filed under their name
-    spec.artist = await artists.line(s, spec.artist)
+    # who the music is by — by the catalog's records of them where the catalog said, else by the names — and the
+    # lines in their names: a spelling that is somebody's is filed under their name
+    ref = spec.ref or dz_ref(spec.deezer_track_id)
+    met = await by_ref(s, ref)
+    refs = {artists.key(n): r for n, r in zip(spec.artists, spec.artist_refs) if n and r} or artists.refs_of(met.catalog if met else None)
+    spec.artist, by = await artists.credits(s, spec.artist, refs)
     if spec.artists:
-        spec.artists = await artists.names(s, spec.artists)
+        spec.artists = [a.name for a in [await artists.who(s, n, refs.get(artists.key(n))) for n in spec.artists] if a is not None]
+    album_by = None
     if spec.album_artist:
-        spec.album_artist = await artists.line(s, spec.album_artist)
+        spec.album_artist, album_by = await artists.credits(s, spec.album_artist, refs)
     async with library_lock:
         album = await get_or_create_album(s, spec)
         cover = tagger.prepare_cover(spec.cover) if spec.cover else None
@@ -188,9 +194,8 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
         if cover is None and (album_dir / "cover.jpg").is_file():
             cover = (album_dir / "cover.jpg").read_bytes()
 
-        ref = spec.ref or dz_ref(spec.deezer_track_id)
         # a file of a song the Hub knows is one more file of that track: its tags, lyrics and places stay with it
-        known = await s.get(Track, spec.track_id) if spec.track_id else await by_ref(s, ref)
+        known = await s.get(Track, spec.track_id) if spec.track_id else met
         track = known or Track(
             album_id=album.id,
             artist=spec.artist,
@@ -257,6 +262,9 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
             file.chroma = got[0] if got else None
         s.add(track)
         await s.flush()
+        await artists.credit_track(s, track, by if track.artist == spec.artist else None)
+        if album_by and album.album_artist == spec.album_artist:
+            await artists.credit_album(s, album, album_by)
         file.track_id = track.id
         s.add(file)
         await s.flush()

@@ -1092,8 +1092,9 @@ class Artist(Base):
 
 
 class ArtistName(Base):
-    """A spelling of an artist — their name among them. `key`: the spelling without the letters' case, one artist's
-    only. `source`: where it came from (catalog / library / manual)."""
+    """A spelling an artist is known by: whose a bare name is, where nothing but the name says who made the music.
+    `key`: the spelling without the letters' case, one artist's only. `source`: where it came from (catalog /
+    library / manual)."""
 
     __tablename__ = "artist_names"
 
@@ -1106,11 +1107,32 @@ class ArtistName(Base):
 
 
 class ArtistRef(Base):
-    """What a catalog calls its own artist ("dz:artist…"), and who that is here."""
+    """A catalog's own record of an artist ("dz:8874422"), and who that is here. An artist may have several."""
 
     __tablename__ = "artist_refs"
 
     ref: Mapped[str] = mapped_column(String(64), primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
+    tied_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrackArtist(Base):
+    """Who a track is by, in the order of its credits: the line in `Track.artist` is these artists' names."""
+
+    __tablename__ = "track_artists"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
+
+
+class AlbumArtist(Base):
+    """Whose an album is, as `TrackArtist` says of a track."""
+
+    __tablename__ = "album_artists"
+
+    album_id: Mapped[int] = mapped_column(ForeignKey("albums.id", ondelete="CASCADE"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
     artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
 
 

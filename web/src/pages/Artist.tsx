@@ -74,6 +74,11 @@ export function ArtistPage({ refId }: { refId: string }) {
   const hidden = useDisliked({ artist_ref: refId });
   const likedBy = useLikedBy(artist?.name, refId);
 
+  // a catalog may keep several records of one artist: their page has one address, that of the first of them
+  const own = d?.profiles?.[0];
+  useEffect(() => {
+    if (own && own !== refId) navigate(`/artist/${enc(own)}`, { replace: true });
+  }, [own, refId]);
   // the artist as the Hub knows them: the name everyone sees may be another spelling than the catalog's
   const names = useArtistCard(d?.artist?.name, refId);
   if (res.loading && !d) return (<><PageHeader hero title="Исполнитель" back="/search" /><HeroSkeleton round buttons rows={10} /></>);
@@ -118,7 +123,8 @@ export function ArtistPage({ refId }: { refId: string }) {
     if (!(await confirmDialog({ title: `Не включать ${artist.name}?`, body: 'Треки этого исполнителя, и те, где он участвует, не будут попадать в волну, миксы и открытия, а в плейлистах будут пропускаться. Нажатый вручную трек сыграет. Вернуть можно здесь же или в «Меню → Скрытое».', okLabel: 'Не включать', danger: true }))) return;
     await setDisliked({ artist_ref: refId, artist: artist.name }, true);
   };
-  const deezer = artist.source === 'dz' ? `https://www.deezer.com/artist/${artist.id}` : null;
+  // the artist's pages in Deezer: one for each record it keeps of them
+  const deezer = (d.profiles?.length ? d.profiles : [artist.ref]).filter((r) => r.startsWith('dz:')).map((r) => `https://www.deezer.com/artist/${r.slice(3)}`);
   const item = (icon: IconName, label: string, run: () => void, danger = false) => (
     <button type="button" onClick={run} className={cx('flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5', danger && 'text-danger')}>
       <Icon name={icon} size={21} className={danger ? undefined : 'text-muted'} />
@@ -220,12 +226,12 @@ export function ArtistPage({ refId }: { refId: string }) {
             setNaming('projects');
           })}
           {item('link', 'Скопировать ссылку', () => void share())}
-          {deezer && (
-            <a href={deezer} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
+          {deezer.map((url, i) => (
+            <a key={url} href={url} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
               <Icon name="external" size={21} className="text-muted" />
-              Открыть в Deezer
+              {deezer.length > 1 ? `Открыть в Deezer · профиль ${i + 1}` : 'Открыть в Deezer'}
             </a>
-          )}
+          ))}
           {item('ban', 'Не включать этого исполнителя', () => void hide(), true)}
         </div>
       </Sheet>

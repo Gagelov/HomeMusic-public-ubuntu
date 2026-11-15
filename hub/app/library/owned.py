@@ -174,7 +174,8 @@ async def annotate_tracks(
 
     from app.library import artists
 
-    spelt = await artists.mapping(s, [n for t in tracks for n in (t.artist, *(t.artists or []))])
+    spelt = await artists.reader(s, [n for t in tracks for n in (t.artist, t.album_artist, *(t.artists or []))],
+                                 [r for t in tracks for r in (t.artist_ref, *(t.artist_refs or []))])
     out: list[TrackOut] = []
     for t in tracks:
         hit = (t.isrc and by_isrc.get(t.isrc.upper())) or (t.source == "dz" and by_ref.get(t.ref)) or None
@@ -232,7 +233,8 @@ async def annotate_albums(
 
     from app.library import artists
 
-    spelt = await artists.mapping(s, [n for a in albums for n in (a.artist, *(getattr(a, "artists", None) or []))])
+    spelt = await artists.reader(s, [n for a in albums for n in (a.artist, *(a.artists or []))],
+                                 [r for a in albums for r in (a.artist_ref, *(a.artist_refs or []))])
     out: list[AlbumOut] = []
     for a in albums:
         d = a.model_dump(exclude={"tracks"})

@@ -39,7 +39,7 @@ async def update_track(s: AsyncSession, user: User, track: Track, **fields: Any)
 
     fields = {k: (v.strip() if isinstance(v, str) else v) for k, v in fields.items() if v is not None}
     if fields.get("artist"):  # written in the artists' names, whatever spelling was typed
-        fields["artist"] = await artists.line(s, fields["artist"], "manual")
+        fields["artist"] = (await artists.credits(s, fields["artist"], artists.refs_of(track.catalog), "manual"))[0]
     changes = {k: [getattr(track, k), v] for k, v in fields.items() if getattr(track, k) != v}
     if not changes:
         return track
@@ -48,6 +48,8 @@ async def update_track(s: AsyncSession, user: User, track: Track, **fields: Any)
     await editor.update_track(s, track, **{k: v[1] for k, v in changes.items()})
     if any(k in NAMES for k in changes):
         track.renamed_at = utcnow()
+    if "artist" in changes:
+        await artists.credit_track(s, track)
     if "title" in changes:  # the name it had is one it is still found by
         await artists.renamed(s, track, changes["title"][0])
     _journal(s, user.id, "track", track.id, changes)
