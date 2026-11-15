@@ -244,6 +244,14 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
           <Icon name="chevron" size={18} className="shrink-0 text-dim" />
         </Link>
       )}
+      {only === 'low' && shown.length > 0 && (
+        <p className="px-4 pb-2 text-xs text-muted lg:px-6">
+          Файлы, которые слышно: MP3 ниже 192 кбит/с и подобные.{' '}
+          <Link to="/quality" className="text-info hover:underline">
+            Поискать для них лучшее качество
+          </Link>
+        </p>
+      )}
       {only === 'doubles' && shown.length > 0 && (
         <p className="px-4 pb-2 text-xs text-muted lg:px-6">Одна запись в двух файлах — определено по звучанию. Рядом стоят пары, лучший файл выше; лишний удалите через меню трека («Удалить файл»).</p>
       )}

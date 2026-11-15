@@ -37,6 +37,7 @@ import { DownloadsPage } from './pages/Downloads';
 import { HomePage } from './pages/Home';
 import { ImportItemsPage, ImportPage, ImportsPage } from './pages/Import';
 import { FilesPage } from './pages/Files';
+import { QualityPage } from './pages/Quality';
 import { LibraryPage } from './pages/Library';
 import { LibraryAlbumPage } from './pages/LibraryAlbum';
 import { LoginPage } from './pages/Login';
@@ -115,6 +116,7 @@ const ROUTES: RouteDef[] = [
   ['/downloads/:id', 'downloads', (p) => <DownloadDetailPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/library', 'library', () => <LibraryPage />, 'text'],
   ['/files', 'more', () => <FilesPage key="files" />],
+  ['/quality', 'more', () => <QualityPage />],
   ['/library/album/:id', 'more', (p) => <LibraryAlbumPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/assistant', 'assistant', (_, r) => <AssistantPage chatId={Number(r.query.get('chat')) || null} />, 'text'],
   ['/assistant/chats', 'assistant', () => <AssistantChatsPage />, 'text'],

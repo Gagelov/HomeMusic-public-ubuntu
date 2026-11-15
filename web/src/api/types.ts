@@ -563,6 +563,8 @@ export interface UploadTags {
   year?: number | null;
   genre?: string | null;
   has_cover?: boolean;
+  /** the mark of the file's picture: files of one album whose pictures differ are told by it */
+  cover_hash?: string | null;
   duration_s?: number | null;
   [key: string]: unknown;
 }
@@ -621,6 +623,10 @@ export interface UploadTrackIn {
   year?: number | null;
   /** the library's track whose file this one takes the place of */
   replace_track_id?: number | null;
+  /** whose picture the track is filed with (an album has one cover: its first file's choice) */
+  cover?: 'catalog' | 'file' | null;
+  /** the file's picture is this track's own besides, over its album's */
+  own_cover?: boolean;
 }
 
 /** The song of the catalog an uploaded file was told to be: `found` — it is that song; `doubt` — a record is like
@@ -639,6 +645,7 @@ export interface UploadMatch {
   year?: number | null;
   duration_s?: number | null;
   cover_url?: string | null;
+  track_no?: number | null;
 }
 
 /** Albums that are one album in pieces («Мои файлы»): `target_id` — the one the rest are joined into. */
@@ -658,15 +665,44 @@ export interface UploadCommitIn {
   tag_ids?: number[];
   /** the playlist that keeps what was uploaded together: the user's playlist of this name, made when there is none */
   keep_in?: string | null;
-  /** the weak files among them are looked for anew: the same recording in a better file takes the place of each */
-  upgrade?: boolean;
 }
 
 export interface UploadCommitOut {
   album_ids: number[];
   imported: number;
-  /** how many weak files a better one is being looked for */
-  upgrading: number;
+  /** the tracks they became */
+  track_ids: number[];
+  /** how many of them have a weak file: «Качество звука» looks for a better one */
+  weak: number;
+}
+
+/** A track of «Качество звука»: a weak file a better one is looked for in the place of. `state`: queued, searching,
+ * found (a file is kept aside for the listener to say), replaced, none (nothing better: `note` says why), kept. */
+export interface QualityRow {
+  id: number;
+  track_id: number;
+  title: string;
+  artist: string;
+  cover_url?: string | null;
+  state: 'queued' | 'searching' | 'found' | 'replaced' | 'none' | 'kept';
+  progress: number;
+  /** the catalog knows the song */
+  known: boolean;
+  was_codec?: string | null;
+  was_kbps?: number | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  likeness?: number | null;
+  provider?: string | null;
+  note?: string | null;
+  duration_s?: number | null;
+  updated_at: string;
+}
+
+export interface QualityOut {
+  rows: QualityRow[];
+  /** weak files nothing was looked for yet */
+  weak: number;
 }
 
 // --- playlists --------------------------------------------------------------------------------

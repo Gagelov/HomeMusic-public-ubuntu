@@ -150,15 +150,17 @@ def test_the_names_of_a_file_and_an_album_that_is_none():
 
 
 async def test_a_better_file_takes_the_place_of_a_weak_one(env, tmp_path):
-    """Only the same recording, and only a better file; the track stays the track."""
+    """Only the weak files are looked for, once; a file found is weighed by its quality and its sound."""
     from sqlalchemy import select
 
     from app.db import session_scope
     from app.library import acoustic, upgrade
-    from app.models import DownloadItem, Track, User
+    from app.library.owned import quiet
+    from app.models import DownloadItem, Track, Upgrade, User
 
     rnd = random.Random(5)
     sound = [rnd.getrandbits(32) for _ in range(600)]
+    c = env["client"]
     async with session_scope() as s:
         uid = (await s.execute(select(User.id))).scalar_one()
         s.add(filed_track(uid="w-1", path="w/1.mp3", artist="Кто", title="Слабый", fingerprint="w1", ref="dz:101",
@@ -166,15 +168,22 @@ async def test_a_better_file_takes_the_place_of_a_weak_one(env, tmp_path):
         s.add(filed_track(uid="w-2", path="w/2.mp3", artist="Кто", title="Хороший", fingerprint="w2", ref="dz:102",
                           duration_s=200, codec="mp3", bitrate_kbps=320, chroma=acoustic.pack(sound), created_by=uid))
         s.add(filed_track(uid="w-3", path="w/3.mp3", artist="Кто", title="Не из каталога", fingerprint="w3",
-                          duration_s=200, codec="mp3", bitrate_kbps=128, created_by=uid))
+                          duration_s=200, codec="mp3", bitrate_kbps=128, chroma=acoustic.pack(sound), created_by=uid))
         await s.flush()
         ids = list((await s.execute(select(Track.id).where(Track.fingerprint.in_(["w1", "w2", "w3"])).order_by(Track.fingerprint))).scalars())
-        # only the weak one the catalog knows is looked for — and once
-        assert await upgrade.enqueue(s, uid, ids) == 1 and await upgrade.enqueue(s, uid, ids) == 0
-        item = (await s.execute(select(DownloadItem))).scalars().one()
-        assert item.force and item.query_json["upgrade"] == ids[0] and item.query_json["meta"]["upgrade_of"] == ids[0]
-        from app.library.owned import quiet
-
-        assert quiet(item.query_json)
+        # the two weak ones are looked for — the one the catalog knows first — and only once
+        assert await upgrade.start(s, uid, ids) == 2 and await upgrade.start(s, uid, ids) == 0
+        items = list((await s.execute(select(DownloadItem).order_by(DownloadItem.id))).scalars())
+        assert [i.query_json["meta"]["upgrade_of"] for i in items] == [ids[0], ids[2]]
+        assert all(i.force and quiet(i.query_json) for i in items)
+        assert "deezer_track_id" in items[0].query_json["meta"] and "deezer_track_id" not in items[1].query_json["meta"]
         # a file no better stays out, whatever it sounds like
-        assert (await upgrade.fits(s, ids[0], tmp_path / "x.mp3", "mp3", 160))[0] is False
+        assert (await upgrade.judge(s, ids[0], tmp_path / "x.mp3", "mp3", 160, 200))[0] == "no"
+        row = (await s.execute(select(Upgrade).where(Upgrade.track_id == ids[0]))).scalar_one()
+        row.state, row.codec, row.bitrate_kbps, row.likeness = "found", "opus", 160, 0.88
+    page = (await c.get("/api/quality")).json()
+    assert {r["title"]: r["state"] for r in page["rows"]} == {"Слабый": "found", "Не из каталога": "queued"} and page["weak"] == 0
+    # the file found is gone meanwhile: there is nothing to put in — and declining it is the end of it
+    assert (await c.post(f"/api/quality/{row.id}/accept")).status_code == 409
+    assert (await c.post(f"/api/quality/{row.id}/decline")).status_code == 200
+    assert (await c.get("/api/quality")).json()["rows"][0]["state"] in ("kept", "queued")

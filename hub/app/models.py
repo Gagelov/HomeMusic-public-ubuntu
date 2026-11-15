@@ -324,6 +324,31 @@ class Upload(Base):
     duration_s: Mapped[float | None] = mapped_column(Float)
 
 
+class Upgrade(Base):
+    """A better file looked for in the place of a weak one (app/library/upgrade.py). `state`: queued — waiting its
+    turn; searching — being looked for; found — a file is kept aside (`staged_path`) for the listener to say;
+    replaced — it took the old file's place; none — nothing better (`note`: why); kept — the listener declined."""
+
+    __tablename__ = "upgrades"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("download_items.id", ondelete="SET NULL"))
+    state: Mapped[str] = mapped_column(String(16), default="queued")
+    staged_path: Mapped[str | None] = mapped_column(String(1024))  # relative to staging/
+    codec: Mapped[str | None] = mapped_column(String(16))  # of the file found
+    bitrate_kbps: Mapped[int | None] = mapped_column(Integer)
+    likeness: Mapped[float | None] = mapped_column(Float)  # how alike the two files sound, 0…1
+    provider: Mapped[str | None] = mapped_column(String(32))
+    source_url: Mapped[str | None] = mapped_column(String(2048))
+    note: Mapped[str | None] = mapped_column(Text)
+    was_codec: Mapped[str | None] = mapped_column(String(16))  # of the file it had
+    was_kbps: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class AssistantTask(Base):
     __tablename__ = "assistant_tasks"
 

@@ -592,6 +592,7 @@ class UploadMatch(BaseModel):
     year: int | None = None
     duration_s: int | None = None
     cover_url: str | None = None
+    track_no: int | None = None
 
 
 class UploadTwin(BaseModel):
@@ -644,6 +645,11 @@ class UploadTrackIn(BaseModel):
     album_artist: str | None = None
     year: int | None = None
     track_no: int | None = None  # its place in the album (none: the file's own)
+    # whose picture the track is filed with: the catalog's, or the one in the file (none: the catalog's for a song
+    # of the catalog, else the file's). An album has one cover — its first file's choice; `own_cover`: the file's
+    # picture is this track's own besides, over the album's (a file whose picture is not its album's)
+    cover: Literal["catalog", "file"] | None = None
+    own_cover: bool = False
     # the library's track this file takes the place of the file of (the upload is the better one): it becomes
     # that track's file, not a track of its own
     replace_track_id: int | None = None
@@ -663,14 +669,12 @@ class UploadCommitIn(BaseModel):
     # made when there is none — so the parts of one import, and the imports of one day, are one list
     keep_in: str | None = Field(default=None, max_length=200)
     tag_ids: list[int] = Field(default_factory=list, max_length=50)  # ... and get these tags
-    # the weak files among them are looked for anew: the same recording in a better file takes the place of each
-    # (`library/upgrade.py`)
-    upgrade: bool = False
 
 
 class UploadCommitOut(BaseModel):
     album_ids: list[int] = []  # the albums the files went into, in their order
-    upgrading: int = 0  # how many weak files a better one is being looked for
+    track_ids: list[int] = []  # the tracks they became
+    weak: int = 0  # how many of them have a weak file: «Качество звука» looks for a better one
     imported: int
 
 

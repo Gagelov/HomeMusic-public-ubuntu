@@ -76,6 +76,7 @@ import type {
   StarredOut,
   TasteOnboardingOut,
   FileRowOut,
+  QualityOut,
   SplitAlbums,
   TrackEditEntry,
   TrackEditOut,
@@ -421,6 +422,15 @@ export const api = {
   },
   deleteUpload: (id: number) => request<OkOut>('DELETE', `/api/uploads/${id}`),
   commitUploads: (payload: UploadCommitIn) => request<UploadCommitOut>('POST', '/api/uploads/commit', { json: payload }),
+  /** Half a minute of the catalog's record an uploaded file was told to be: where it is heard from. */
+  uploadPreview: (id: number) => request<{ url: string }>('GET', `/api/uploads/${id}/preview`),
+  /** «Качество звука»: the weak files looked for anew, and how many nothing was looked for yet. */
+  quality: (signal?: AbortSignal) => request<QualityOut>('GET', '/api/quality', { signal }),
+  /** Look for a better file of these tracks (none: of every weak file one looks after). */
+  qualityStart: (track_ids?: number[]) => request<{ queued: number }>('POST', '/api/quality/start', { json: { track_ids: track_ids ?? null } }),
+  qualityAccept: (id: number) => request<OkOut>('POST', `/api/quality/${id}/accept`),
+  qualityDecline: (id: number) => request<OkOut>('POST', `/api/quality/${id}/decline`),
+  qualityPeaks: (id: number, signal?: AbortSignal) => request<{ current: number[]; found: number[] }>('GET', `/api/quality/${id}/peaks`, { signal }),
   /** Which record of the catalog an uploaded file is: `ref` — this one, picked by hand; none — look for it again. */
   matchUpload: (id: number, ref?: string | null) => request<UploadOut>('POST', `/api/uploads/${id}/match`, { json: { ref: ref ?? null } }),
 

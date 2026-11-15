@@ -298,6 +298,7 @@ async def handle_download_item(job: Job) -> None:
     await step(item_id, "info", "Ещё одна попытка" if again else f"Запрос{origin}: {q.artist} — {q.title}{_mmss(q.duration_s)}")
 
     await update_item(item_id, status="searching", progress=0, error=None)
+    await upgrade.mark(meta, state="searching")
 
     # 1. catalog record (needed for tags; without it only a user-picked candidate may be downloaded). A picked
     # re-upload is looked up too: names from its title ("Трек – Исполнитель (без цензуры)") make poor tags.
@@ -434,6 +435,7 @@ async def handle_download_item(job: Job) -> None:
         cleanup_dir(stage)
 
     if upgrade.of_meta(meta):  # nothing better than the file there is: it stays, and nobody is asked anything
+        await upgrade.mark(meta, state="none", note=last_reason or "в источниках ничего не нашлось")
         await update_item(item_id, status="cancelled", error=None)
         await step(item_id, "info", "Лучше файла не нашлось — остаётся тот, что есть" + (f" ({last_reason})" if last_reason else ""))
         return
@@ -542,15 +544,19 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
             else:
                 path.unlink(missing_ok=True)
             continue
-        if upgrade_of:  # a better file in the place of a weak one: the same recording, and better (library/upgrade.py)
-            async with session_scope() as s:
-                fit, why = await upgrade.fits(s, upgrade_of, path, check.info.codec if check.info else None,
-                                              check.info.bitrate_kbps if check.info else cand.bitrate_kbps)
-            if not fit:
-                last_reason = f"{cand.provider}: {why}"
+        if upgrade_of:  # a better file in the place of a weak one: weighed against the track's own (library/upgrade.py)
+            done, words = await upgrade.take(meta, path, check, cand, user_id)
+            if done is None:
+                last_reason = f"{cand.provider}: {words}"
                 path.unlink(missing_ok=True)
-                await step(item_id, "bad", f"Не подошёл на замену: {why}", cand)
+                await step(item_id, "bad", f"Не подошёл на замену: {words}", cand)
                 continue
+            await update_item(item_id, status="done", progress=1, track_id=upgrade_of, error=None)
+            await step(item_id, "ok", ("Файл заменён: " if done == "replaced" else "Файл отложен, решение за слушателем: ") + words, cand)
+            bus.publish(user_id, "library", {"kind": "imported", "track_id": upgrade_of})
+            if done == "replaced":
+                await after_import(user_id, linked=False)
+            return True, ""
         if spare is not None:
             spare[1].unlink(missing_ok=True)
         bitrate = f", {cand.bitrate_kbps} кбит/с" if cand.bitrate_kbps else ""
@@ -605,18 +611,9 @@ async def import_downloaded(item_id: int, user_id: int, q: TrackQuery, meta: dic
         force=force,
     )
     await update_item(item_id, status="importing")
-    upgrade_of = upgrade.of_meta(meta)
-    shelved: list = []
-    try:
-        async with session_scope() as s:
-            if upgrade_of:  # the new file comes in the old one's place, under the same track
-                spec.track_id, spec.force = upgrade_of, False
-                shelved = await upgrade.shelve(s, upgrade_of)
-            track = await import_file(s, path, spec)
-            track_id = track.id
-    except Exception:
-        await upgrade.unshelve(shelved)  # the new file did not come: the old one is back where it was
-        raise
+    async with session_scope() as s:
+        track = await import_file(s, path, spec)
+        track_id = track.id
     await update_item(item_id, track_id=track_id, warnings=spec.warnings, error=None)
     await step(item_id, "ok", "Теги и обложка записаны, файл в библиотеке"
                + (f". Замечания: {'; '.join(str(w) for w in spec.warnings)}" if spec.warnings else ""))
@@ -637,6 +634,10 @@ async def after_import(user_id: int, linked: bool) -> None:
 
 @on_final_failure("download_item")
 async def _download_failed(job: Job, exc: Exception) -> None:
+    async with session_scope() as s:
+        item = await s.get(DownloadItem, int(job.payload_json["item_id"]))
+        meta = dict(((item.query_json if item else None) or {}).get("meta") or {})
+    await upgrade.mark(meta, state="none", note=f"поиск не удался: {exc}"[:300])
     await update_item(int(job.payload_json["item_id"]), status="failed", error=f"{exc}"[:500])
     await step(int(job.payload_json["item_id"]), "bad", f"Итог: загрузка не удалась — {exc}"[:500])
 

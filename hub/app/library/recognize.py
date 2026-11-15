@@ -126,6 +126,21 @@ def _weigh(found: list[Any], artist: str, raw_title: str, album: str | None, dur
     return scored, classify_scores([sc.total for _, sc in rivals], cfg)
 
 
+def _of_album(scored: list[tuple[Any, Any]], album: str | None) -> Any:
+    """The likest record — and, where the song stands on several releases (a single, then the album), the one on
+    the release the file itself names: files of one album stay one album."""
+    top = scored[0][0]
+    if not album:
+        return top
+    name = " ".join(album.split()).casefold()
+    for t, _ in scored:
+        if (t.album_title and " ".join(t.album_title.split()).casefold() == name
+                and _words(t.title).casefold() == _words(top.title).casefold()
+                and bool(t.duration_s and top.duration_s and abs(t.duration_s - top.duration_s) <= SAME_LENGTH_S)):
+            return t
+    return top
+
+
 def _theirs(t: Any, sc: Any, title: str, album: str | None, duration: int | None, cfg: Any) -> bool:
     """A record that may be the file's at all: of the file's artist — or, under another name of theirs (an album
     put out as «M00NCHILD»), the same name on the same album over the same length. A song of the same name by
@@ -208,12 +223,12 @@ async def of_file(tags: dict[str, Any], file_name: str, duration_s: float | None
             scored, verdict = _weigh(found, artist, raw_title, album, duration, version, cfg)
     if verdict == "not_found":
         return {"state": "none", "why": "каталог не ответил" if failed and not found else None, "meta": None}
-    top = scored[0][0]
+    top = _of_album(scored, album)
     why: str | None = None
     close = bool(duration and top.duration_s and abs(duration - top.duration_s) <= SAME_LENGTH_S)
     # a name that only goes on in the catalog — «(prod. by …)», «(feat. …)» — over the same length is the same song
     longer = _goes_on(title or raw_title, top.title)
-    if verdict != "auto" and not (close and longer and scored[0][1].artist >= cfg.artist_min_ratio):
+    if verdict != "auto" and not (close and longer and next(sc for x, sc in scored if x is top).artist >= cfg.artist_min_ratio):
         why = "названия совпали не полностью"
     # «Отдай кота 2.0» is not «Отдай кота»: the numbers of a name are part of what it names
     if _numbers(raw_title) != _numbers(top.title):

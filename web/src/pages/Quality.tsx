@@ -1,0 +1,289 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '../api/client';
+import type { QualityRow } from '../api/types';
+import { Icon } from '../components/Icon';
+import { Button, Cover, Empty, ErrorState, PageHeader, ProgressBar, SkeletonRows, cx } from '../components/ui';
+import { fmtDuration, providerLabel, tracksWord } from '../lib/format';
+import { useAsync, useInterval } from '../lib/hooks';
+import { EDITED_EVENT } from '../lib/trackEdit';
+import { attempt, confirmDialog, toast } from '../lib/ui';
+import { Steps } from './Upload';
+
+/** «Качество звука», the second, slow step of bringing music in — and a page of its own for any weak file of the
+ * library. The Hub looks for each weak file anew through the sources and weighs what it finds against the file the
+ * track has (the Hub: `library/upgrade.py`): the same recording in a better file takes the old one's place by
+ * itself («Заменено»); one that is only alike — a version, a remaster — is kept aside («Ждут решения») and the
+ * listener says: both files play whole here, each with the picture of its loudness to move through it by. Nothing
+ * better — the row says why. The search goes on in the Hub: the page may be closed and come back to. */
+
+type Tab = 'found' | 'replaced' | 'none' | 'queue';
+const TABS: [Tab, string][] = [
+  ['found', 'Ждут решения'],
+  ['replaced', 'Заменено'],
+  ['none', 'Лучше не нашлось'],
+  ['queue', 'В очереди'],
+];
+const tabOf = (r: QualityRow): Tab => (r.state === 'found' ? 'found' : r.state === 'replaced' ? 'replaced' : r.state === 'queued' || r.state === 'searching' ? 'queue' : 'none');
+const fileWords = (codec?: string | null, kbps?: number | null) => [codec ? codec.toUpperCase() : null, kbps ? String(kbps) : null].filter(Boolean).join(' ') || '—';
+
+export function QualityPage() {
+  const res = useAsync((s) => api.quality(s), []);
+  const rows = useMemo(() => res.data?.rows ?? [], [res.data]);
+  const [tab, setTab] = useState<Tab | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const byTab = useMemo(() => {
+    const out: Record<Tab, QualityRow[]> = { found: [], replaced: [], none: [], queue: [] };
+    for (const r of rows) out[tabOf(r)].push(r);
+    out.queue.sort((a, b) => Number(b.state === 'searching') - Number(a.state === 'searching') || a.id - b.id);
+    return out;
+  }, [rows]);
+  const active = byTab.queue.length > 0;
+  useInterval(() => res.reload(true), active ? 4000 : null);
+  // the first look: what waits for a word, else what is going on, else what was done
+  const first: Tab = byTab.found.length ? 'found' : byTab.queue.length ? 'queue' : byTab.replaced.length ? 'replaced' : 'none';
+  const at = tab ?? first;
+  const shown = byTab[at];
+  const done = rows.length - byTab.queue.length;
+  const now = byTab.queue.find((r) => r.state === 'searching');
+  const listening = useTwoFiles();
+
+  const start = async () => {
+    setBusy('start');
+    const r = await attempt(() => api.qualityStart());
+    setBusy(null);
+    if (!r) return;
+    toast(r.queued ? `В очереди: ${tracksWord(r.queued)}` : 'Слабых файлов нет', r.queued ? 'success' : 'info');
+    res.reload(true);
+  };
+  const say = async (r: QualityRow, yes: boolean) => {
+    setBusy(`${r.id}`);
+    listening.stop();
+    const ok = await attempt(() => (yes ? api.qualityAccept(r.id) : api.qualityDecline(r.id)), yes ? 'Файл заменён' : undefined);
+    setBusy(null);
+    if (!ok) return;
+    if (yes) window.dispatchEvent(new Event(EDITED_EVENT));
+    res.reload(true);
+  };
+  const takeAll = async () => {
+    const list = byTab.found;
+    if (!(await confirmDialog({ title: `Заменить ${tracksWord(list.length)}?`, body: 'Это записи, которые звучат похоже, но не одинаково — возможно, другие версии. Старые файлы уйдут в корзину на 30 дней.', okLabel: 'Заменить' }))) return;
+    setBusy('all');
+    listening.stop();
+    let n = 0;
+    for (const r of list) if (await attempt(() => api.qualityAccept(r.id))) n++;
+    setBusy(null);
+    toast(`Заменено: ${tracksWord(n)}`, 'success');
+    window.dispatchEvent(new Event(EDITED_EVENT));
+    res.reload(true);
+  };
+
+  const weak = res.data?.weak ?? 0;
+  return (
+    <div className="pb-10">
+      <PageHeader title="Качество звука" back="/files" sub={rows.length ? `Проверено ${done} из ${rows.length}` : undefined} />
+      <Steps at={2} />
+
+      {res.loading ? (
+        <SkeletonRows n={6} />
+      ) : res.error && !res.data ? (
+        <ErrorState text={res.error} onRetry={() => res.reload()} />
+      ) : (
+        <>
+          {weak > 0 && (
+            <div className="mx-4 mb-3 flex flex-wrap items-center gap-3 rounded-2xl bg-surface px-4 py-3 lg:mx-6">
+              <span className="min-w-0 flex-1 text-sm">
+                Слабых файлов в библиотеке: {weak}
+                <span className="block text-xs text-muted">Для каждого поищу ту же запись в лучшем качестве. Это небыстро: скачивание идёт в фоне.</span>
+              </span>
+              <Button small variant="primary" busy={busy === 'start'} onClick={start}>
+                Искать для {weak}
+              </Button>
+            </div>
+          )}
+          {active && (
+            <div className="mx-4 mb-3 rounded-2xl bg-surface px-4 py-3 lg:mx-6">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="min-w-0 flex-1 truncate">
+                  Проверено {done} из {rows.length}
+                  {now ? ` · сейчас: «${now.title}»` : ''}
+                </span>
+                <span className="shrink-0 text-xs tabular-nums text-muted">осталось {byTab.queue.length}</span>
+              </div>
+              <ProgressBar value={rows.length ? done / rows.length : 0} className="mt-2" />
+              <p className="pt-1.5 text-xs text-dim">Поиск идёт на сервере — страницу можно закрыть и вернуться позже. Сначала песни, которые знает каталог: они находятся быстрее.</p>
+            </div>
+          )}
+          {rows.length === 0 ? (
+            weak === 0 && <Empty icon="check" title="Слабых файлов нет" text="Здесь появляются треки, файл которых слышно: MP3 ниже 192 кбит/с и подобные." />
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-2 px-4 pb-3 lg:px-6">
+                <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto" role="group" aria-label="Раздел" style={{ scrollbarWidth: 'none' }}>
+                  {TABS.map(([id, label]) => (
+                    <button key={id} type="button" aria-pressed={at === id} onClick={() => setTab(id)} className={cx('shrink-0 rounded-full px-3 py-1.5 text-sm transition', at === id ? 'bg-fg font-semibold text-bg' : 'bg-fg/10 text-muted hover:text-fg')}>
+                      {label}
+                      <span className={cx('pl-1.5 tabular-nums', at === id ? 'opacity-70' : 'text-dim')}>{byTab[id].length}</span>
+                    </button>
+                  ))}
+                </div>
+                {at === 'found' && shown.length > 1 && (
+                  <Button small busy={busy === 'all'} onClick={takeAll}>
+                    Заменить все {shown.length}
+                  </Button>
+                )}
+              </div>
+              {at === 'found' && shown.length > 0 && (
+                <p className="px-4 pb-2 text-xs text-muted lg:px-6">Найденный файл звучит похоже, но не точь-в-точь — так бывает у ремастера или другой версии. Послушайте оба и решите. Без ответа файл через неделю удалится, трек останется как был.</p>
+              )}
+              {shown.length === 0 ? (
+                <Empty icon="note" title={at === 'found' ? 'Решать пока нечего' : at === 'queue' ? 'Очередь пуста' : 'Пока пусто'} text={at === 'found' ? 'Одинаковые записи заменяются сами — сюда попадают только спорные.' : undefined} />
+              ) : (
+                <ul className="mx-4 overflow-hidden rounded-2xl bg-surface lg:mx-6">
+                  {shown.map((r) => (
+                    <li key={r.id} className="border-b border-line/60 px-4 py-3 last:border-0">
+                      <div className="flex items-center gap-3">
+                        <Cover src={r.cover_url} size={40} alt="" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[15px]">{r.title}</span>
+                          <span className="block truncate text-[13px] text-muted">{r.artist}</span>
+                        </span>
+                        <RowState r={r} />
+                      </div>
+                      {r.state === 'found' && (
+                        <Compare
+                          r={r}
+                          listening={listening}
+                          busy={busy === `${r.id}` || busy === 'all'}
+                          onYes={() => void say(r, true)}
+                          onNo={() => void say(r, false)}
+                        />
+                      )}
+                      {r.state === 'searching' && r.progress > 0 && <ProgressBar value={r.progress} className="mt-2 max-w-md" />}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** What became of a track, at the right of its row. */
+function RowState({ r }: { r: QualityRow }) {
+  const pill = (text: string, cls: string, title?: string) => (
+    <span title={title} className={cx('shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px]', cls)}>
+      {text}
+    </span>
+  );
+  const was = fileWords(r.was_codec, r.was_kbps);
+  const got = fileWords(r.codec, r.bitrate_kbps);
+  if (r.state === 'replaced')
+    return (
+      <span className="flex shrink-0 items-center gap-1.5">
+        {pill(was, 'bg-fg/5 text-dim line-through')}
+        <Icon name="chevron" size={12} className="text-dim" />
+        {pill(got, 'bg-accent/15 text-accent', r.note ?? undefined)}
+      </span>
+    );
+  if (r.state === 'found') return pill(`сходство ${(r.likeness ?? 0).toFixed(2)}`, 'bg-warn/15 text-warn', r.note ?? undefined);
+  if (r.state === 'searching') return pill(r.progress > 0 ? `скачиваю · ${Math.round(r.progress * 100)}%` : 'ищу…', 'bg-info/15 text-info');
+  if (r.state === 'queued') return pill(r.known ? 'в очереди' : 'в очереди · нет в каталоге', 'bg-fg/5 text-muted', r.known ? undefined : 'Каталог не знает эту песню: ищу по названию из файла, это дольше и реже удаётся');
+  return (
+    <span className="flex min-w-0 shrink items-center gap-2">
+      <span className="hidden min-w-0 truncate text-[11px] text-dim sm:block" title={r.note ?? undefined}>
+        {r.state === 'kept' ? 'вы оставили свой файл' : r.note}
+      </span>
+      {pill(was, 'bg-fg/5 text-muted')}
+    </span>
+  );
+}
+
+/** The two files of a track — the one it has and the one found — heard one at a time, each from where its picture
+ * is tapped. */
+function useTwoFiles() {
+  const audio = useRef<HTMLAudioElement | null>(null);
+  const [on, setOn] = useState<{ key: string; at: number } | null>(null);
+  useEffect(() => () => audio.current?.pause(), []);
+  const stop = () => {
+    audio.current?.pause();
+    setOn(null);
+  };
+  /** `from`: where to start, 0…1 of the file (none: from where it stopped, or the start) */
+  const play = (key: string, src: string, from?: number) => {
+    const a = (audio.current ??= new Audio());
+    if (on?.key === key && from === undefined) return stop();
+    if (on?.key !== key) {
+      a.src = src;
+      a.ontimeupdate = () => setOn((cur) => (cur ? { ...cur, at: a.duration ? a.currentTime / a.duration : 0 } : cur));
+      a.onended = () => setOn(null);
+      a.onerror = () => {
+        setOn(null);
+        toast('Не удалось воспроизвести', 'error');
+      };
+    }
+    const seek = () => {
+      if (from !== undefined && a.duration) a.currentTime = from * a.duration;
+    };
+    if (a.readyState >= 1) seek();
+    else a.onloadedmetadata = seek;
+    setOn({ key, at: from ?? 0 });
+    void a.play().catch(() => setOn(null));
+  };
+  return { on, play, stop };
+}
+
+function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening: ReturnType<typeof useTwoFiles>; busy: boolean; onYes: () => void; onNo: () => void }) {
+  const peaks = useAsync((s) => api.qualityPeaks(r.id, s), [r.id]);
+  const lane = (which: 'current' | 'found', label: string, words: string, good: boolean) => {
+    const key = `${r.id}:${which}`;
+    const src = `/api/quality/${r.id}/audio/${which}`;
+    const playing = listening.on?.key === key;
+    const bars = peaks.data?.[which] ?? [];
+    return (
+      <div className="flex items-center gap-3 py-1">
+        <span className="w-14 shrink-0 text-[11px] text-dim">{label}</span>
+        <button type="button" aria-label={playing ? 'Пауза' : `Слушать: ${label.toLowerCase()}`} onClick={() => listening.play(key, src)} className={cx('flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition hover:scale-105', playing ? 'border-accent text-accent' : 'border-line text-fg')}>
+          <Icon name={playing ? 'pause' : 'play'} size={14} filled className={playing ? '' : 'translate-x-px'} />
+        </button>
+        <button
+          type="button"
+          aria-label={`Перемотать: ${label.toLowerCase()}`}
+          title="Нажмите, чтобы слушать с этого места"
+          className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-px"
+          onClick={(e) => {
+            const box = e.currentTarget.getBoundingClientRect();
+            listening.play(key, src, Math.min(0.999, Math.max(0, (e.clientX - box.left) / box.width)));
+          }}
+        >
+          {bars.length ? (
+            bars.map((v, i) => <span key={i} className={cx('min-w-px flex-1 rounded-sm', playing && i / bars.length <= (listening.on?.at ?? 0) ? 'bg-accent' : 'bg-fg/30')} style={{ height: `${Math.max(6, v)}%` }} />)
+          ) : (
+            <span className="h-1 w-full rounded bg-fg/10" />
+          )}
+        </button>
+        <span className={cx('w-20 shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-center text-[11px]', good ? 'bg-accent/15 text-accent' : 'bg-warn/15 text-warn')}>{words}</span>
+      </div>
+    );
+  };
+  return (
+    <div className="pt-2 md:pl-[3.25rem]">
+      {lane('current', 'Сейчас', fileWords(r.was_codec, r.was_kbps), false)}
+      {lane('found', 'Найден', fileWords(r.codec, r.bitrate_kbps), true)}
+      <div className="flex flex-wrap items-center gap-2 pt-2">
+        <Button small variant="primary" busy={busy} onClick={onYes}>
+          Заменить
+        </Button>
+        <Button small disabled={busy} onClick={onNo}>
+          Оставить мой
+        </Button>
+        <span className="min-w-0 truncate text-[11px] text-dim">
+          {[r.provider ? `источник: ${providerLabel(r.provider)}` : null, r.duration_s ? fmtDuration(r.duration_s) : null, r.note].filter(Boolean).join(' · ')}
+        </span>
+      </div>
+    </div>
+  );
+}
+

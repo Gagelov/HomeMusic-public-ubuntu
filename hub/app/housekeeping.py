@@ -87,6 +87,10 @@ async def run_daily() -> None:
 
         async with session_scope() as s:  # files that were there before a file kept the picture of its sound
             await acoustic.fill(s, limit=400)
+        async with session_scope() as s:  # files found for a weak one that nobody said anything about
+            from app.library import upgrade
+
+            await upgrade.purge(s)
         m = await asyncio.to_thread(purge_stale_uploads)
         c = await cache_purge_expired()
         e = await purge_email_codes()

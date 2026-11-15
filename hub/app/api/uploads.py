@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,7 +48,7 @@ def _match(tags: dict) -> UploadMatch | None:
                        title=meta.get("title"), artist=meta.get("artist"), artists=meta.get("artists") or [],
                        album=meta.get("album"), album_artist=meta.get("album_artist"), record_type=meta.get("record_type"),
                        year=meta.get("year") or (int(str(meta["release_date"])[:4]) if meta.get("release_date") else None),
-                       duration_s=meta.get("duration_s"), cover_url=meta.get("cover_url"))
+                       duration_s=meta.get("duration_s"), cover_url=meta.get("cover_url"), track_no=meta.get("track_no"))
 
 
 async def _find_twin(s: AsyncSession, u: Upload) -> dict | None:
@@ -99,7 +99,11 @@ async def _chroma(s: AsyncSession, u: Upload) -> bytes | None:
 
 async def upload_out(s: AsyncSession, u: Upload) -> UploadOut:
     twin = await _twin(s, u) if u.status == "uploaded" else None
-    kept = u.probed_tags_json or {}
+    kept = dict(u.probed_tags_json or {})
+    if kept.get("has_cover") and "cover_hash" not in kept and _abs(u).is_file():  # an upload from before the mark
+        kept["cover_hash"] = _cover_hash(await asyncio.to_thread(tagger.read_cover, _abs(u)))
+        u.probed_tags_json = kept
+        await s.flush()
     tags = {k: v for k, v in kept.items() if not k.startswith("_")}
     artist, title = recognize.names_of(tags, u.orig_name)
     return UploadOut(id=u.id, orig_name=u.orig_name, size=u.size, status=u.status, tags=tags,
@@ -107,6 +111,12 @@ async def upload_out(s: AsyncSession, u: Upload) -> UploadOut:
                      codec=tags.get("codec"), bitrate_kbps=tags.get("bitrate_kbps"), twin=twin, match=_match(kept),
                      weak=quality.weak(tags.get("codec"), tags.get("bitrate_kbps")), title=title, artist=artist,
                      single=recognize.single_album(tags.get("album"), title), duration_s=u.duration_s)
+
+
+def _cover_hash(image: bytes | None) -> str | None:
+    import hashlib
+
+    return hashlib.md5(image).hexdigest()[:12] if image else None
 
 
 def _upload_dir(user_id: int) -> Path:
@@ -162,6 +172,8 @@ async def upload(files: list[UploadFile] = File(...), user: User = Depends(curre
         except Exception as e:
             log.info("upload %s not probed: %r", name, e)
             info = None
+        # the mark of the file's picture: files of one album whose pictures differ are told by it
+        tags["cover_hash"] = _cover_hash(await asyncio.to_thread(tagger.read_cover, dest)) if tags.get("has_cover") else None
         sound = await acoustic.of_file(dest)
         duration = (info.duration_s if info else None) or (sound[1] if sound else None)
         tags["_match"] = await recognize.of_file(tags, name, duration)
@@ -200,6 +212,28 @@ async def cover(upload_id: int, user: User = Depends(current_user), s: AsyncSess
     if not data:
         raise HTTPException(404, "Нет обложки")
     return Response(data, media_type="image/jpeg")
+
+
+@router.get("/{upload_id}/audio")
+async def audio(upload_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    """The uploaded file itself, to listen to before it is brought in."""
+    p = _abs(await _own(s, user, upload_id))
+    if not p.is_file():
+        raise HTTPException(404, "Файла нет")
+    return FileResponse(p, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/{upload_id}/preview")
+async def preview(upload_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> dict:
+    """Half a minute of the catalog's record the file was told to be: where it is heard from."""
+    from app.services import svc
+
+    u = await _own(s, user, upload_id)
+    ident = (((u.probed_tags_json or {}).get("_match") or {}).get("meta") or {}).get("deezer_track_id")
+    url = await svc.deezer.preview_url(ident) if ident and svc.deezer else None
+    if not url:
+        raise HTTPException(404, "У каталога нет фрагмента этой записи")
+    return {"url": url}
 
 
 @router.post("/{upload_id}/match", response_model=UploadOut)
@@ -242,7 +276,7 @@ def _own_spec(u: Upload, tr, tags: dict) -> ImportSpec:
     )
 
 
-async def _catalog_spec(meta: dict) -> ImportSpec:
+async def _catalog_spec(meta: dict, *, with_cover: bool = True) -> ImportSpec:
     """The file as the song of the catalog it is: what a download of that song would be filed as."""
     from app.jobs.downloads import _parse_date, fetch_cover
 
@@ -258,7 +292,7 @@ async def _catalog_spec(meta: dict) -> ImportSpec:
         track_no=meta.get("track_no") or (1 if single else None), track_total=meta.get("track_total"),
         disc_no=meta.get("disc_no") or 1, genre=meta.get("genre"), isrc=meta.get("isrc"), explicit=meta.get("explicit"),
         deezer_track_id=meta.get("deezer_track_id"), ref=ref or None, deezer_album_id=meta.get("deezer_album_id"),
-        upc=meta.get("upc"), cover=await fetch_cover(meta.get("cover_url")),
+        upc=meta.get("upc"), cover=await fetch_cover(meta.get("cover_url")) if with_cover else None,
     )
 
 
@@ -269,7 +303,7 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
     its own names. The album is the song's own (found or made by its name and artist), not the form's."""
     if not body.tracks:
         raise HTTPException(400, "Не выбраны файлы")
-    imported = 0
+    imported = weak = 0
     track_ids: list[int] = []
     album_ids: list[int] = []
     for tr in body.tracks:
@@ -287,9 +321,14 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
         except Exception as e:
             log.warning("probe failed for upload %s: %r", u.id, e)
             info = None
-        spec = await _catalog_spec(meta) if meta else _own_spec(u, tr, tags)
-        if spec.cover is None:  # the catalog has no picture, or the file is filed under its own names: the file's
-            spec.cover = await asyncio.to_thread(tagger.read_cover, src)
+        spec = await _catalog_spec(meta, with_cover=tr.cover != "file") if meta else _own_spec(u, tr, tags)
+        if meta:  # a name the catalog only writes in other letters' case is the file's name: «Утром», not «утром»
+            mine = recognize.names_of(tags, u.orig_name)[1]
+            if mine.casefold() == spec.title.casefold():
+                spec.title = mine
+        own = await asyncio.to_thread(tagger.read_cover, src)
+        if spec.cover is None:  # the file's picture was chosen, the catalog has none, or the names are the file's
+            spec.cover = own
         # the file of a track the library has (the upload is the better one): it becomes that track's file
         replaced = await s.get(Track, tr.replace_track_id) if tr.replace_track_id else None
         spec.track_id = replaced.id if replaced is not None else None
@@ -303,8 +342,13 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
             log.exception("upload import failed")
             u.status, u.error = "failed", str(e)[:500]
             continue
+        if tr.own_cover and own:  # the file's picture is this track's own, over its album's
+            from app.library import edits
+
+            await edits.set_track_cover(s, user, track, own)
         u.status, u.track_id = "imported", track.id
         imported += 1
+        weak += quality.weak(spec.codec, spec.bitrate_kbps)
         track_ids.append(track.id)
         if track.album_id and track.album_id not in album_ids:
             album_ids.append(track.album_id)
@@ -332,15 +376,10 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
         await command(s, user, [FavoriteTarget(track_id=t) for t in track_ids], liked=True, client="hub",
                       context="upload")
         await project_liked(s, user.id)
-    upgrading = 0
-    if body.upgrade and track_ids:
-        from app.library import upgrade
-
-        upgrading = await upgrade.enqueue(s, user.id, track_ids)
     await s.commit()
     notify()
     bus.publish(user.id, "library", {"kind": "imported", "album_id": album_ids[0] if album_ids else None})
-    return UploadCommitOut(album_ids=album_ids, imported=imported, upgrading=upgrading)
+    return UploadCommitOut(album_ids=album_ids, imported=imported, track_ids=track_ids, weak=weak)
 
 
 def purge_stale_uploads(days: int = 7) -> int:
