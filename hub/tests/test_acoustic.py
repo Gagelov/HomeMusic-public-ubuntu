@@ -103,3 +103,25 @@ async def test_albums_in_pieces_are_listed(env):
     got = (await c.get("/api/library/albums/split")).json()
     assert len(got) == 1 and got[0]["target_id"] == ids[0]  # the one with the most tracks takes the rest
     assert [(a["id"], a["track_count"]) for a in got[0]["albums"]] == [(ids[0], 2), (ids[1], 1)]
+
+
+async def test_the_files_as_a_list_and_the_doubles(env):
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.library import acoustic
+    from app.models import User
+
+    rnd = random.Random(11)
+    sound = [rnd.getrandbits(32) for _ in range(600)]
+    c = env["client"]
+    async with session_scope() as s:
+        uid = (await s.execute(select(User.id))).scalar_one()
+        for n, chroma in (("1", sound), ("2", [v ^ 1 for v in sound]), ("3", [rnd.getrandbits(32) for _ in range(600)])):
+            s.add(filed_track(uid=f"d-{n}", path=f"d/{n}.mp3", artist="Кто-то", title=f"Трек {n}", fingerprint=f"d{n}",
+                              duration_s=200, codec="mp3", bitrate_kbps=128, chroma=acoustic.pack(chroma), created_by=uid))
+    rows = [r for r in (await c.get("/api/library/files")).json() if r["title"].startswith("Трек ")]
+    assert sorted(r["title"] for r in rows) == ["Трек 1", "Трек 2", "Трек 3"]
+    assert all(r["mine"] and r["no_album"] and not r["kept"] and r["added_at"] and r["file"]["codec"] == "mp3" for r in rows)
+    ids = {r["title"]: r["library_track_id"] for r in rows}
+    assert (await c.get("/api/library/files/doubles")).json() == [sorted([ids["Трек 1"], ids["Трек 2"]])]

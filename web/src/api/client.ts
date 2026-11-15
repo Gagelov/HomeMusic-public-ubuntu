@@ -75,6 +75,7 @@ import type {
   StarOut,
   StarredOut,
   TasteOnboardingOut,
+  FileRowOut,
   SplitAlbums,
   TrackEditEntry,
   TrackEditOut,
@@ -319,6 +320,10 @@ export const api = {
     return request<LibAlbumOut>('PUT', `/api/library/albums/${id}/cover`, { form });
   },
   mergeAlbums: (body: AlbumMergeIn) => request<LibAlbumOut>('POST', '/api/library/albums/merge', { json: body }),
+  /** «Все файлы»: every track with a file that one looks after, the newest file first. */
+  libFiles: (signal?: AbortSignal) => request<FileRowOut[]>('GET', '/api/library/files', { signal }),
+  /** The tracks that are one recording twice, told by the sound: groups of `library_track_id`s. */
+  fileDoubles: (signal?: AbortSignal) => request<number[][]>('GET', '/api/library/files/doubles', { signal }),
   /** Albums that are one album in pieces (the same name, artists that differ by a guest). */
   splitAlbums: (signal?: AbortSignal) => request<SplitAlbums[]>('GET', '/api/library/albums/split', { signal }),
   moveTracks: (body: TracksMoveIn) => request<LibAlbumOut>('POST', '/api/library/tracks/move', { json: body }),

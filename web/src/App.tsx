@@ -115,7 +115,7 @@ const ROUTES: RouteDef[] = [
   ['/downloads', 'downloads', () => <DownloadsPage />, 'text'],
   ['/downloads/:id', 'downloads', (p) => <DownloadDetailPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/library', 'library', () => <LibraryPage />, 'text'],
-  ['/files', 'more', (_, r) => <FilesPage initialQuery={r.query.get('q') ?? ''} />, 'text'],
+  ['/files', 'more', () => <FilesPage />],
   ['/library/album/:id', 'more', (p) => <LibraryAlbumPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/assistant', 'assistant', (_, r) => <AssistantPage chatId={Number(r.query.get('chat')) || null} />, 'text'],
   ['/assistant/chats', 'assistant', () => <AssistantChatsPage />, 'text'],

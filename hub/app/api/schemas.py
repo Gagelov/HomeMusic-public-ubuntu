@@ -694,6 +694,16 @@ class NdSongOut(TrackOut):
     nd_artist_ids: list[str | None] = []  # the library artists of `artists`, in their order (None: unknown)
 
 
+class FileRowOut(NdSongOut):
+    """A track of «Все файлы»: the track as any list shows it (`added_at` — when its file came), and what the page
+    sorts it out by."""
+
+    added_by: str | None = None  # who brought it (None: nobody the Hub knows — a file found in the folder)
+    mine: bool = False  # the asker brought it
+    kept: bool = False  # it is in the asker's «Любимое» or in a playlist of theirs
+    no_album: bool = False
+
+
 class NdAlbumOut(BaseModel):
     id: str
     title: str

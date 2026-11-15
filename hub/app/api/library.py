@@ -20,6 +20,7 @@ from app.api.schemas import (
     AlbumMergeIn,
     AlbumPatchIn,
     FileJournalOut,
+    FileRowOut,
     LibAlbumOut,
     LibTrackOut,
     StarIn,
@@ -116,6 +117,39 @@ async def list_albums(q: str | None = None, offset: int = 0, limit: int = Query(
                     can_edit=await access.owns_album(s, user, a))
         for a in rows
     ]
+
+
+@router.get("/api/library/files")
+async def list_files(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> list[FileRowOut]:
+    """«Все файлы» / «Мои файлы»: every track with a file that the asker looks after, the newest file first."""
+    from app import playlists
+    from app.api.playlists import tracks_out
+
+    rows = (await s.execute(
+        select(Track, func.max(TrackFile.acquired_at)).join(TrackFile, TrackFile.track_id == Track.id)
+        .where(access.tracks_of(user)).group_by(Track.id).order_by(func.max(TrackFile.acquired_at).desc(), Track.id.desc())
+    )).all()
+    names = dict((await s.execute(select(User.id, User.nd_username))).all())
+    liked, listed = await playlists.kept(s, user.id)
+    drawn = await tracks_out(s, user, [t for t, _ in rows])
+    out = []
+    for (t, at), song in zip(rows, drawn, strict=True):
+        out.append(FileRowOut(**{**song.model_dump(), "added_at": at}, added_by=names.get(t.created_by),
+                              mine=t.created_by == user.id, kept=t.id in liked or t.id in listed,
+                              no_album=t.album_id is None))
+    return out
+
+
+@router.get("/api/library/files/doubles")
+async def file_doubles(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> list[list[int]]:
+    """The tracks that are one recording twice (told by the sound): groups of track ids, of the asker's files."""
+    from app.library import acoustic
+
+    groups = await acoustic.doubles(s)
+    if user.is_admin:
+        return groups
+    own = set((await s.execute(select(Track.id).where(access.tracks_of(user)))).scalars())
+    return [g for g in groups if any(t in own for t in g)]
 
 
 @router.get("/api/library/albums/split")

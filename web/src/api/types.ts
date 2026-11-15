@@ -682,6 +682,17 @@ export interface PlaylistPageOut extends PlaylistOut {
 // --- the Navidrome library (the PWA in a browser: /api/nd) ------------------------------------
 
 /** A library song or a catalog-only favorite (/nd/liked, without nd_song_id until downloaded). */
+/** A track of «Все файлы»: the track as any list shows it (`added_at` — when its file came), and what the page
+ * sorts it out by. */
+export interface FileRowOut extends NdSongOut {
+  /** who brought it */
+  added_by?: string | null;
+  mine: boolean;
+  /** it is in one's «Любимое» or in a playlist of one's own */
+  kept: boolean;
+  no_album: boolean;
+}
+
 export interface NdSongOut extends TrackOut {
   nd_album_id?: string | null;
   nd_artist_id?: string | null;

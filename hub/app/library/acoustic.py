@@ -21,7 +21,7 @@ import shutil
 from array import array
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
@@ -125,6 +125,47 @@ async def twin(s: AsyncSession, chroma: bytes | None, duration_s: float | None) 
 
     at, top = await asyncio.to_thread(best)
     return (rows[at][0], rows[at][1], top) if at >= 0 and top >= ALIKE else None
+
+
+_doubles: tuple[tuple[int, int], list[list[int]]] | None = None  # (how many pictures, the newest file) -> the groups
+
+
+async def doubles(s: AsyncSession) -> list[list[int]]:
+    """The tracks that are one recording twice or more: groups of track ids, each of files that sound the same
+    (`SAME`). A library is gone through in seconds, not at once, so what was found is kept until a file with a
+    picture comes or goes."""
+    global _doubles
+    count, newest = (await s.execute(select(func.count(TrackFile.id), func.max(TrackFile.id))
+                                     .where(TrackFile.chroma.is_not(None)))).one()
+    if _doubles is not None and _doubles[0] == (count, newest or 0):
+        return _doubles[1]
+    rows = [(tid, dur or 0, chroma) for tid, dur, chroma in (await s.execute(
+        select(TrackFile.track_id, Track.duration_s, TrackFile.chroma).join(Track, Track.id == TrackFile.track_id)
+        .where(TrackFile.chroma.is_not(None)).order_by(Track.duration_s))).all() if chroma]
+
+    def find() -> list[list[int]]:
+        group = {tid: tid for tid, _, _ in rows}
+
+        def top(x: int) -> int:
+            while group[x] != x:
+                group[x] = group[group[x]]
+                x = group[x]
+            return x
+
+        for i, (a, da, ca) in enumerate(rows):
+            for b, db, cb in rows[i + 1:]:
+                if da and db and db - da > NEAR_S:
+                    break  # by length: the rest are longer still
+                if a != b and top(a) != top(b) and likeness(ca, cb) >= SAME:
+                    group[top(b)] = top(a)
+        out: dict[int, list[int]] = {}
+        for tid in group:
+            out.setdefault(top(tid), []).append(tid)
+        return sorted(sorted(g) for g in out.values() if len(g) > 1)
+
+    found = await asyncio.to_thread(find)
+    _doubles = ((count, newest or 0), found)
+    return found
 
 
 async def fill(s: AsyncSession, limit: int = 100) -> int:
