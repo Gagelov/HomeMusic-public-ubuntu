@@ -46,7 +46,6 @@ import { TagsPage } from './pages/Tags';
 import { FileJournalPage } from './pages/FileJournal';
 import { DiscographyPage } from './pages/Discography';
 import { HiddenPage } from './pages/Hidden';
-import { TrashPage } from './pages/Trash';
 import { HistoryPage } from './pages/History';
 import { OfflinePage } from './pages/Offline';
 import { refreshDislikes, resetDislikes } from './lib/dislikes';
@@ -87,7 +86,7 @@ const STANDALONE_ROUTES: RouteDef[] = [
   ['/stats', 'more', () => <StatsPage />, 'text'],
   ['/history', 'more', () => <HistoryPage />],
   ['/hidden', 'more', () => <HiddenPage />, 'text'],
-  ['/trash', 'more', () => <TrashPage />, 'text'],
+  ['/trash', 'more', () => <FilesPage key="trash" trash />],
   ['/offline', 'more', () => <OfflinePage />, 'text'],
   ['/subscriptions', 'library', () => <SubscriptionsPage />],
   ['/discoveries', 'library', () => <ForYouPage key="weekly" kind="weekly" />],
@@ -115,7 +114,7 @@ const ROUTES: RouteDef[] = [
   ['/downloads', 'downloads', () => <DownloadsPage />],
   ['/downloads/:id', 'downloads', (p) => <DownloadDetailPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/library', 'library', () => <LibraryPage />, 'text'],
-  ['/files', 'more', () => <FilesPage />],
+  ['/files', 'more', () => <FilesPage key="files" />],
   ['/library/album/:id', 'more', (p) => <LibraryAlbumPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/assistant', 'assistant', (_, r) => <AssistantPage chatId={Number(r.query.get('chat')) || null} />, 'text'],
   ['/assistant/chats', 'assistant', () => <AssistantChatsPage />, 'text'],
