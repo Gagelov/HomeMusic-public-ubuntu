@@ -19,10 +19,10 @@ export function useArtistCard(name: string | null | undefined, ref?: string | nu
 const SOURCE: Record<string, string> = { catalog: 'каталог', library: 'из файлов', manual: 'вручную' };
 const enc = encodeURIComponent;
 
-/** «также: LSP, Lsp» — the artist's other spellings, right under the name (nothing: there are none). */
+/** «LSP, Lsp» — the artist's other spellings, right under the name (nothing: there are none). */
 export function ArtistAlsoLine({ card, className }: { card: ArtistCardOut | null; className?: string }) {
   const also = (card?.names ?? []).filter((n) => !n.main).map((n) => n.name);
-  return also.length ? <div className={className}>также: {also.join(', ')}</div> : null;
+  return also.length ? <div className={className} title="Другие написания имени">{also.join(', ')}</div> : null;
 }
 
 /** The other projects of who the artist is, as buttons of the page's row — each a round picture and the name,
