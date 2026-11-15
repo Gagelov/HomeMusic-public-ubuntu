@@ -1204,7 +1204,7 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   const items = (
     <>
       {item('edit', 'Изменить название и исполнителей', onEdit)}
-      {has && item('note', by ? 'Оставить как в файле' : m?.state === 'doubt' ? 'Это она — взять данные каталога' : 'Взять данные каталога', () => onChange({ catalog: !by, cover: !by && m?.cover_url ? 'catalog' : 'file' }))}
+      {has && item('note', by ? 'Не та запись — оставить как в файле' : m?.state === 'doubt' ? 'Это она — взять данные каталога' : 'Взять данные каталога', () => onChange({ catalog: !by, cover: !by && m?.cover_url ? 'catalog' : 'file' }))}
       {item('search', has ? 'Другая запись каталога…' : 'Найти в каталоге вручную', onFind)}
       {!m?.by_hand && item('refresh', 'Сверить заново', onAgain)}
       {item('folder', 'В другой альбом…', onAlbum)}
