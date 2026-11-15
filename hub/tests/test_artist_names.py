@@ -102,7 +102,17 @@ async def test_a_project_is_linked_not_joined(env):
     other = (await c.get("/api/artists/of", params={"name": "m00nchild"})).json()
     assert other["id"] != a["id"] and [p["name"] for p in other["projects"]] == ["GONE.Fludd"]
     assert (await c.post(f"/api/artists/{a['id']}/projects", json={"other_id": a["id"]})).status_code == 422
+    # the projects of one person are one group: a third, named on one page, is on the pages of all
+    r = await c.post(f"/api/artists/{other['id']}/projects", json={"name": "Третий"})
+    third = next(p for p in r.json()["projects"] if p["name"] == "Третий")
+    assert sorted(p["name"] for p in r.json()["projects"]) == ["GONE.Fludd", "Третий"]
+    assert sorted(p["name"] for p in (await c.get("/api/artists/of", params={"name": "GONE.Fludd"})).json()["projects"]) == ["M00NCHILD", "Третий"]
+    assert sorted(p["name"] for p in (await c.get("/api/artists/of", params={"name": "Третий"})).json()["projects"]) == ["GONE.Fludd", "M00NCHILD"]
+    # the one in the middle leaves: the other two stay each other's
     r = await c.delete(f"/api/artists/{a['id']}/projects/{other['id']}")
+    assert r.status_code == 200 and [p["name"] for p in r.json()["projects"]] == ["Третий"], r.text
+    assert (await c.get("/api/artists/of", params={"name": "M00NCHILD"})).json()["projects"] == []
+    r = await c.delete(f"/api/artists/{a['id']}/projects/{third['id']}")
     assert r.status_code == 200 and r.json()["projects"] == []
 
 

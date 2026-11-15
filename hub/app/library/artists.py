@@ -167,8 +167,19 @@ async def of_ref(s: AsyncSession, ref: str | None, name: str | None) -> Artist |
 
 
 async def _linked(s: AsyncSession, artist_id: int) -> set[int]:
-    rows = (await s.execute(select(ArtistLink.low_id, ArtistLink.high_id).where(or_(ArtistLink.low_id == artist_id, ArtistLink.high_id == artist_id)))).all()
-    return {x for r in rows for x in r if x != artist_id}
+    """The other projects of who the artist is: everyone linked to them, straight or through another project —
+    the projects of one person are one group, whichever two of them were named together."""
+    near: dict[int, set[int]] = {}
+    for low, high in (await s.execute(select(ArtistLink.low_id, ArtistLink.high_id))).all():
+        near.setdefault(low, set()).add(high)
+        near.setdefault(high, set()).add(low)
+    seen, todo = {artist_id}, [artist_id]
+    while todo:
+        for i in near.get(todo.pop(), ()):
+            if i not in seen:
+                seen.add(i)
+                todo.append(i)
+    return seen - {artist_id}
 
 
 async def _apart(s: AsyncSession, artist_id: int) -> set[int]:
@@ -296,16 +307,24 @@ async def merge(s: AsyncSession, user_id: int | None, into: Artist, other: Artis
 
 
 async def link(s: AsyncSession, user_id: int | None, a: Artist, b: Artist, on: bool = True) -> None:
-    """`b` is another project of who `a` is (or is not any more)."""
+    """`b` is another project of who `a` is — and so of every project of theirs. Or is not any more: `b` leaves
+    the group, and the others stay each other's."""
     if a.id == b.id:
         raise ValueError("Это тот же исполнитель")
-    low, high = _pair(a.id, b.id)
-    have = (await s.execute(select(ArtistLink).where(ArtistLink.low_id == low, ArtistLink.high_id == high))).scalar_one_or_none()
-    if on and have is None:
+    group = await _linked(s, a.id)
+    if on and b.id not in group:
+        low, high = _pair(a.id, b.id)
         s.add(ArtistLink(low_id=low, high_id=high))
         _journal(s, user_id, a.id, {"project": [None, b.name]})
-    elif not on and have is not None:
-        await s.delete(have)
+    elif not on and b.id in group:
+        await s.execute(delete(ArtistLink).where(or_(ArtistLink.low_id == b.id, ArtistLink.high_id == b.id)))
+        await s.flush()
+        rest = sorted(group - {b.id})  # they were perhaps linked only through the one that left
+        still = await _linked(s, a.id)
+        for i in rest:
+            if i not in still:
+                low, high = _pair(a.id, i)
+                s.add(ArtistLink(low_id=low, high_id=high))
         _journal(s, user_id, a.id, {"project": [b.name, None]})
     await s.flush()
 
