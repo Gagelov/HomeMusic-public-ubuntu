@@ -22,7 +22,11 @@ import { attempt, confirmDialog, toast } from '../lib/ui';
  * found — the catalog's and the ones inside the files, each with its size in pixels, its kind and its weight. Under
  * the head its files stand as the tracks of a playlist: the number, the cover that plays the file in the app's own
  * player, the name with everyone credited, the length — and what the catalog changes in the track, in a few words.
- * The singles follow, each with its own picture to choose. A row opens to be put right by hand.
+ * The singles follow, each with its own picture to choose. A row opens to be put right by hand (its ⋯).
+ *
+ * «Перенести» brings in every file of the page. The ticks at the left do not choose what goes in: they pick files
+ * to act on together, as the rows of a playlist are picked — a tick, a drag over the ⋯ of the rows, Ctrl+A for all
+ * that are shown — and a bar comes up with what can be done with them: taken off the list.
  *
  * A file the catalog only has something *like* is not asked about: it goes in under its own names, and the second
  * step — «Качество звука» (`pages/Quality.tsx`) — settles by the sound whether the record is its own. Nothing here
@@ -251,6 +255,8 @@ export function UploadPage() {
   const [tagIds, setTagIds] = useState<number[]>([]); // the imported tracks get these tags of one's own
   const [plPicker, setPlPicker] = useState(false);
   const [moving, setMoving] = useState<{ done: number; of: number } | null>(null);
+  const [picked, setPicked] = useState<Set<number>>(new Set()); // the files picked to act on together
+  const drag = useRef<{ from: number; moved: boolean } | null>(null); // a drag over the rows' ⋯ picks the rows passed
 
   const addUploads = useCallback((list: UploadOut[]) => {
     setUploads((prev) => {
@@ -349,14 +355,15 @@ export function UploadPage() {
     if (await attempt(() => api.deleteUpload(u.id))) setUploads((prev) => prev.filter((x) => x.id !== u.id));
   };
 
-  /** The files left unchecked — what the library has already, as a rule — go off the server in one go. */
-  const removeLeftOut = async () => {
-    const out = uploads.filter((u) => !rowOf(u).include);
-    const ok = await confirmDialog({ title: `Убрать невыбранные: ${tracksWord(out.length)}?`, body: 'Загруженные файлы без галочки удалятся с сервера. Библиотеку это не затронет.', okLabel: 'Убрать', danger: true });
+  /** The picked files go off the list — and off the server: they were only waiting here. */
+  const removePicked = async () => {
+    const out = uploads.filter((u) => picked.has(u.id));
+    const ok = await confirmDialog({ title: `Убрать из списка: ${tracksWord(out.length)}?`, body: 'Эти загруженные файлы удалятся с сервера. Библиотеку и исходные файлы на вашем компьютере это не затронет.', okLabel: 'Убрать', danger: true });
     if (!ok) return;
     const gone = new Set<number>();
     for (const u of out) if (await attempt(() => api.deleteUpload(u.id))) gone.add(u.id);
     setUploads((prev) => prev.filter((u) => !gone.has(u.id)));
+    setPicked(new Set());
   };
 
   /** The record of the catalog a file is, picked by hand (or looked for again): the row is the catalog's then. */
@@ -489,6 +496,43 @@ export function UploadPage() {
   const order = [...shownGroups.flatMap((x) => x.files), ...shownSingles];
   const play = (u: UploadOut) => listen(asTrack(u), order.map(asTrack), 'upload');
 
+  const togglePick = (id: number) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  /** The rows from the one the drag began at to this one, as they stand on the page. */
+  const dragOver = (id: number) => {
+    const d = drag.current;
+    if (!d || (id === d.from && !d.moved)) return;
+    d.moved = true;
+    const ids = order.map((u) => u.id);
+    const a = ids.indexOf(d.from);
+    const b = ids.indexOf(id);
+    if (a < 0 || b < 0) return;
+    setPicked((prev) => new Set([...prev, ...ids.slice(Math.min(a, b), Math.max(a, b) + 1)]));
+  };
+  // the page's own keys: Ctrl+A picks every file shown, Esc drops the pick; a drag ends wherever the button is let go
+  const shownIds = order.map((u) => u.id).join(',');
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement | null)?.closest('input, textarea, select, [contenteditable="true"]') || document.querySelector('[role="dialog"]');
+      if (typing) return;
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyA' && shownIds) {
+        e.preventDefault();
+        setPicked(new Set(shownIds.split(',').map(Number)));
+      } else if (e.key === 'Escape') setPicked(new Set());
+    };
+    const up = () => window.setTimeout(() => (drag.current = null), 0); // after the click that ends the drag
+    window.addEventListener('keydown', key);
+    window.addEventListener('pointerup', up);
+    return () => {
+      window.removeEventListener('keydown', key);
+      window.removeEventListener('pointerup', up);
+    };
+  }, [shownIds]);
+
   const uploadingNow = transfers.some((t) => !t.error);
   const canCommit = ready.length > 0 && !uploadingNow && !moving;
 
@@ -544,7 +588,7 @@ export function UploadPage() {
     if (whole) navigate('/files', { replace: true });
   };
 
-  const totalSize = included.reduce((n, u) => n + u.size, 0);
+  const totalSize = uploads.reduce((n, u) => n + u.size, 0);
   const chips: [Only, string, number, boolean?][] = [
     ['all', 'Все', uploads.length],
     ['fill', 'Нужно заполнить', counts.fill, true],
@@ -576,8 +620,12 @@ export function UploadPage() {
       number={g ? ((usesCatalog(u, rowOf(u)) && u.match?.track_no) || toIntOrNull(str(u.tags.track_no))) : at + 1}
       picture={pictureOf(u)}
       open={open === u.id}
+      picked={picked.has(u.id)}
+      onPick={() => togglePick(u.id)}
+      onDragStart={() => (drag.current = { from: u.id, moved: false })}
+      onDragOver={() => dragOver(u.id)}
       onPlay={() => play(u)}
-      onOpen={() => setOpen(open === u.id ? null : u.id)}
+      onOpen={() => !drag.current?.moved && setOpen(open === u.id ? null : u.id)}
       onChange={(patch) => setRow(u.id, patch)}
       onFind={() => setFinding(u)}
       onAgain={() => void rematch(u)}
@@ -587,7 +635,7 @@ export function UploadPage() {
 
   return (
     <div className="pb-10">
-      <PageHeader title="Загрузить файлы" back="/files" sub={included.length ? `${plural(included.length, ['Выбран', 'Выбрано', 'Выбрано'])} ${included.length} из ${uploads.length} · ${fmtSize(totalSize)}` : undefined} right={importButton || undefined} />
+      <PageHeader title="Загрузить файлы" back="/files" sub={uploads.length ? `${uploads.length} ${plural(uploads.length, ['файл', 'файла', 'файлов'])} · ${fmtSize(totalSize)}` : undefined} right={importButton || undefined} />
 
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" aria-hidden="true">
@@ -694,11 +742,6 @@ export function UploadPage() {
                 </button>
               ))}
             </div>
-            {included.length < uploads.length && (
-              <Button small icon="trash" onClick={removeLeftOut}>
-                Убрать невыбранные · {uploads.length - included.length}
-              </Button>
-            )}
           </div>
           {toFill.length > 0 && (
             <p className="px-4 pt-2 text-xs text-muted lg:px-6">
@@ -725,6 +768,16 @@ export function UploadPage() {
         </>
       )}
 
+      {picked.size > 0 && (
+        <div className="pointer-events-none fixed bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+12px+env(safe-area-inset-bottom))] left-(--side-w) right-0 z-40 flex justify-center px-3" role="region" aria-label="Выбранные файлы">
+          <div className="anim-up pointer-events-auto flex max-w-full items-center gap-1 rounded-2xl border border-line bg-raised py-1.5 pl-4 pr-1.5 shadow-2xl">
+            <span className="mr-2 whitespace-nowrap text-sm font-semibold">{picked.size} {plural(picked.size, ['файл', 'файла', 'файлов'])}</span>
+            <IconButton icon="trash" size={20} label="Убрать из списка" onClick={() => void removePicked()} className="!h-10 !w-10 text-muted hover:text-danger" />
+            <span className="mx-1 h-6 w-px bg-line" aria-hidden="true" />
+            <IconButton icon="x" size={18} label="Снять выделение" onClick={() => setPicked(new Set())} className="!h-10 !w-10 text-muted hover:text-fg" />
+          </div>
+        </div>
+      )}
       {plPicker && (
         <PlaylistsPick
           title={`${tracksWord(ready.length)} — в плейлисты`}
@@ -858,7 +911,7 @@ const ROW = { gridTemplateColumns: '2.75rem 1.75rem 2.5rem minmax(0,1.4fr) minma
 
 /** A file as a track of a list: its number, the cover that plays it in the app's player, its name with everyone
  * credited, what the catalog changes in it, its length. Open, it is put right by hand. */
-function FileRow({ u, r, desktop, inAlbum, number, picture, open, onPlay, onOpen, onChange, onFind, onAgain, onRemove }: { u: UploadOut; r: RowState; desktop: boolean; inAlbum: boolean; number: number | null | false | 0 | undefined; picture: string | null; open: boolean; onPlay: () => void; onOpen: () => void; onChange: (patch: Partial<RowState>) => void; onFind: () => void; onAgain: () => void; onRemove: () => void }) {
+function FileRow({ u, r, desktop, inAlbum, number, picture, open, picked, onPick, onDragStart, onDragOver, onPlay, onOpen, onChange, onFind, onAgain, onRemove }: { u: UploadOut; r: RowState; desktop: boolean; inAlbum: boolean; number: number | null | false | 0 | undefined; picture: string | null; open: boolean; /** picked to act on with others */ picked: boolean; onPick: () => void; /** a drag over the rows' ⋯ picks the rows passed */ onDragStart: () => void; onDragOver: () => void; onPlay: () => void; onOpen: () => void; onChange: (patch: Partial<RowState>) => void; onFind: () => void; onAgain: () => void; onRemove: () => void }) {
   const m = u.match;
   const has = !!m?.ref;
   const by = usesCatalog(u, r);
@@ -904,9 +957,9 @@ function FileRow({ u, r, desktop, inAlbum, number, picture, open, onPlay, onOpen
     </span>
   );
   return (
-    <div role="row" className={cx('border-b border-line/60 last:border-0', !r.include && 'opacity-60')}>
+    <div role="row" aria-selected={picked} onPointerEnter={onDragOver} className={cx('border-b border-line/60 last:border-0', picked && 'bg-accent/10', !r.include && 'opacity-60')}>
       <div className="grid min-h-14 items-center gap-2.5 py-1.5 pr-1" style={desktop ? ROW : { gridTemplateColumns: '2.75rem 2.5rem minmax(0,1fr) 2.5rem' }}>
-        <Checkbox checked={r.include} onChange={(v) => onChange({ include: v })} label={`Переносить «${u.title}»`} />
+        <Checkbox checked={picked} onChange={onPick} label={`Выбрать «${u.title}»`} />
         {desktop && <span className="text-center text-sm tabular-nums text-dim">{number || '—'}</span>}
         {cover}
         {desktop ? (
@@ -928,7 +981,18 @@ function FileRow({ u, r, desktop, inAlbum, number, picture, open, onPlay, onOpen
           </span>
         )}
         {desktop && <span className="text-right text-xs tabular-nums text-dim">{fmtDuration(u.duration_s)}</span>}
-        <IconButton icon={open ? 'down' : 'edit'} size={17} label={open ? 'Свернуть' : 'Изменить'} aria-expanded={open} onClick={onOpen} className="text-dim hover:text-fg" />
+        <IconButton
+          icon={open ? 'down' : 'more'}
+          size={18}
+          label={open ? 'Свернуть' : 'Изменить · потяните по строкам, чтобы выбрать несколько'}
+          aria-expanded={open}
+          onPointerDown={(e) => {
+            (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); // the rows under the pointer hear it pass
+            onDragStart();
+          }}
+          onClick={onOpen}
+          className="touch-none text-dim hover:text-fg"
+        />
       </div>
       {u.twin && <div className="pb-2 pl-12 pr-4 md:pl-[7.5rem]"><TwinNote u={u} r={r} onChange={onChange} /></div>}
       {open && (
