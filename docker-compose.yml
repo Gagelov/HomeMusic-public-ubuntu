@@ -139,6 +139,7 @@ services:
   # Reverse SSH tunnel: the VPS listens on 127.0.0.1:4533 / 127.0.0.1:8080 and Caddy serves them over HTTPS.
   # The tunnel key only allows these two remote listens.
   tunnel:
+    profiles: ["tunnel"]  # only for a home behind a VPS: COMPOSE_PROFILES=tunnel in .env
     build: ./gateway/tunnel
     image: homemusic-tunnel:local
     container_name: homemusic_tunnel
@@ -165,7 +166,30 @@ services:
         max-size: "1m"
         max-file: "3"
 
+  # A home with a public static IP: Caddy here serves the Hub over HTTPS at PUBLIC_DOMAIN (gateway/direct/Caddyfile).
+  # COMPOSE_PROFILES=direct in .env; the router forwards 80 and 443 to this computer.
+  caddy:
+    profiles: ["direct"]
+    image: caddy:2.8.4-alpine
+    container_name: homemusic_caddy
+    restart: unless-stopped
+    depends_on:
+      - hub
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+    volumes:
+      - ./gateway/direct/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging: *logging
+
 volumes:
+  caddy-data:
+  caddy-config:
   # SQLite databases live on the WSL2 ext4 disk, not on the Windows bind mount (locking/WAL are unreliable there).
   # The Hub copies daily backups of both into MUSIC_ROOT/.backups.
   navidrome-data:

@@ -1,0 +1,10 @@
+# The Hub straight from this computer, for a home with a public (static) IP address: no VPS, no tunnel.
+# The router forwards ports 80 and 443 here; the domain's A record points at the home's address; Caddy gets the
+# certificate from Let's Encrypt by itself and renews it. Navidrome is not published: the Hub is all the app needs.
+{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+	# SSE (/api/events) is flushed immediately; uploads up to 500 MB are streamed without a body limit.
+	reverse_proxy hub:8080 {
+		flush_interval -1
+	}
+}
