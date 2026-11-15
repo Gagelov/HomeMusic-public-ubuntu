@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import type { AlbumOut, ArtistPageOut, TrackOut } from '../api/types';
 import { ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
-import { ArtistAlso, useArtistCard } from '../components/ArtistNames';
+import { ArtistAlsoLine, ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
 import { setDisliked, useDisliked } from '../lib/dislikes';
@@ -65,6 +65,7 @@ export function ArtistNamedPage({ name }: { name: string }) {
 export function ArtistPage({ refId }: { refId: string }) {
   const res = useAsync((s) => api.artist(refId, s), [refId], true, `artist:${refId}`);
   const [menu, setMenu] = useState(false);
+  const [naming, setNaming] = useState<'names' | 'projects' | null>(null); // a window of the artist's names
   const [busy, setBusy] = useState<string | null>(null);
   const d: ArtistPageOut | undefined = res.data;
   const artist = d?.artist;
@@ -134,15 +135,13 @@ export function ArtistPage({ refId }: { refId: string }) {
       {d.banner_url && <BannerPicture src={d.banner_url} />}
       <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" />
       {d.banner_url ? (
-        <Banner name={shownName} sub={facts} tracks={hidden ? undefined : top} />
+        <Banner name={shownName} also={<ArtistAlsoLine card={names.card} className="mt-1 text-sm text-fg/85 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)] lg:text-base" />} sub={facts} tracks={hidden ? undefined : top} />
       ) : (
-        <Hero kicker="Исполнитель" cover={artist.picture_url} round title={shownName} sub={facts} tracks={hidden ? undefined : top} context="artist" />
+        <Hero kicker="Исполнитель" cover={artist.picture_url} round title={shownName} sub={<><ArtistAlsoLine card={names.card} className="pb-1 text-fg/85" />{facts}</>} tracks={hidden ? undefined : top} context="artist" />
       )}
 
       {/* what goes up over the picture has the page's own colour under it */}
       <div className={d.banner_url ? 'relative z-[1] bg-bg' : undefined}>
-      {/* the other spellings and the other projects of who it is */}
-      <ArtistAlso card={names.card} onChange={names.set} className="pb-3" />
       {hidden ? (
         <div className="mx-4 mb-3 rounded-2xl bg-danger/15 px-4 py-3 text-sm text-fg lg:mx-6">
           <p>Вы не слушаете этого исполнителя. Его треков нет в волне, миксах и открытиях, а в плейлистах они пропускаются.</p>
@@ -151,7 +150,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           </Button>
         </div>
       ) : (
-        <div className="flex items-center gap-2 px-4 pb-3 lg:px-6">
+        <div className="flex flex-wrap items-center gap-2 px-4 pb-3 lg:px-6">
           <button
             type="button"
             onClick={() => void follow()}
@@ -174,8 +173,12 @@ export function ArtistPage({ refId }: { refId: string }) {
               {tracksWord(likedBy)}
             </Link>
           )}
-          <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="flex h-11 w-11 items-center justify-center rounded-full text-muted hover:text-fg">
+          {/* the other projects of who it is: each leads to its own page */}
+          <ArtistProjects card={names.card} />
+          <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="relative flex h-11 w-11 items-center justify-center rounded-full text-muted hover:text-fg">
             <Icon name="more" size={24} />
+            {/* somebody looks like the same artist under another spelling: «Имя и написания» says who */}
+            {artistHint(names.card) && <span aria-hidden="true" className="absolute right-2 top-2 h-2 w-2 rounded-full bg-info" />}
           </button>
         </div>
       )}
@@ -208,6 +211,14 @@ export function ArtistPage({ refId }: { refId: string }) {
             void startWave({ artist_ref: artist.ref }, 'artist_page');
           })}
           {item('download', 'Скачать всё', () => void downloadAll())}
+          {names.card && item('edit', artistHint(names.card) ? 'Имя и написания · есть похожий' : 'Имя и написания', () => {
+            setMenu(false);
+            setNaming('names');
+          })}
+          {names.card && item('user', 'Другие проекты…', () => {
+            setMenu(false);
+            setNaming('projects');
+          })}
           {item('link', 'Скопировать ссылку', () => void share())}
           {deezer && (
             <a href={deezer} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
@@ -218,6 +229,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           {item('ban', 'Не включать этого исполнителя', () => void hide(), true)}
         </div>
       </Sheet>
+      <ArtistWindow which={naming} card={names.card} onChange={names.set} onClose={() => setNaming(null)} />
     </div>
   );
 }
@@ -263,7 +275,7 @@ function BannerPicture({ src }: { src: string }) {
 /** The head of the page over that picture: as tall as it, reaching up under the bar with «back»; the name in large
  * over its darkened foot, what is known of the artist under the name, ▶ and the shuffle beside it. The round photo
  * is not shown then — it is the same person twice. */
-function Banner({ name, sub, tracks }: { name: string; sub: string; tracks?: readonly TrackOut[] }) {
+function Banner({ name, also, sub, tracks }: { name: string; /** the other spellings, right under the name */ also?: ReactNode; sub: string; tracks?: readonly TrackOut[] }) {
   return (
     <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex items-end', BANNER_H)}>
       <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-t from-bg via-bg/45 to-black/15" />
@@ -273,6 +285,7 @@ function Banner({ name, sub, tracks }: { name: string; sub: string; tracks?: rea
           <h2 data-list-title className="line-clamp-2 break-words text-4xl font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)] lg:text-7xl">
             {name}
           </h2>
+          {also}
           {sub && <div className="mt-2 text-sm text-fg/85 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)]">{sub}</div>}
         </div>
         {!!tracks?.length && <PlayPair tracks={tracks} context="artist" />}

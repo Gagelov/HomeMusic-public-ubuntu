@@ -1219,7 +1219,7 @@ export interface ArtistCardOut {
   id: number;
   name: string;
   names: { id: number; name: string; source: string; main: boolean }[];
-  projects: { id: number; name: string; ref?: string | null; also: string[] }[];
+  projects: { id: number; name: string; ref?: string | null; also: string[]; picture_url?: string | null }[];
   suggestions: ArtistPickOut[];
   rewriting?: boolean;
 }

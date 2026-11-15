@@ -197,6 +197,24 @@ async def suggestions(s: AsyncSession, artist: Artist) -> list[Artist]:
     return list((await s.execute(select(Artist).where(Artist.id.in_(ids)).order_by(Artist.name))).scalars()) if ids else []
 
 
+async def _picture(s: AsyncSession, artist: Artist, ref: str | None) -> str | None:
+    """A small picture of the artist: the catalog's, else the cover of an album of theirs here."""
+    from app.catalog.models import split_ref
+    from app.services import svc
+
+    if ref and svc.deezer is not None:
+        try:
+            src, id_ = split_ref(ref)
+            if src == "dz":
+                a = await svc.deezer.get_artist(id_)
+                if a.picture_small_url or a.picture_url:
+                    return a.picture_small_url or a.picture_url
+        except Exception:  # the catalog is away, or knows the artist no more: the library's picture then
+            pass
+    album_id = (await s.execute(select(Album.id).where(Album.album_artist == artist.name, Album.cover_path.is_not(None)).limit(1))).scalar_one_or_none()
+    return f"/api/library/albums/{album_id}/cover" if album_id else None
+
+
 async def card(s: AsyncSession, artist: Artist) -> dict[str, Any]:
     """What an artist's page says of the name: the spellings, the other projects, who looks like the same one."""
     rows = (await s.execute(select(ArtistName).where(ArtistName.artist_id == artist.id).order_by(ArtistName.id))).scalars().all()
@@ -211,7 +229,8 @@ async def card(s: AsyncSession, artist: Artist) -> dict[str, Any]:
     return {
         "id": artist.id, "name": artist.name,
         "names": [{"id": r.id, "name": r.name, "source": r.source, "main": r.key == main} for r in sorted(rows, key=lambda r: r.key != main)],
-        "projects": [{"id": p.id, "name": p.name, "ref": refs.get(p.id), "also": [n for n in spelt[p.id] if key(n) != key(p.name)]} for p in projects],
+        "projects": [{"id": p.id, "name": p.name, "ref": refs.get(p.id), "also": [n for n in spelt[p.id] if key(n) != key(p.name)],
+                      "picture_url": await _picture(s, p, refs.get(p.id))} for p in projects],
         "suggestions": [{"id": a.id, "name": a.name} for a in await suggestions(s, artist)],
     }
 

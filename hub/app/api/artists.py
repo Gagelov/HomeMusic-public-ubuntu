@@ -30,6 +30,7 @@ class ArtistProjectOut(BaseModel):
     name: str
     ref: str | None = None  # the catalog's page of the project (none: only the name leads to it)
     also: list[str] = []
+    picture_url: str | None = None
 
 
 class ArtistPickOut(BaseModel):
