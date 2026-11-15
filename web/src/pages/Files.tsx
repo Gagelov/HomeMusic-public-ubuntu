@@ -6,10 +6,10 @@ import { TrackRow, TrackTableHeader } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
 import { useListSearch } from '../components/ListSearch';
-import { Button, Cover, Empty, ErrorState, Field, IconButton, Sheet, SkeletonRows, cx } from '../components/ui';
+import { Button, Cover, Empty, ErrorState, IconButton, SkeletonRows, cx } from '../components/ui';
 import { useDesktop } from '../lib/desktop';
 import { useHubEvent } from '../lib/events';
-import { fmtAdded, parseTime, plural, toIntOrNull, tracksWord } from '../lib/format';
+import { fmtAdded, parseTime, plural, tracksWord } from '../lib/format';
 import { useAsync } from '../lib/hooks';
 import { Link, navigate } from '../lib/router';
 import { EDITED_EVENT } from '../lib/trackEdit';
@@ -118,7 +118,6 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
     try { localStorage.setItem(SORT_KEY, v); } catch { /* it lasts for this page then */ }
   };
   const [only, setOnly] = useState<Only>(trash ? 'trash' : 'all');
-  const [createOpen, setCreateOpen] = useState(false);
 
   useHubEvent('library', () => {
     res.reload(true);
@@ -205,15 +204,7 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
             {!inTrash && !desktop && <BarMenu icon="sliders" label={`Сортировка: ${SORTS.find(([id]) => id === sort)?.[1] ?? ''}`} active={sort !== 'new'}>
               {(close) => SORTS.map(([id, label]) => menuItem(null, label, () => { setSort(id); close(); }, sort === id))}
             </BarMenu>}
-            {desktop && <IconButton icon="upload" label="Загрузить файлы" onClick={() => navigate('/upload')} />}
-            <BarMenu icon="more" label="Ещё">
-              {(close) => (
-                <>
-                  {!desktop && menuItem('upload', 'Загрузить файлы', () => navigate('/upload'))}
-                  {menuItem('plus', 'Создать свой альбом', () => { close(); setCreateOpen(true); })}
-                </>
-              )}
-            </BarMenu>
+            <IconButton icon="upload" label="Загрузить файлы" onClick={() => navigate('/upload')} />
           </>
         }
       />
@@ -322,7 +313,6 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
         </ul>
       )}
 
-      <CreateAlbumSheet open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
   );
 }
@@ -400,62 +390,6 @@ function TrashList({ items, searching, onBack }: { items: TrashedOut[]; searchin
         })}
       </ul>
     </div>
-  );
-}
-
-function CreateAlbumSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [title, setTitle] = useState('');
-  const [artist, setArtist] = useState('');
-  const [year, setYear] = useState('');
-  const [genre, setGenre] = useState('');
-  const [type, setType] = useState<ReleaseType>('compilation');
-  const [busy, setBusy] = useState(false);
-
-  const create = async () => {
-    setBusy(true);
-    const a = await attempt(
-      () => api.createAlbum({ title: title.trim(), album_artist: artist.trim() || 'Various Artists', year: toIntOrNull(year), genre: genre.trim() || null, release_type: type }),
-      'Альбом создан',
-    );
-    setBusy(false);
-    if (a) {
-      onClose();
-      navigate(`/library/album/${a.id}`);
-    }
-  };
-
-  return (
-    <Sheet
-      open={open}
-      onClose={onClose}
-      title="Создать свой альбом"
-      footer={
-        <Button variant="primary" block busy={busy} disabled={!title.trim()} onClick={create}>
-          Создать
-        </Button>
-      }
-    >
-      <p className="mb-4 text-sm text-muted">Пустой альбом или подборка: потом перенесите в него треки из других альбомов.</p>
-      <div className="space-y-4">
-        <Field label="Название">
-          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
-        </Field>
-        <Field label="Исполнитель альбома">
-          <input className="input" value={artist} onChange={(e) => setArtist(e.target.value)} placeholder="Various Artists" />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Год">
-            <input className="input" inputMode="numeric" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))} />
-          </Field>
-          <Field label="Жанр">
-            <input className="input" value={genre} onChange={(e) => setGenre(e.target.value)} />
-          </Field>
-        </div>
-        <Field label="Тип">
-          <ReleaseTypeSelect value={type} onChange={setType} />
-        </Field>
-      </div>
-    </Sheet>
   );
 }
 
