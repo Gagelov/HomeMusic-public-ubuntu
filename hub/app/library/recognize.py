@@ -14,13 +14,15 @@ file keeps its own names.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
 
 from app.config import get_settings
 from app.library.credits import main_artist
-from app.matching.normalize import has_cyrillic, split_version, to_latin, version_kind
+from app.matching.normalize import has_cyrillic, normalize_artist, split_version, to_latin, version_kind
+from app.matching.score import artist_sim
 from app.matching.select import classify_scores, match_catalog
 from app.services import svc
 
@@ -48,14 +50,104 @@ def single_album(album: str | None, title: str) -> bool:
     return not a or a in ("single", "singles", "сингл", "синглы") or a.endswith("- single") or a == " ".join(title.split()).casefold()
 
 
-def _theirs(t: Any, sc: Any, album: str | None, duration: int | None, cfg: Any) -> bool:
+RELEASES_MAX = 80  # of an artist's releases gone through, the newest first
+_released: dict[str, list[Any]] = {}  # an artist's name -> the tracks of their releases (for the Hub's run: a folder
+_RELEASED_KEPT = 400                  # of one artist's files asks once)
+
+
+async def _released_by(line: str) -> list[Any]:
+    """The tracks of everything the file's first artist released, as the catalog lists it: the artist is found by
+    name (spelt either way: «LSP» is «ЛСП»), their releases are read a few at once. Nothing when the catalog has
+    no such artist, or does not answer."""
+    name = main_artist(line)
+    key = name.casefold()
+    if key in _released:
+        return _released[key]
+    out: list[Any] = []
+    try:
+        who = normalize_artist(name)
+        artists = [a for a in (await svc.deezer.search(_words(name), kinds=("artist",), limit=8)).artists
+                   if artist_sim(who, normalize_artist(a.name)) >= get_settings().cfg.matching.artist_min_ratio][:2]
+        gate = asyncio.Semaphore(4)
+
+        async def tracks(album: Any) -> list[Any]:
+            async with gate:
+                try:
+                    whole = await svc.deezer.get_album(album.id)
+                except Exception:
+                    return []
+            return [t.model_copy(update={"album_title": t.album_title or whole.title, "album_ref": t.album_ref or whole.ref,
+                                         "album_artist": t.album_artist or whole.artist}) for t in (whole.tracks or [])]
+
+        for a in artists:
+            albums = (await svc.deezer.get_artist_albums(a.id))[:RELEASES_MAX]
+            for part in await asyncio.gather(*(tracks(x) for x in albums)):
+                out.extend(part)
+    except Exception as e:
+        log.info("recognize: releases of %s not read: %r", name, e)
+        return []  # not kept: asked again with the next file
+    if len(_released) >= _RELEASED_KEPT:
+        _released.pop(next(iter(_released)))
+    _released[key] = out
+    return out
+
+
+TITLE_SURE = 0.85  # a name as like as this is the file's name, spelt a little otherwise
+TITLE_FLOOR = 0.6  # a record named less like the file than this is not «like» it, whoever made it
+
+
+def _unstarred(t: Any, title: str) -> Any:
+    """The catalog hides rude words under stars («Д*******М — НЕТ!»). A name that is the file's under them is the
+    file's name: the record is weighed, and filed, under the name written out."""
+    if "*" not in t.title:
+        return t
+    plain = lambda s: " ".join(re.sub(r"[^\w*]+", " ", re.sub(r"\*+", "*", s)).split()).casefold()  # noqa: E731
+    mask = "".join(".+?" if part == "*" else re.escape(part) for part in re.split(r"(\*)", plain(t.title)))
+    return t.model_copy(update={"title": title}) if re.fullmatch(mask, plain(title)) else t
+
+
+def _weigh(found: list[Any], artist: str, raw_title: str, album: str | None, duration: int | None, version: str | None,
+           cfg: Any) -> tuple[list[tuple[Any, Any]], str]:
+    """The records that may be the file's, the likest first, and what they come to. One song stands in the catalog
+    several times — a single, its album, the album's new edition: those are not rivals of each other, so the
+    likest record is «the one» when no *other song* comes near it."""
+    scored = [(t, sc) for t, sc in match_catalog(main_artist(artist), raw_title, [_unstarred(t, raw_title) for t in found],
+                                                album=album, duration=duration, version=version)
+              if _theirs(t, sc, split_version(raw_title)[0] or raw_title, album, duration, cfg)]
+    if not scored:
+        return [], "not_found"
+    top = scored[0][0]
+
+    def same_song(t: Any) -> bool:
+        return (_words(t.title).casefold() == _words(top.title).casefold()
+                and bool(t.duration_s and top.duration_s and abs(t.duration_s - top.duration_s) <= SAME_LENGTH_S))
+
+    rivals = [scored[0], *[(t, sc) for t, sc in scored[1:] if not same_song(t)]]
+    return scored, classify_scores([sc.total for _, sc in rivals], cfg)
+
+
+def _theirs(t: Any, sc: Any, title: str, album: str | None, duration: int | None, cfg: Any) -> bool:
     """A record that may be the file's at all: of the file's artist — or, under another name of theirs (an album
     put out as «M00NCHILD»), the same name on the same album over the same length. A song of the same name by
     somebody else is not a record «like» the file: it is another song."""
+    if _goes_on(title, t.title):
+        return sc.artist >= cfg.artist_min_ratio
+    if sc.title < TITLE_FLOOR:
+        return False
+    # a name only somewhat like the file's, over another length, is another song of the artist's («Не надо» is not
+    # «Не знаю»)
+    if sc.title < TITLE_SURE and duration and t.duration_s and abs(duration - t.duration_s) > DOUBT_LENGTH_S:
+        return False
     if sc.artist >= cfg.artist_min_ratio:
         return True
     same_album = bool(album and t.album_title and " ".join(album.split()).casefold() == " ".join(t.album_title.split()).casefold())
     return same_album and sc.title >= 0.95 and bool(duration and t.duration_s and abs(duration - t.duration_s) <= SAME_LENGTH_S)
+
+
+def _goes_on(title: str, theirs: str) -> bool:
+    """The catalog's name is the file's with something after it: «(prod. by …)», «(feat. …)»."""
+    mine = _words(title).casefold()
+    return bool(mine) and (_words(theirs).casefold() + " ").startswith(mine + " ")
 
 
 def _numbers(s: str) -> set[str]:
@@ -104,18 +196,23 @@ async def of_file(tags: dict[str, Any], file_name: str, duration_s: float | None
             continue
         seen.update(t.ref for t in new)
         found.extend(new)
-        scored = [(t, sc) for t, sc in match_catalog(main_artist(artist), raw_title, found, album=album, duration=duration,
-                                                    version=version) if _theirs(t, sc, album, duration, cfg)]
-        verdict = classify_scores([sc.total for _, sc in scored], cfg)
+        scored, verdict = _weigh(found, artist, raw_title, album, duration, version, cfg)
         if verdict == "auto":
             break
+    if verdict != "auto":
+        # the search did not settle it — it misses a good deal of what the catalog has. The artist's own releases
+        # are gone through then: the song is looked for among everything they put out
+        more = [t for t in await _released_by(artist) if t.ref not in seen]
+        if more:
+            found.extend(more)
+            scored, verdict = _weigh(found, artist, raw_title, album, duration, version, cfg)
     if verdict == "not_found":
         return {"state": "none", "why": "каталог не ответил" if failed and not found else None, "meta": None}
     top = scored[0][0]
     why: str | None = None
     close = bool(duration and top.duration_s and abs(duration - top.duration_s) <= SAME_LENGTH_S)
     # a name that only goes on in the catalog — «(prod. by …)», «(feat. …)» — over the same length is the same song
-    longer = _words(top.title).casefold().startswith(_words(title or raw_title).casefold())
+    longer = _goes_on(title or raw_title, top.title)
     if verdict != "auto" and not (close and longer and scored[0][1].artist >= cfg.artist_min_ratio):
         why = "названия совпали не полностью"
     # «Отдай кота 2.0» is not «Отдай кота»: the numbers of a name are part of what it names
