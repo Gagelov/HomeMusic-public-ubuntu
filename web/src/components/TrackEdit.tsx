@@ -137,8 +137,8 @@ function Window({ track }: { track: EditedTrack }) {
                   <span key={`${n.id}:${n.name}`} className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-sm">
                     <span className="truncate">{n.name}</span>
                     <span className="text-[11px] text-dim">{{ renamed: 'прежнее', file: 'из файла', manual: 'вручную', catalog: 'каталог' }[n.source] ?? n.source}</span>
-                    <button type="button" className="flex h-5 w-5 items-center justify-center rounded-full text-dim hover:bg-fg/10 hover:text-fg" aria-label={`Сделать основным: ${n.name}`} title="Сделать основным названием" onClick={() => void save(n.name, artist)}>
-                      <Icon name="chevron" size={12} className="-rotate-90" />
+                    <button type="button" className="rounded-full px-1.5 text-[11px] text-info hover:bg-fg/10 hover:underline" aria-label={`Сделать основным: ${n.name}`} title="Сделать основным названием" onClick={() => void save(n.name, artist)}>
+                      сделать основным
                     </button>
                     {n.id != null && (
                       <button type="button" className="flex h-5 w-5 items-center justify-center rounded-full text-dim hover:bg-fg/10 hover:text-fg" aria-label={`Убрать название: ${n.name}`} title="Убрать" onClick={() => void otherName(() => api.dropTrackName(info.track_id, n.id as number))}>

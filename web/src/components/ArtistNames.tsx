@@ -116,8 +116,8 @@ function NamesWindow({ card, onChange, onClose }: { card: ArtistCardOut; onChang
                 <span className={cx('text-[11px]', n.main ? 'text-accent' : 'text-dim')}>{n.main ? 'основное' : (SOURCE[n.source] ?? n.source)}</span>
                 {!n.main && (
                   <>
-                    <button type="button" className={mini} aria-label={`Сделать основным: ${n.name}`} title="Сделать основным" onClick={() => void makeMain(n.id, n.name)}>
-                      <Icon name="chevron" size={12} className="-rotate-90" />
+                    <button type="button" className="rounded-full px-1.5 text-[11px] text-info hover:bg-fg/10 hover:underline" aria-label={`Сделать основным: ${n.name}`} title="Сделать основным" onClick={() => void makeMain(n.id, n.name)}>
+                      сделать основным
                     </button>
                     <button type="button" className={mini} aria-label={`Убрать написание: ${n.name}`} title={n.source === 'manual' ? 'Убрать' : 'Это другой исполнитель — отделить'} onClick={() => void dropName(n.id, n.name, n.source)}>
                       <Icon name="x" size={12} />
