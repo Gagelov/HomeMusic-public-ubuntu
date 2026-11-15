@@ -1135,7 +1135,7 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
         {doubt}
       </span>
       <span className="block truncate text-[13px] text-muted">
-        {!by || sameArtists ? artists : kept ? theirs.map((a, i) => <span key={a}>{i > 0 && ' '}{mine.includes(low(a)) ? a : pill(a)}</span>) : <>{was(u.artist)} {theirs.map((a, i) => <span key={a}>{i > 0 && ' '}{pill(a)}</span>)}</>}
+        {!by || sameArtists ? artists : kept ? [...theirs].sort((a, b) => Number(!mine.includes(low(a))) - Number(!mine.includes(low(b))) || mine.indexOf(low(a)) - mine.indexOf(low(b))).map((a, i) => <span key={a}>{i > 0 && ' '}{mine.includes(low(a)) ? a : pill(a)}</span>) : <>{was(u.artist)} {theirs.map((a, i) => <span key={a}>{i > 0 && ' '}{pill(a)}</span>)}</>}
       </span>
     </span>
   );

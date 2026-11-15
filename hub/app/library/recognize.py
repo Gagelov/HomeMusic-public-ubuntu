@@ -301,7 +301,15 @@ async def of_ref(ref: str) -> dict[str, Any]:
 async def meta_of(t: Any) -> dict[str, Any]:
     from app.jobs.downloads import complete_meta, meta_from_catalog
 
+    # a record met in a list — a search, an album's tracks — names only its main artist: who else is credited
+    # is said by the track's own record, so that is what the meta is made of
+    if svc.deezer is not None and t.source == "dz":
+        try:
+            whole = await svc.deezer.get_track(t.id)
+            t = t.model_copy(update={"artists": whole.artists or t.artists, "artist_refs": whole.artist_refs or t.artist_refs})
+        except Exception as e:
+            log.info("recognize: credits of %s not read: %r", t.ref, e)
     meta = await complete_meta(meta_from_catalog(t))
     meta["title"], meta["artist"] = t.title, t.artist
-    meta.setdefault("artists", t.artists or [t.artist])
+    meta["artists"] = t.artists or [t.artist]
     return meta

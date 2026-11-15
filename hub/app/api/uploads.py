@@ -389,7 +389,14 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
         album = albums.get(tr.album_key) if tr.album_key else None
         own = await asyncio.to_thread(tagger.read_cover, src)
         spec = await _catalog_spec(meta, with_cover=album is None and tr.cover != "file") if meta else _own_spec(u, tr, tags)
-        if meta:  # a name the catalog only writes in other letters' case is the file's name: «Утром», not «утром»
+        if meta:
+            # where the catalog only adds to the file's artists, the file's own stay first: a track of GONE.Fludd
+            # the catalog credits to «M00NCHILD, GONE.Fludd» is GONE.Fludd's still, with M00NCHILD beside him
+            mine = [a.casefold() for a in split_artists(recognize.names_of(tags, u.orig_name)[0])]
+            if mine and all(a in [x.casefold() for x in spec.artists] for a in mine):
+                spec.artists = sorted(spec.artists, key=lambda x: mine.index(x.casefold()) if x.casefold() in mine else len(mine))
+                spec.artist = spec.artists[0]
+            # a name the catalog only writes in other letters' case is the file's name: «Утром», not «утром»
             mine = recognize.names_of(tags, u.orig_name)[1]
             if mine.casefold() == spec.title.casefold():
                 spec.title = mine
