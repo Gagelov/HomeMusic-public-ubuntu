@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import type { DownloadItemOut } from '../api/types';
 import { Icon } from '../components/Icon';
-import { Button, Checkbox, Cover, Empty, ErrorState, IconButton, PageHeader, ProgressBar, Segmented, SkeletonRows, StatusChip, cx } from '../components/ui';
+import { ListBar } from '../components/ListBar';
+import { useSearchField } from '../components/ListSearch';
+import { Button, Checkbox, Cover, Empty, ErrorState, IconButton, ProgressBar, Segmented, SkeletonRows, StatusChip, cx } from '../components/ui';
 import { useDesktop } from '../lib/desktop';
 import { useHubConnected, useHubEvent } from '../lib/events';
 import { DOWNLOAD_ACTIVE, fmtWhen, plural, providerLabel, warningText } from '../lib/format';
@@ -60,7 +62,13 @@ export function DownloadsPage() {
   useHubEvent('import', () => imports.reload(true));
   const running = (imports.data ?? []).filter((x) => x.status === 'running');
   useInterval(() => imports.reload(true), running.length ? 15_000 : null);
-  const items = useMemo(() => (res.data ?? []).filter((x) => !x.quiet), [res.data]);
+  // the bar's search: by the track's name, its artist and its album, through all three sections
+  const sf = useSearchField('Название, исполнитель или альбом');
+  const needle = sf.q.trim().toLocaleLowerCase('ru');
+  const items = useMemo(
+    () => (res.data ?? []).filter((x) => !x.quiet && (!needle || `${x.title} ${x.artist} ${x.album ?? ''}`.toLocaleLowerCase('ru').includes(needle))),
+    [res.data, needle],
+  );
   const byTab = useMemo(() => {
     const out: Record<Tab, DownloadItemOut[]> = { now: [], problems: [], done: [] };
     for (const x of items) out[tabOf(x)].push(x);
@@ -160,15 +168,9 @@ export function DownloadsPage() {
 
   return (
     <div className="pb-6">
-      <PageHeader
-        title="Загрузки"
-        sub={
-          <span className="inline-flex items-center gap-1.5">
-            <span className={cx('h-2 w-2 rounded-full', res.error ? 'bg-danger' : connected ? 'bg-accent' : 'bg-dim')} />
-            {res.error ? 'нет связи' : connected ? 'онлайн' : 'переподключаюсь…'}
-          </span>
-        }
-      />
+      <ListBar plain title="Загрузки" back="/more" search={{ found: null, open: sf.open, alone: sf.alone, show: sf.show, close: sf.close, field: sf.field(needle ? items.length : null) }} />
+      {/* the list keeps itself up to date over a live line; said only when the line is down */}
+      {!connected && !res.error && !res.loading && <p className="px-4 pb-2 text-xs text-muted lg:px-6">Нет связи с сервером — переподключаюсь, список может отставать.</p>}
       {running.map((imp) => (
         <Link key={imp.id} to={`/import/${imp.id}`} className="card mx-4 mb-3 flex items-center gap-3 p-3 hover:bg-hover">
           <Icon name="transfer" size={22} className="shrink-0 text-accent" />
@@ -200,6 +202,8 @@ export function DownloadsPage() {
         <SkeletonRows />
       ) : res.error ? (
         <ErrorState text={res.error} onRetry={() => res.reload()} />
+      ) : shown.length === 0 && needle ? (
+        <Empty icon="search" title="Ничего не найдено" text="В этом разделе таких загрузок нет — посмотрите в соседних." />
       ) : shown.length === 0 ? (
         <Empty icon="download" title={empty[at][0]} text={empty[at][1]}>
           {at === 'now' && !items.length && (

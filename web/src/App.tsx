@@ -112,7 +112,7 @@ const ROUTES: RouteDef[] = [
   // «Микс дня» by its name: no mix has the number 0, so the page opens today's
   ['/mix', 'library', () => <ForYouPage key="mix" kind="mix" />],
   ['/taste', 'search', () => <TastePage />, 'text'],
-  ['/downloads', 'downloads', () => <DownloadsPage />, 'text'],
+  ['/downloads', 'downloads', () => <DownloadsPage />],
   ['/downloads/:id', 'downloads', (p) => <DownloadDetailPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/library', 'library', () => <LibraryPage />, 'text'],
   ['/files', 'more', () => <FilesPage />],
