@@ -105,3 +105,47 @@ export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[
     </div>
   );
 }
+
+/** The same places as buttons of the page's row (a computer, where the row has the room): after the artist's other
+ * projects and a thin line — each a round picture with the service's mark, the name the artist has there, and how
+ * many follow or listen. A tap opens the artist's page there. The line under the picture is not shown then. */
+export function ArtistSourceButtons({ sources }: { sources: ArtistSourceOut[] }) {
+  if (!sources.length) return null;
+  return (
+    <>
+      <span aria-hidden="true" className="mx-1 h-5 w-px bg-fg/25" />
+      {sources.map((s, i) => {
+        const n = s.followers ?? s.listeners;
+        const what = s.followers ? plural(s.followers, ['поклонник', 'поклонника', 'поклонников']) : s.listeners ? plural(s.listeners, ['слушатель', 'слушателя', 'слушателей']) : '';
+        const body = (
+          <>
+            <span className="relative shrink-0">
+              <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-full bg-fg/15">
+                {s.picture_url ? <img src={imageUrl(s.picture_url) as string} alt="" loading="lazy" className="h-full w-full object-cover" /> : hasBrand(s.service) ? <BrandIcon service={s.service} size={15} /> : <Icon name="user" size={13} />}
+              </span>
+              {s.picture_url && hasBrand(s.service) && (
+                <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-surface ring-1 ring-line">
+                  <BrandIcon service={s.service} size={10} />
+                </span>
+              )}
+            </span>
+            <span className="truncate">{s.name}</span>
+            {n ? <span className="shrink-0 tabular-nums text-dim">{num(n)}</span> : null}
+          </>
+        );
+        const box = 'flex h-9 min-w-0 items-center gap-2 rounded-full border border-fg/40 pl-1 pr-4 text-sm text-fg';
+        const title = `${NAMES[s.service] ?? 'Каталог'}: ${s.name}${n ? ` · ${num(n)} ${what}` : ''}`;
+        return s.url ? (
+          <a key={`${s.service}:${s.ref ?? i}`} href={s.url} target="_blank" rel="noopener noreferrer" title={title} className={cx(box, 'transition hover:border-fg active:scale-95')}>
+            {body}
+          </a>
+        ) : (
+          <span key={`${s.service}:${s.ref ?? i}`} title={title} className={box}>
+            {body}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+

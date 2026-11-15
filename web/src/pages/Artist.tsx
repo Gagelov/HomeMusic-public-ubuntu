@@ -5,10 +5,11 @@ import { ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
 import { ArtistLooksWindow } from '../components/ArtistLooks';
-import { ArtistSources } from '../components/ArtistSources';
+import { ArtistSourceButtons, ArtistSources } from '../components/ArtistSources';
 import { ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
+import { useDesktop } from '../lib/desktop';
 import { setDisliked, useDisliked } from '../lib/dislikes';
 import { tracksWord } from '../lib/format';
 import { useAsync, useRememberScrollX } from '../lib/hooks';
@@ -68,6 +69,7 @@ export function ArtistNamedPage({ name }: { name: string }) {
 export function ArtistPage({ refId }: { refId: string }) {
   const res = useAsync((s) => api.artist(refId, s), [refId], true, `artist:${refId}`);
   const [menu, setMenu] = useState(false);
+  const desktop = useDesktop();
   const [naming, setNaming] = useState<'names' | 'projects' | 'looks' | null>(null); // a window of the artist's ⋯
   const [busy, setBusy] = useState<string | null>(null);
   const d: ArtistPageOut | undefined = res.data;
@@ -147,8 +149,9 @@ export function ArtistPage({ refId }: { refId: string }) {
 
       {/* what goes up over the picture has the page's own colour under it */}
       <div className="relative z-[1] bg-bg">
-      {/* what is known of the artist, and where from: one line under the picture */}
-      <div className="px-4 pb-3 pt-1 text-sm text-muted lg:px-6">{facts}</div>
+      {/* what is known of the artist, and where from: on a phone one line under the picture; on a computer the
+          places are buttons of the row below, which has the room */}
+      {desktop ? <div className="h-3" /> : <div className="px-4 pb-3 pt-1 text-sm text-muted">{facts}</div>}
       {hidden ? (
         <div className="mx-4 mb-3 rounded-2xl bg-danger/15 px-4 py-3 text-sm text-fg lg:mx-6">
           <p>Вы не слушаете этого исполнителя. Его треков нет в волне, миксах и открытиях, а в плейлистах они пропускаются.</p>
@@ -184,6 +187,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           )}
           {/* the other projects of who it is: each leads to its own page */}
           <ArtistProjects card={names.card} />
+          {desktop && <ArtistSourceButtons sources={d.sources ?? []} />}
           </div>
           <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted hover:text-fg">
             <Icon name="more" size={24} />
