@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { PickedTrack } from './PlaylistsButton';
 import { tracksWord } from '../lib/format';
+import { deleteFiles } from '../lib/deleteFile';
 import { addToQueue } from '../lib/listen';
 import { canPlayAll } from '../lib/player';
 import { useRoute } from '../lib/router';
@@ -52,6 +53,8 @@ export function SelectionBar() {
   // as a row's button, for them all: ♥ when every one is in «Любимое», ✓ when every one is kept somewhere, else «+»
   const kept = likes.every(Boolean) ? 'liked' : picked.every((t, i) => likes[i] || inPlaylists(t.nd_song_id)) ? 'listed' : 'none';
   const tagKeys = picked.map((t) => t.tag_key).filter((x): x is string => !!x);
+  // the picked tracks the library has files of, by the Hub's ids of them
+  const fileIds = picked.filter((t) => t.nd_song_id && t.tag_key && /^\d+$/.test(t.tag_key)).map((t) => Number(t.tag_key));
   const btn = '!h-10 !w-10';
   return (
     <div className="pointer-events-none fixed bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+12px+env(safe-area-inset-bottom))] left-(--side-w) right-0 z-40 flex justify-center px-3" role="region" aria-label="Выбранные треки">
@@ -87,6 +90,15 @@ export function SelectionBar() {
           />
         )}
         <IconButton icon="share" size={20} label="Поделиться" onClick={() => openShare(take())} className={cx(btn, 'text-muted hover:text-fg')} />
+        {fileIds.length > 0 && (
+          <IconButton
+            icon="trash"
+            size={20}
+            label="Удалить файлы с сервера"
+            onClick={() => void deleteFiles(fileIds).then((gone) => gone && clearSelection())}
+            className={cx(btn, 'text-muted hover:text-danger')}
+          />
+        )}
         <span className="mx-1 h-6 w-px bg-line" aria-hidden="true" />
         <IconButton icon="x" size={18} label="Снять выделение" onClick={clearSelection} className={cx(btn, 'text-muted hover:text-fg')} />
       </div>

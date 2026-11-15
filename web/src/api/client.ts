@@ -330,6 +330,10 @@ export const api = {
   patchTrack: (id: number, body: TrackPatchIn) =>
     request<LibTrackOut>('PATCH', `/api/library/tracks/${id}`, { json: body }),
   deleteTrack: (id: number) => request<OkOut>('DELETE', `/api/library/tracks/${id}`),
+  /** The files of several tracks, deleted together (`dry`: only counted). `kept`: left alone — somebody else keeps
+   * them; `others`, `mine`: of the deleted, the ones other listeners kept and the ones in one's own lists. */
+  deleteTracks: (track_ids: number[], dry = false) =>
+    request<{ deleted: number; kept: number; others: number; mine: number }>('POST', '/api/library/tracks/delete', { json: { track_ids, dry } }),
   /** What was changed of the track, the latest first. */
   trackEdits: (id: number) => request<TrackEditEntry[]>('GET', `/api/library/tracks/${id}/edits`),
   /** «Корзина»: the tracks deleted lately, and bringing one back. */

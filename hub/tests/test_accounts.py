@@ -685,9 +685,17 @@ async def test_files_are_looked_after_by_who_brought_them(env):
         k = (await anna.get(f"/api/library/tracks/{ids['t_shared']}/keeping")).json()
         assert (k["can_delete"], k["others"], [m["liked"] for m in k["mine"]]) == (False, 1, [True])
         assert (await anna.delete(f"/api/library/tracks/{ids['t_shared']}")).status_code == 409
+        # several at once, by the same rule: what somebody else keeps is left alone
+        three = [ids["t_his"], ids["t_shared"], ids["t_free"]]
+        dry = (await anna.post("/api/library/tracks/delete", json={"track_ids": three, "dry": True})).json()
+        assert (dry["deleted"], dry["kept"]) == (1, 2)
+        gone = (await anna.post("/api/library/tracks/delete", json={"track_ids": three[:2]})).json()
+        assert (gone["deleted"], gone["kept"]) == (0, 2)
         # one he brought and nobody keeps: hers to delete
         assert (await anna.get(f"/api/library/tracks/{ids['t_free']}/keeping")).json()["can_delete"] is True
-        assert (await anna.delete(f"/api/library/tracks/{ids['t_free']}")).status_code == 200
+        gone = (await anna.post("/api/library/tracks/delete", json={"track_ids": three})).json()
+        assert (gone["deleted"], gone["kept"]) == (1, 2)
+        assert (await anna.get(f"/api/library/tracks/{ids['t_free']}/keeping")).status_code == 404
         assert (await anna.post("/api/library/albums/merge", json={"target_id": ids["hers"], "source_ids": [ids["his"]]})).status_code == 404
         assert (await anna.delete(f"/api/library/tracks/{ids['t_hers']}")).status_code == 200
 

@@ -262,6 +262,20 @@ class AlbumMergeIn(BaseModel):
     target_id: int
 
 
+class TracksDeleteIn(BaseModel):
+    """The files of several tracks, deleted together. `dry`: nothing is deleted — only what would be is counted."""
+
+    track_ids: list[int] = Field(min_length=1, max_length=20000)
+    dry: bool = False
+
+
+class TracksDeleteOut(BaseModel):
+    deleted: int  # the tracks whose files went to the trash (`dry`: would go)
+    kept: int  # left alone: somebody else keeps them, and the asker is no admin
+    others: int  # of the deleted, the ones other listeners kept (an admin's deletion takes them out of their lists)
+    mine: int  # of the deleted, the ones in the asker's own playlists or «Любимое»
+
+
 class TracksMoveIn(BaseModel):
     track_ids: list[int]
     album_id: int

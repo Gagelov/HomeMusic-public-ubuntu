@@ -26,6 +26,8 @@ from app.api.schemas import (
     StarIn,
     StarredOut,
     TrackPatchIn,
+    TracksDeleteIn,
+    TracksDeleteOut,
     TracksMoveIn,
     TrackSourceOut,
 )
@@ -397,6 +399,30 @@ async def track_journal(track_id: int, user: User = Depends(current_user),
     return FileJournalOut(track_id=t.id, artist=t.artist, title=t.title, file=file,
                           steps=list(item.log_json or []) if item else [],
                           download_id=item.id if item and item.user_id == user.id and not item.hidden else None)
+
+
+@router.post("/api/library/tracks/delete", response_model=TracksDeleteOut)
+async def delete_tracks(body: TracksDeleteIn, user: User = Depends(current_user),
+                        s: AsyncSession = Depends(get_session, scope="function")):
+    """The files of the picked tracks go to the trash together — by the rule of one (library/access.py): a track
+    somebody else keeps is left alone, unless an admin asks. A track with no file, or one that is gone, is passed."""
+    out = TracksDeleteOut(deleted=0, kept=0, others=0, mine=0)
+    for track_id in dict.fromkeys(body.track_ids):
+        t = await s.get(Track, track_id)
+        if t is None or await current_file(s, t.id) is None:
+            continue
+        may, others, mine = await access.keeping(s, user, t.id)
+        if not may:
+            out.kept += 1
+            continue
+        out.deleted += 1
+        out.others += bool(others)
+        out.mine += bool(mine)
+        if not body.dry:
+            await editor.trash_track(s, t, user.id)
+    if out.deleted and not body.dry:
+        await _after_edit(s, user, None)
+    return out
 
 
 @router.delete("/api/library/tracks/{track_id}")
