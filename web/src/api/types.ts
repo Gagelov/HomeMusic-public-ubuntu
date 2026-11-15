@@ -670,6 +670,8 @@ export interface UploadMatch {
   album_artist?: string | null;
   /** everyone the release is credited to (the main one first) */
   album_artists?: string[];
+  /** the release in the catalog: its page shows what it is */
+  album_ref?: string | null;
   record_type?: string | null;
   year?: number | null;
   duration_s?: number | null;

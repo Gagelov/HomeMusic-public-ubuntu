@@ -47,6 +47,7 @@ def _match(tags: dict) -> UploadMatch | None:
     return UploadMatch(state=m["state"], why=m.get("why"), by_hand=bool(m.get("by_hand")), ref=meta.get("track_ref"),
                        title=meta.get("title"), artist=meta.get("artist"), artists=meta.get("artists") or [],
                        album=meta.get("album"), album_artist=meta.get("album_artist"), album_artists=meta.get("album_artists") or [],
+                       album_ref=f"dz:{meta['deezer_album_id']}" if meta.get("deezer_album_id") else None,
                        record_type=meta.get("record_type"),
                        year=meta.get("year") or (int(str(meta["release_date"])[:4]) if meta.get("release_date") else None),
                        duration_s=meta.get("duration_s"), cover_url=meta.get("cover_url"), track_no=meta.get("track_no"))

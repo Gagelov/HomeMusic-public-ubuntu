@@ -1004,6 +1004,13 @@ function AlbumHead({ g, now, said, onChoose, shown }: { g: Group; now: { title: 
         {g.single ? 'Сингл' : `Альбом · ${g.files.length} ${plural(g.files.length, ['файл', 'файла', 'файлов'])}`}
         {shown < g.files.length ? ` · показано ${shown}` : ''}
         {g.release ? '' : ' · в каталоге не найден'}
+        {/* the release the catalog took it for: its page, in a tab of its own — the choices made here stay */}
+        {g.release?.match?.album_ref && (
+          <a href={`#/album/${encodeURIComponent(g.release.match.album_ref)}`} target="_blank" rel="noreferrer" className="ml-2 inline-flex items-center gap-1 text-info hover:underline">
+            <Icon name="external" size={12} />
+            {g.single ? 'сингл в каталоге' : 'альбом в каталоге'}
+          </a>
+        )}
       </div>
       {/* a single is called as its track is: there is no name to choose */}
       {!g.single && field('title', 'Название', g.titles, now.title, 'без названия')}
