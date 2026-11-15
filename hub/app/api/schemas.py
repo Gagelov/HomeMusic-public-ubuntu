@@ -415,6 +415,20 @@ class AlbumOut(CatalogAlbum):
     tracks: list[TrackOut] | None = None  # type: ignore[assignment]
 
 
+class ArtistSourceOut(BaseModel):
+    """A place an artist is known in, as that place shows them: a record of a catalog (one artist may have several),
+    or Last.fm, which knows an artist by the name."""
+
+    service: str  # deezer / catalog / lastfm
+    ref: str | None = None  # the catalog's record
+    name: str  # what they are called there
+    picture_url: str | None = None
+    followers: int | None = None
+    listeners: int | None = None
+    releases: int | None = None
+    url: str | None = None  # their page there
+
+
 class ArtistPageOut(BaseModel):
     artist: CatalogArtist
     top_tracks: list[TrackOut] = []
@@ -428,6 +442,7 @@ class ArtistPageOut(BaseModel):
     top_from_lastfm: int = 0
     # the catalog's records the page is drawn of — one artist may have several; the first is the page's own address
     profiles: list[str] = []
+    sources: list[ArtistSourceOut] = []  # each of them, and Last.fm, as they show the artist
 
 
 class NamesakeIn(BaseModel):

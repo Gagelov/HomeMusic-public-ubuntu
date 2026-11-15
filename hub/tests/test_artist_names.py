@@ -182,6 +182,9 @@ async def test_a_catalog_keeps_several_records_of_one_artist_and_a_namesake_is_s
     for ref in ("dz:1", "dz:2"):
         d = (await c.get(f"/api/catalog/artist/{ref}")).json()
         assert (d["artist"]["name"], d["artist"]["ref"], d["artist"]["nb_fans"], d["profiles"]) == ("ЛСП", "dz:1", 1010, ["dz:1", "dz:2"])
+        # each record as the catalog itself shows it: its own name, followers and releases
+        assert [(x["service"], x["ref"], x["name"], x["followers"], x["releases"], x["url"]) for x in d["sources"]] == [
+            ("deezer", "dz:1", "ЛСП", 1000, 2, "https://www.deezer.com/artist/1"), ("deezer", "dz:2", "LSP", 10, 2, "https://www.deezer.com/artist/2")]
         assert {x["title"] for x in d["albums"]} == {"Искра", "Общий", "Magic City"}  # «Obschiy» of 2020 is «Общий»
         assert [t["title"] for t in d["top_tracks"]] == ["Staroe"] and d["top_tracks"][0]["artist"] == "ЛСП"
 

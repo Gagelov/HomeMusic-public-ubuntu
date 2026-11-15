@@ -245,6 +245,20 @@ export interface ArtistPageOut {
   top_from_lastfm?: number;
   /** the catalog's records the page is drawn of — one artist may have several; the first is the page's own address */
   profiles?: string[];
+  /** each of them, and Last.fm, as they show the artist */
+  sources?: ArtistSourceOut[];
+}
+
+/** A place an artist is known in, as that place shows them: a record of a catalog, or Last.fm. */
+export interface ArtistSourceOut {
+  service: 'deezer' | 'catalog' | 'lastfm' | string;
+  ref?: string | null;
+  name: string;
+  picture_url?: string | null;
+  followers?: number | null;
+  listeners?: number | null;
+  releases?: number | null;
+  url?: string | null;
 }
 
 /** A release the catalog files under an artist that is a namesake's — said so by someone here, for everyone. */

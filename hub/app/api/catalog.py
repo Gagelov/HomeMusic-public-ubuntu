@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas import AlbumOut, ArtistPageOut, DiscographyOut, NamesakeIn, NamesakeOut
+from app.api.schemas import AlbumOut, ArtistPageOut, ArtistSourceOut, DiscographyOut, NamesakeIn, NamesakeOut
 from app.catalog import banners, namesakes, popular
 from app.auth import current_user
 from app.catalog.models import ArtistPage, CatalogAlbum, CatalogTrack, split_ref
@@ -46,12 +47,12 @@ async def get_artist_page(ref: str) -> ArtistPage:
     raise HTTPException(404, "Исполнитель не найден")
 
 
-async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str]]:
+async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str], list[ArtistSourceOut]]:
     """The artist a record of the catalog is of, as one page: a catalog may keep several records of one artist (old
     releases under one spelling, new under another), and the Hub knows which are theirs (app/library/artists.py).
     Returns the page — the name they have here, the releases of all the records (one that two of them carry, once),
-    the most listened of them all — and the records, the one with the most followers first: that one's picture is
-    the artist's, and its address is the page's own."""
+    the most listened of them all — the records, the one with the most followers first (that one's picture is the
+    artist's, and its address is the page's own), and each record as the catalog itself shows it."""
     from app.library import artists
 
     page = await get_artist_page(ref)
@@ -87,7 +88,12 @@ async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str]
     fans = [p.artist.nb_fans for p in pages if p.artist.nb_fans]
     artist = main.artist.model_copy(update={"name": who.name if who is not None else main.artist.name,
                                              "nb_fans": sum(fans) if fans else main.artist.nb_fans})
-    return ArtistPage(artist=artist, top_tracks=tracks, albums=albums), [p.artist.ref for p in pages]
+    sources = [ArtistSourceOut(service="deezer" if p.artist.source == "dz" else "catalog", ref=p.artist.ref, name=p.artist.name,
+                               picture_url=p.artist.picture_small_url or p.artist.picture_url, followers=p.artist.nb_fans,
+                               releases=len(p.albums),
+                               url=f"https://www.deezer.com/artist/{p.artist.id}" if p.artist.source == "dz" else None)
+               for p in pages]
+    return ArtistPage(artist=artist, top_tracks=tracks, albums=albums), [p.artist.ref for p in pages], sources
 
 
 async def get_album(ref: str, *, credited: bool = False) -> CatalogAlbum:
@@ -107,7 +113,7 @@ async def get_album(ref: str, *, credited: bool = False) -> CatalogAlbum:
 
 @router.get("/artist/{ref}", response_model=ArtistPageOut)
 async def artist(ref: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
-    page, records = await whole_artist(s, ref)
+    page, records, sources = await whole_artist(s, ref)
     await s.commit()  # who the record is of is known from now on
     albums = await annotate_albums(s, page.albums, user.id)
     albums.sort(key=lambda a: (a.release_date is not None, a.release_date), reverse=True)
@@ -134,6 +140,9 @@ async def artist(ref: str, user: User = Depends(current_user), s: AsyncSession =
         singles=[a for a in albums if a.record_type in ("single", "ep")],
         compilations=[a for a in albums if a.record_type == "compile"],
         excluded=sum(len(namesakes.of(r)) for r in records), profiles=records,
+        # where the artist is known: the catalog's records of them, and Last.fm — which knows an artist by the name
+        sources=[*sources, *([ArtistSourceOut(service="lastfm", name=page.artist.name, listeners=heard,
+                                              url=f"https://www.last.fm/music/{quote(page.artist.name, safe='')}")] if heard else [])],
     )
 
 
@@ -197,7 +206,7 @@ async def discography(ref: str, user: User = Depends(current_user),
     """Every release of the artist with its tracks, newest first. The catalog gives the tracks a release at a time;
     they are asked for here, a few at once, and kept — the first opening of a long discography takes seconds, the
     next ones none. A release whose tracks the catalog does not give comes without them."""
-    page, records = await whole_artist(s, ref)
+    page, records, _ = await whole_artist(s, ref)
     await s.commit()
     gate = asyncio.Semaphore(DISCOGRAPHY_PARALLEL)
 

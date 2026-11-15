@@ -5,11 +5,12 @@ import { ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
 import { ArtistLooksButton } from '../components/ArtistLooks';
+import { ArtistSources } from '../components/ArtistSources';
 import { ArtistAlsoLine, ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
 import { setDisliked, useDisliked } from '../lib/dislikes';
-import { plural, tracksWord } from '../lib/format';
+import { tracksWord } from '../lib/format';
 import { useAsync, useRememberScrollX } from '../lib/hooks';
 import { Link, enc, navigate } from '../lib/router';
 import { copyText } from '../lib/share';
@@ -124,8 +125,6 @@ export function ArtistPage({ refId }: { refId: string }) {
     if (!(await confirmDialog({ title: `Не включать ${artist.name}?`, body: 'Треки этого исполнителя, и те, где он участвует, не будут попадать в волну, миксы и открытия, а в плейлистах будут пропускаться. Нажатый вручную трек сыграет. Вернуть можно здесь же или в «Меню → Скрытое».', okLabel: 'Не включать', danger: true }))) return;
     await setDisliked({ artist_ref: refId, artist: artist.name }, true);
   };
-  // the artist's pages in Deezer: one for each record it keeps of them
-  const deezer = (d.profiles?.length ? d.profiles : [artist.ref]).filter((r) => r.startsWith('dz:')).map((r) => `https://www.deezer.com/artist/${r.slice(3)}`);
   const item = (icon: IconName, label: ReactNode, run: () => void, danger = false) => (
     <button type="button" onClick={run} className={cx('flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5', danger && 'text-danger')}>
       <Icon name={icon} size={21} className={danger ? undefined : 'text-muted'} />
@@ -134,7 +133,7 @@ export function ArtistPage({ refId }: { refId: string }) {
   );
 
   const shownName = names.card?.name ?? artist.name;
-  const facts = [d.lastfm_listeners ? `${d.lastfm_listeners.toLocaleString('ru-RU')} ${plural(d.lastfm_listeners, ['слушатель', 'слушателя', 'слушателей'])} в Last.fm` : null, artist.nb_fans ? `${artist.nb_fans.toLocaleString('ru-RU')} ${plural(artist.nb_fans, ['поклонник', 'поклонника', 'поклонников'])} в Deezer` : null, releases.length ? `${releases.length} ${plural(releases.length, ['релиз', 'релиза', 'релизов'])}` : null].filter(Boolean).join(' · ');
+  const facts = <ArtistSources sources={d.sources ?? []} releases={releases.length} />;
 
   return (
     <div className={hidden ? 'grayscale' : undefined}>
@@ -228,12 +227,6 @@ export function ArtistPage({ refId }: { refId: string }) {
             setNaming('projects');
           })}
           {item('link', 'Скопировать ссылку', () => void share())}
-          {deezer.map((url, i) => (
-            <a key={url} href={url} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
-              <Icon name="external" size={21} className="text-muted" />
-              {deezer.length > 1 ? `Открыть в Deezer · профиль ${i + 1}` : 'Открыть в Deezer'}
-            </a>
-          ))}
           {item('ban', 'Не включать этого исполнителя', () => void hide(), true)}
         </div>
       </Sheet>
@@ -283,7 +276,7 @@ function BannerPicture({ src }: { src: string }) {
 /** The head of the page over that picture: as tall as it, reaching up under the bar with «back»; the name in large
  * over its darkened foot, what is known of the artist under the name, ▶ and the shuffle beside it. The round photo
  * is not shown then — it is the same person twice. */
-function Banner({ name, also, sub, tracks }: { name: string; /** the other spellings, right under the name */ also?: ReactNode; sub: string; tracks?: readonly TrackOut[] }) {
+function Banner({ name, also, sub, tracks }: { name: string; /** the other spellings, right under the name */ also?: ReactNode; sub: ReactNode; tracks?: readonly TrackOut[] }) {
   return (
     <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex items-end', BANNER_H)}>
       <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-t from-bg via-bg/45 to-black/15" />
