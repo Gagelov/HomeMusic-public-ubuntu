@@ -17,19 +17,21 @@ import { attempt, confirmDialog, toast } from '../lib/ui';
  * folders — are dropped anywhere on the page or picked; the Hub reads each and looks for the song it is in the
  * catalog (`library/recognize.py`).
  *
- * The page is lists of an album each. What belongs to an album is said once, in its head: its name, its artist and
- * its year are chosen among what the files and the catalog say (or written), and its cover among every picture
- * found — the catalog's and the ones inside the files, each with its size in pixels, its kind and its weight. Under
- * the head its files stand as the tracks of a playlist: the number, the cover that plays the file in the app's own
- * player, the name with everyone credited, the length.
+ * The page is lists of an album each. What belongs to an album is said once, in its head, which stands as an
+ * album's page does: the cover, the word «Альбом» or «Сингл» over the name, the artist and the year under it. An
+ * album the catalog knows is the catalog's release — its name, artist and year are the catalog's and are not
+ * rewritten; the broken chain by the name takes its files off the release, and then it is an album of one's own,
+ * the three written by hand. The cover is chosen either way among every picture found — the catalog's and the ones
+ * inside the files, each with its size and weight: one is shown, a tap lays the rest out. Under the head its files
+ * stand as the tracks of a playlist: the number, the cover that plays the file in the app's own player, the name
+ * with everyone credited, the length.
  *
- * What the catalog says is told apart where it stands, by one rule for the heads and the rows alike: a value that
- * came from the catalog is in a blue pill, what the file said in its place is struck out beside it, and what did
- * not change is plain. So a number the file had not is a pill; a guest the catalog adds is a pill after the file's
- * own artist; a name the catalog writes otherwise is the file's struck out and the catalog's in a pill. In a head
- * the struck-out value is a button: it takes the file's word back.
- * A single stands the same way — a head of its own with its artist, its year and its picture to choose, only
- * without a name (a single is called as its track is), and its one file under it. A row opens to be put right by hand (its ⋯).
+ * In a row what the catalog says is told apart where it stands: a value that came from the catalog is in a blue
+ * pill, what the file said in its place is struck out beside it, and what did not change is plain. So a number the
+ * file had not is a pill; a guest the catalog adds is a pill after the file's own artist; a name the catalog writes
+ * otherwise is the file's struck out and the catalog's in a pill.
+ * A single stands the same way — a head of its own, called as its track is, and its one file under it. A row opens
+ * to be put right by hand (its ⋯).
  *
  * «Перенести» brings in every file of the page. The rows are a playlist's: on a computer a table whose columns of
  * the file itself (its name, its size, what it is) can be hidden; a row's ⋯ is its menu — its names put right by
@@ -541,6 +543,8 @@ export function UploadPage() {
 
   const albumOf = (g: Group) => {
     const c = chosen[g.key] ?? {};
+    // the catalog's release is called as the catalog calls it: a name of one's own is for an album taken off it
+    if (g.release) return { title: g.title, artist: g.artist, year: g.year, cover: g.pictures.find((p) => p.key === (c.cover ?? g.cover)) ?? null };
     return { title: c.title ?? g.title, artist: c.artist ?? g.artist, year: c.year ?? g.year, cover: g.pictures.find((p) => p.key === (c.cover ?? g.cover)) ?? null };
   };
   const choose = (g: Group, patch: AlbumChoice) => setChosen((prev) => ({ ...prev, [g.key]: { ...prev[g.key], ...patch } }));
@@ -610,6 +614,11 @@ export function UploadPage() {
     setRows((prev) => ({ ...prev, ...Object.fromEntries(ids.map((id) => [id, { ...(prev[id] ?? rowFromUpload(uploads.find((u) => u.id === id)!)), group: key }])) }));
     setToAlbum(null);
     setPicked(new Set());
+  };
+  /** An album's files off the catalog's records (it is an album of one's own then, written by hand) — or back on them. */
+  const linkAlbum = (g: Group, on: boolean) => {
+    const list = g.files.filter((u) => !!u.match?.ref && usesCatalog(u, rowOf(u)) !== on);
+    setRows((prev) => ({ ...prev, ...Object.fromEntries(list.map((u) => [u.id, { ...(prev[u.id] ?? rowFromUpload(u)), catalog: on, cover: on && u.match?.cover_url ? 'catalog' as const : 'file' as const }])) }));
   };
   const chosenFiles = () => uploads.filter((u) => picked.has(u.id));
   /** The picked files as the files say, or — when none of them is the catalog's just now — as the catalog says. */
@@ -917,7 +926,7 @@ export function UploadPage() {
           {shown.length === 0 && <div className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6"><Empty icon="search" title="Под эту метку ничего не подходит" /></div>}
           {shownGroups.map(({ g, files }) => (
             <section key={g.key} className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6" aria-label={g.single ? `Сингл «${titleOf(g.files[0])}»` : `Альбом «${albumOf(g).title}»`}>
-              <AlbumHead g={g} now={albumOf(g)} said={chosen[g.key] ?? {}} onChoose={(patch) => choose(g, patch)} shown={files.length} />
+              <AlbumHead g={g} now={albumOf(g)} name={g.single ? titleOf(g.files[0]) : albumOf(g).title} onChoose={(patch) => choose(g, patch)} shown={files.length} canLink={g.files.some((u) => !!u.match?.ref && !usesCatalog(u, rowOf(u)))} onUnlink={() => linkAlbum(g, false)} onLink={() => linkAlbum(g, true)} />
               {files.map((u, i) => row(u, g, i))}
             </section>
           ))}
@@ -993,94 +1002,105 @@ export function Steps({ at }: { at: 1 | 2 }) {
   );
 }
 
-/** The head of an album: what the album is called, whose it is, its year and its cover — each chosen among what
- * the files and the catalog say, or written. Where everything says the same there is nothing to choose: it is
- * plain words. */
-function AlbumHead({ g, now, said, onChoose, shown }: { g: Group; now: { title: string; artist: string; year: string; cover: Picture | null }; said: AlbumChoice; onChoose: (patch: AlbumChoice) => void; shown: number }) {
-  const [writing, setWriting] = useState<'title' | 'artist' | 'year' | null>(null);
-  const field = (name: 'title' | 'artist' | 'year', label: string, variants: string[], value: string, none: string) => {
-    const cat = g.cat[name];
-    const fromFiles = variants.filter((v) => v !== cat); // what the files say otherwise than the catalog
-    const others = [...new Set([...(cat && cat !== value ? [cat] : []), ...fromFiles.filter((v) => v !== value)])];
-    const big = name === 'title' ? 'text-[15px] font-semibold' : 'text-sm';
-    return (
-      <div className="grid items-center gap-2 py-1 md:grid-cols-[6.5rem_minmax(0,1fr)]">
-        <span className="text-xs text-muted">{label}</span>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          {/* what the files said, struck out: a tap takes it instead — and the catalog's, when the files' word stands */}
-          {writing !== name && others.map((v) => (
-            <button key={v} type="button" title={v === cat ? 'Вернуть значение из каталога' : 'Взять это значение из файлов'} onClick={() => onChoose({ [name]: v === g[name] ? undefined : v })} className={cx('max-w-full truncate transition hover:text-fg', v === cat ? 'rounded-full bg-info/10 px-2 text-sm text-info/70 line-through' : 'text-sm text-dim line-through')}>
-              {v}
-            </button>
-          ))}
-          {writing === name ? (
-            <input
-              className="input !h-8 w-56 !py-1 text-sm"
-              autoFocus
-              inputMode={name === 'year' ? 'numeric' : undefined}
-              placeholder={label}
-              aria-label={`${label}: своё`}
-              defaultValue={value}
-              onBlur={(e) => {
-                const v = name === 'year' ? e.target.value.replace(/\D/g, '').slice(0, 4) : e.target.value.trim();
-                if (v) onChoose({ [name]: v === g[name] ? undefined : v });
-                setWriting(null);
-              }}
-              onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-            />
-          ) : (
-            <span className={cx('truncate', big, value && value === cat && !g.agree[name] ? 'rounded-full bg-info/20 px-2 text-info' : '')} title={value && value === cat && !g.agree[name] ? 'Из каталога' : undefined}>
-              {value || none}
-            </span>
-          )}
-          {writing !== name && (
-            <button type="button" aria-label={`${label}: вписать своё`} title="Вписать своё" onClick={() => setWriting(name)} className="flex h-7 w-7 items-center justify-center rounded-full text-dim hover:bg-fg/10 hover:text-fg">
-              <Icon name="edit" size={14} />
-            </button>
-          )}
-          {said[name] !== undefined && writing !== name && (
-            <button type="button" className="text-[11px] text-dim hover:text-fg hover:underline" onClick={() => onChoose({ [name]: undefined })}>
-              сбросить
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  };
+/** The head of an album, as an album's page has it: the cover, over the name the word «Альбом» or «Сингл», under
+ * it whose it is and the year.
+ *
+ * An album the catalog knows is the catalog's release: its name, artist and year are the catalog's and are not
+ * rewritten here — the broken chain by the name takes the files off the release, and then it is an album of one's
+ * own, with the three written by hand (the files' words to start with). The cover is chosen either way: one is
+ * shown, with how many there are; a tap lays the others out to the right. */
+function AlbumHead({ g, now, name, onChoose, shown, canLink, onUnlink, onLink }: { g: Group; now: { title: string; artist: string; year: string; cover: Picture | null }; /** what the head is called: the album, or a single's track */ name: string; onChoose: (patch: AlbumChoice) => void; shown: number; /** the catalog has a record for a file that is not filed by it */ canLink: boolean; onUnlink: () => void; onLink: () => void }) {
+  const [open, setOpen] = useState(false); // the other covers are laid out
+  const linked = !!g.release;
+  const kind = g.single ? 'Сингл' : 'Альбом';
+  const input = (field: 'title' | 'artist' | 'year', label: string, value: string, variants: string[], className: string) => (
+    <>
+      <input
+        key={`${field}:${value}`}
+        className={cx('input !h-9 min-w-0 !py-1', className)}
+        list={`${g.key}:${field}`}
+        inputMode={field === 'year' ? 'numeric' : undefined}
+        placeholder={label}
+        aria-label={label}
+        defaultValue={value}
+        onBlur={(e) => {
+          const v = field === 'year' ? e.target.value.replace(/\D/g, '').slice(0, 4) : e.target.value.trim();
+          if (v !== value) onChoose({ [field]: v && v !== g[field] ? v : undefined });
+        }}
+        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+      />
+      {/* what the files say otherwise: offered as the field is typed in */}
+      <datalist id={`${g.key}:${field}`}>{variants.filter((v) => v !== value).map((v) => <option key={v} value={v} />)}</datalist>
+    </>
+  );
+  const many = g.pictures.length > 1;
   return (
-    <div className="rounded-t-2xl border-b border-line/60 bg-fg/[0.04] px-4 pb-3 pt-2">
-      <div className="pb-1 text-[11px] text-dim">
-        {g.single ? 'Сингл' : `Альбом · ${g.files.length} ${plural(g.files.length, ['файл', 'файла', 'файлов'])}`}
-        {shown < g.files.length ? ` · показано ${shown}` : ''}
-        {g.release ? '' : ' · в каталоге не найден'}
-        {/* the release the catalog took it for: its page, in a tab of its own — the choices made here stay */}
-        {g.release?.match?.album_ref && (
-          <a href={`#/album/${encodeURIComponent(g.release.match.album_ref)}`} target="_blank" rel="noreferrer" className="ml-2 inline-flex items-center gap-1 text-info hover:underline">
-            <Icon name="external" size={12} />
-            {g.single ? 'сингл в каталоге' : 'альбом в каталоге'}
-          </a>
-        )}
-      </div>
-      {/* a single is called as its track is: there is no name to choose */}
-      {!g.single && field('title', 'Название', g.titles, now.title, 'без названия')}
-      {field('artist', 'Исполнитель', g.artists, now.artist, 'не указан')}
-      {field('year', 'Год', g.years, now.year, 'не указан')}
+    <div className="flex flex-wrap items-start gap-x-4 gap-y-2 rounded-t-2xl border-b border-line/60 bg-fg/[0.04] px-4 py-3">
       {g.pictures.length > 0 && (
-        <div className="grid items-start gap-2 pt-1 md:grid-cols-[6.5rem_minmax(0,1fr)]">
-          <span className="text-xs text-muted md:pt-7">Обложка</span>
-          <div className="flex flex-wrap gap-3">
-            {g.pictures.map((p) => (
-              <PictureOption key={p.key} p={p} on={now.cover?.key === p.key} only={g.pictures.length === 1} onClick={() => onChoose({ cover: p.key })} />
-            ))}
-          </div>
+        <div className="flex items-start gap-2">
+          {open && many ? (
+            <>
+              {g.pictures.map((p) => (
+                <PictureOption key={p.key} p={p} on={now.cover?.key === p.key} onClick={() => { onChoose({ cover: p.key }); setOpen(false); }} />
+              ))}
+              <button type="button" aria-label="Свернуть обложки" title="Свернуть" onClick={() => setOpen(false)} className="mt-9 flex h-7 w-7 items-center justify-center rounded-full text-dim hover:bg-fg/10 hover:text-fg">
+                <Icon name="chevron" size={14} className="rotate-180" />
+              </button>
+            </>
+          ) : (
+            now.cover && <PictureOption p={now.cover} on={false} badge={many ? `${g.pictures.indexOf(now.cover) + 1} из ${g.pictures.length}` : undefined} onClick={many ? () => setOpen(true) : undefined} />
+          )}
         </div>
       )}
+      <div className="min-w-0 flex-1 basis-64">
+        <div className="text-xs text-muted">{kind}</div>
+        {linked || g.single ? (
+          <div className="flex min-w-0 items-center gap-1">
+            <h3 className="min-w-0 truncate text-xl font-bold">{name || 'без названия'}</h3>
+            {/* the release the catalog took it for: its page, in a tab of its own — the choices made here stay */}
+            {linked && g.release?.match?.album_ref && (
+              <a href={`#/album/${encodeURIComponent(g.release.match.album_ref)}`} target="_blank" rel="noreferrer" aria-label={`${kind} в каталоге`} title={`${kind} в каталоге`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-info hover:bg-fg/10">
+                <Icon name="external" size={16} />
+              </a>
+            )}
+            {linked && (
+              <button type="button" aria-label="Открепить от каталога" title="Открепить от каталога: это другая запись — название, исполнителя и год впишу сам" onClick={onUnlink} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-dim hover:bg-fg/10 hover:text-fg">
+                <Icon name="unlink" size={16} />
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="pt-0.5">{input('title', 'Название альбома', now.title, g.titles, 'w-full max-w-md text-[15px] font-semibold')}</div>
+        )}
+        {linked ? (
+          <p className="truncate pt-0.5 text-sm text-muted">{[now.artist || 'исполнитель не указан', now.year].filter(Boolean).join(' · ')}</p>
+        ) : (
+          <div className="flex max-w-md gap-2 pt-1.5">
+            {input('artist', 'Исполнитель альбома', now.artist, g.artists, 'flex-1 text-sm')}
+            {input('year', 'Год', now.year, g.years, 'w-20 text-sm')}
+          </div>
+        )}
+        <p className="flex flex-wrap items-center gap-x-1.5 pt-1.5 text-[11px] text-dim">
+          {linked ? (
+            <><Icon name="link" size={12} /> данные каталога</>
+          ) : canLink ? (
+            <>
+              <Icon name="unlink" size={12} /> не из каталога ·
+              <button type="button" className="text-info hover:underline" onClick={onLink}>привязать обратно</button>
+            </>
+          ) : (
+            'в каталоге не найден'
+          )}
+          {shown < g.files.length ? ` · показано ${shown} из ${g.files.length}` : ''}
+        </p>
+      </div>
     </div>
   );
 }
 
-/** A picture an album may take, with what it is under it: its size in pixels, its kind, its weight. */
-function PictureOption({ p, on, only, onClick }: { p: Picture; on: boolean; only: boolean; onClick: () => void }) {
+/** A picture an album may take, with what it is under it: its size in pixels, its kind, its weight. `badge`: the
+ * one shown of several — which of how many; a tap lays the others out. */
+function PictureOption({ p, on, badge, onClick }: { p: Picture; on: boolean; badge?: string; onClick?: () => void }) {
   // the catalog's picture is fetched to be measured only once its head is on the screen: a page has hundreds
   const box = useRef<HTMLButtonElement>(null);
   const [seen, setSeen] = useState(false);
@@ -1092,15 +1112,23 @@ function PictureOption({ p, on, only, onClick }: { p: Picture; on: boolean; only
   }, [seen, p.from]);
   const fetched = useCatalogCover(p.from === 'catalog' && seen ? p.upload : null);
   const [px, rest] = pictureWords(p.from === 'catalog' ? fetched : p.info);
+  const whence = p.from === 'catalog' ? 'из каталога' : `из ${p.count} ${plural(p.count, ['файла', 'файлов', 'файлов'])}`;
   return (
-    <button ref={box} type="button" aria-pressed={on} disabled={only} onClick={onClick} title={p.from === 'catalog' ? 'Обложка из каталога' : `Обложка из ${p.count} ${plural(p.count, ['файла', 'файлов', 'файлов'])}`} className="flex w-[5.5rem] flex-col items-center gap-1 text-center">
-      <span className={cx('rounded-lg transition', on && !only ? 'ring-2 ring-accent' : !only && 'opacity-60 hover:opacity-100')}>
-        <Cover src={p.url} size={72} alt="" />
+    <button ref={box} type="button" aria-pressed={badge ? undefined : on} disabled={!onClick} onClick={onClick} title={badge ? 'Показать другие обложки' : `Обложка ${whence}`} className="flex w-24 flex-col items-center gap-1 text-center">
+      <span className={cx('relative rounded-lg transition', on ? 'ring-2 ring-accent' : !badge && onClick && 'opacity-60 hover:opacity-100')}>
+        <Cover src={p.url} size={96} alt="" />
+        {badge && (
+          <span className="absolute bottom-1 right-1 flex items-center gap-0.5 rounded-full bg-black/70 px-1.5 py-0.5 text-[11px] text-white">
+            {badge}
+            <Icon name="chevron" size={10} />
+          </span>
+        )}
       </span>
       <span className="text-[11px] leading-tight text-dim">
         {px}
+        {rest ? ` · ${rest.replace('JPEG · ', '')}` : ''}
         <br />
-        {rest || ' '}
+        {whence}
       </span>
     </button>
   );
