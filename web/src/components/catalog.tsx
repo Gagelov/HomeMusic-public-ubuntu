@@ -613,7 +613,16 @@ export type ListSort = 'new' | 'old' | 'most' | 'least' | null;
 /** `added`: the list has «Дата добавления»; a click on that column sorts by it — the newest first, then the oldest
  * first, then the list's own order again (`sort`, `onSort`). `plays`: the «Прослушивания» column, sorted the same
  * way — the most listened to first, then the least, then the list's own order. */
-export function TrackTableHeader({ numbered = false, album = false, added = false, tags = false, plays = false, playsLabel, sort = null, onSort }: { numbered?: boolean; album?: boolean; added?: boolean; tags?: boolean; plays?: boolean; playsLabel?: string; sort?: ListSort; onSort?: (next: ListSort) => void }) {
+/** `heads`: the columns a list is sorted by with a click on their names beside those two («Все файлы»: the name,
+ * the album, the file) — what the column is called just now, the arrow of its order, and the click. */
+export interface SortHead {
+  label?: string;
+  mark?: '▲' | '▼' | null;
+  title: string;
+  onClick: () => void;
+}
+
+export function TrackTableHeader({ numbered = false, album = false, added = false, tags = false, plays = false, playsLabel, sort = null, onSort, heads }: { heads?: Partial<Record<'title' | 'album' | 'file', SortHead>>; numbered?: boolean; album?: boolean; added?: boolean; tags?: boolean; plays?: boolean; playsLabel?: string; sort?: ListSort; onSort?: (next: ListSort) => void }) {
   const desktop = useDesktop();
   const cols = useTrackColumns();
   const [open, setOpen] = useState(false);
@@ -633,6 +642,15 @@ export function TrackTableHeader({ numbered = false, album = false, added = fals
     };
   }, [open]);
   if (!desktop) return null;
+  const head = (h: SortHead | undefined, label: string, hint?: string) =>
+    h ? (
+      <button type="button" onClick={h.onClick} title={h.title} className={cx('flex items-center gap-1.5 text-left transition hover:text-fg', h.mark && 'text-fg')}>
+        {h.label ?? label}
+        {h.mark && <span className="text-[10px] text-accent" aria-hidden="true">{h.mark}</span>}
+      </button>
+    ) : (
+      <span title={hint}>{label}</span>
+    );
   const offered = (Object.keys(TRACK_COLUMN_LABELS) as (keyof TrackColumns)[]).filter((c) => (c !== 'album' || album) && (c !== 'added' || added) && (c !== 'plays' || (plays && !playsLabel)) && (!c.startsWith('tag') || tags));
   return (
     <div
@@ -645,8 +663,8 @@ export function TrackTableHeader({ numbered = false, album = false, added = fals
       style={{ gridTemplateColumns: trackGrid(numbered, album && cols.album, cols.duration, added && cols.added, tags ? { lang: cols.tagLang, genre: cols.tagGenre, own: cols.tagOwn } : null, !!playsLabel || (plays && cols.plays), cols.file) }}
     >
       {numbered && <span className="text-center">#</span>}
-      <span>Название</span>
-      {album && cols.album && <span>Альбом</span>}
+      {head(heads?.title, 'Название')}
+      {album && cols.album && head(heads?.album, 'Альбом')}
       {tags && cols.tagLang && <span>Язык</span>}
       {tags && cols.tagGenre && <span>Жанр</span>}
       {tags && cols.tagOwn && <span>Теги</span>}
@@ -674,7 +692,7 @@ export function TrackTableHeader({ numbered = false, album = false, added = fals
           {(sort === 'most' || sort === 'least') && <span className="text-[10px] text-accent" aria-hidden="true">{sort === 'most' ? '▼' : '▲'}</span>}
         </button>
       )}
-      {cols.file && <span title="Откуда файл, его формат и битрейт">Файл</span>}
+      {cols.file && head(heads?.file, 'Файл', 'Откуда файл, его формат и битрейт')}
       <span />
       {cols.duration && <span className="text-right">Время</span>}
       <IconButton icon="more" size={18} label="Колонки таблицы" aria-expanded={open} onClick={() => setOpen((v) => !v)} className={cx('!h-8 !w-8 text-dim hover:text-fg focus-visible:opacity-100', !open && 'opacity-0 group-hover/head:opacity-100')} />

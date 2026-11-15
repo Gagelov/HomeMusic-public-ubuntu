@@ -15,7 +15,11 @@ import { Link, navigate } from '../lib/router';
 import { EDITED_EVENT } from '../lib/trackEdit';
 import { attempt } from '../lib/ui';
 
-type Sort = 'new' | 'old' | 'title' | 'artist' | 'album' | 'quality';
+type Sort = 'new' | 'old' | 'title' | 'titleZ' | 'artist' | 'artistZ' | 'album' | 'albumZ' | 'quality' | 'qualityBest';
+const ALL_SORTS: Sort[] = ['new', 'old', 'title', 'titleZ', 'artist', 'artistZ', 'album', 'albumZ', 'quality', 'qualityBest'];
+/** What a click on a column makes of the order: the column's orders one after another, then the list's own (the
+ * newest first). */
+const after = (sort: Sort, steps: Sort[]): Sort => steps[steps.indexOf(sort) + 1] ?? (steps.includes(sort) ? 'new' : steps[0]);
 const SORTS: [Sort, string][] = [
   ['new', 'Сначала новые'],
   ['old', 'Сначала старые'],
@@ -104,7 +108,7 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
   const [sort, setSortState] = useState<Sort>(() => {
     try {
       const v = localStorage.getItem(SORT_KEY) as Sort | null;
-      return v && SORTS.some(([id]) => id === v) ? v : 'new';
+      return v && ALL_SORTS.includes(v) ? v : 'new';
     } catch {
       return 'new';
     }
@@ -142,12 +146,18 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
   const listed = useMemo(() => {
     const rows = all.filter((t) => (only === 'mine' ? t.mine : only === 'loose' ? !t.kept : only === 'noAlbum' ? t.no_album : only === 'low' ? low(t) : only === 'doubles' ? isDouble(t) : true));
     const at = (t: FileRowOut) => (t.added_at ? parseTime(t.added_at).getTime() : 0);
+    const artist = (a: FileRowOut, b: FileRowOut) => by.compare(a.artist, b.artist) || by.compare(a.album_title ?? '', b.album_title ?? '') || (a.track_no ?? 0) - (b.track_no ?? 0);
+    const album = (a: FileRowOut, b: FileRowOut) => by.compare(a.album_title ?? '\uffff', b.album_title ?? '\uffff') || (a.disc_no ?? 0) - (b.disc_no ?? 0) || (a.track_no ?? 0) - (b.track_no ?? 0);
     const cmp: Record<Sort, (a: FileRowOut, b: FileRowOut) => number> = {
       new: (a, b) => at(b) - at(a),
       old: (a, b) => at(a) - at(b),
       title: (a, b) => by.compare(a.title, b.title),
-      artist: (a, b) => by.compare(a.artist, b.artist) || by.compare(a.album_title ?? '', b.album_title ?? '') || (a.track_no ?? 0) - (b.track_no ?? 0),
-      album: (a, b) => by.compare(a.album_title ?? '\uffff', b.album_title ?? '\uffff') || (a.disc_no ?? 0) - (b.disc_no ?? 0) || (a.track_no ?? 0) - (b.track_no ?? 0),
+      titleZ: (a, b) => by.compare(b.title, a.title),
+      artist,
+      artistZ: (a, b) => artist(b, a),
+      album,
+      albumZ: (a, b) => album(b, a),
+      qualityBest: (a, b) => quality(b) - quality(a),
       quality: (a, b) => quality(a) - quality(b),
     };
     // the doubles stand next to each other, whatever the order of the rest
@@ -191,7 +201,8 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
         search={search}
         extra={
           <>
-            {!inTrash && <BarMenu icon="sliders" label={`Сортировка: ${SORTS.find(([id]) => id === sort)?.[1] ?? ''}`} active={sort !== 'new'}>
+            {/* a computer sorts by a click on a column's name; a phone has no columns */}
+            {!inTrash && !desktop && <BarMenu icon="sliders" label={`Сортировка: ${SORTS.find(([id]) => id === sort)?.[1] ?? ''}`} active={sort !== 'new'}>
               {(close) => SORTS.map(([id, label]) => menuItem(null, label, () => { setSort(id); close(); }, sort === id))}
             </BarMenu>}
             {desktop && <IconButton icon="upload" label="Загрузить файлы" onClick={() => navigate('/upload')} />}
@@ -200,7 +211,6 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
                 <>
                   {!desktop && menuItem('upload', 'Загрузить файлы', () => navigate('/upload'))}
                   {menuItem('plus', 'Создать свой альбом', () => { close(); setCreateOpen(true); })}
-                  {menuItem('transfer', 'Перенести из Яндекс Музыки', () => navigate('/import'))}
                 </>
               )}
             </BarMenu>
@@ -277,7 +287,23 @@ export function FilesPage({ trash = false }: { trash?: boolean }) {
       ) : (
         <ul className="pb-6">
           <li>
-            <TrackTableHeader numbered album added sort={sort === 'new' || sort === 'old' ? sort : null} onSort={(next) => setSort(next === 'old' ? 'old' : 'new')} />
+            <TrackTableHeader
+              numbered
+              album
+              added
+              sort={sort === 'new' || sort === 'old' ? sort : null}
+              onSort={(next) => setSort(next === 'old' ? 'old' : 'new')}
+              heads={{
+                title: {
+                  label: sort === 'artist' || sort === 'artistZ' ? 'Исполнитель' : 'Название',
+                  mark: sort === 'title' || sort === 'artist' ? '▲' : sort === 'titleZ' || sort === 'artistZ' ? '▼' : null,
+                  title: 'Сортировать: по названию, потом по исполнителю',
+                  onClick: () => setSort(after(sort, ['title', 'titleZ', 'artist', 'artistZ'])),
+                },
+                album: { mark: sort === 'album' ? '▲' : sort === 'albumZ' ? '▼' : null, title: 'Сортировать по альбому', onClick: () => setSort(after(sort, ['album', 'albumZ'])) },
+                file: { mark: sort === 'quality' ? '▲' : sort === 'qualityBest' ? '▼' : null, title: 'Сортировать по качеству файла: сначала худшие, потом лучшие', onClick: () => setSort(after(sort, ['quality', 'qualityBest'])) },
+              }}
+            />
           </li>
           {shown.map((t, i) => {
             const day = byDays ? dayOf(t.added_at) : null;
