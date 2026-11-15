@@ -764,6 +764,14 @@ export interface PickOut {
   taken: boolean;
   /** where the two part though they are one recording: the track's file's moments, and which falls quiet there */
   gaps?: FileGap[];
+  /** the file as it lies on the Hub for now: what it is heard by, who its source says it is, and the loudness of
+   * the two along their lengths */
+  key?: string | null;
+  title?: string | null;
+  artist?: string | null;
+  provider?: string | null;
+  peaks?: { mine?: number[]; other?: number[] };
+  length?: { mine?: number | null; other?: number | null };
 }
 
 /** A place where two files of one recording part — what a censor's cut shows as: `at`…`to` in the first file (the

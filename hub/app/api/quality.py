@@ -236,6 +236,14 @@ class PickOut(BaseModel):
     # where the two part though they are one recording: the track's file's moments, and which falls quiet there
     # («mine» — the track's own, «other» — this one): the places a censor's cut shows as
     gaps: list[dict] = []
+    # the file as it lies on the Hub for now: what it is heard by (`…/picked/<key>/audio`), who its source says
+    # it is, and the loudness of the two along their lengths (the lanes they are moved through by)
+    key: str | None = None
+    title: str | None = None
+    artist: str | None = None
+    provider: str | None = None
+    peaks: dict[str, list[int]] = {}
+    length: dict[str, float | None] = {}
 
 
 async def _track_and_file(s: AsyncSession, track_id: int) -> tuple[Track, TrackFile]:
@@ -312,7 +320,11 @@ async def _weigh(s: AsyncSession, t: Track, f: TrackFile, body: PickIn):
     gaps = await acoustic.differences(library_abs(f.path), path) if verdict == "same" else []
     out = PickOut(likeness=alike, verdict=verdict, codec=codec, bitrate_kbps=kbps,
                   duration_s=round(info.duration_s) if info and info.duration_s else cand.duration_s,
-                  better=quality.better(codec, kbps, f.codec, f.bitrate_kbps), gaps=gaps)
+                  better=quality.better(codec, kbps, f.codec, f.bitrate_kbps), gaps=gaps, key=path.parent.name,
+                  title=cand.title, artist=cand.artist, provider=cand.provider,
+                  peaks={"mine": await upgrade.peaks(library_abs(f.path)), "other": await upgrade.peaks(path)},
+                  length={"mine": float(t.duration_s) if t.duration_s else None,
+                          "other": float(info.duration_s) if info and info.duration_s else None})
     return out, path, cand, info
 
 
@@ -321,6 +333,18 @@ async def weigh(track_id: int, body: PickIn, user: User = Depends(current_user),
     """Download a file found for the track and say how it compares with the track's own: by the sound, and as a file."""
     t, f = await _track_and_file(s, track_id)
     return (await _weigh(s, t, f, body))[0]
+
+
+@router.get("/picked/{key}/audio")
+async def picked_audio(key: str, user: User = Depends(current_user)):
+    """A file downloaded to be weighed (`weigh`), to hear it beside the track's own."""
+    from app.config import get_settings
+
+    folder = get_settings().staging_dir / "picks" / key
+    have = [x for x in folder.glob("*") if x.is_file()] if key.isalnum() and folder.is_dir() else []
+    if not have:
+        raise HTTPException(404, "Файла уже нет: найдите его заново")
+    return FileResponse(have[0], headers={"Cache-Control": "no-store"})
 
 
 @router.post("/track/{track_id}/take", response_model=PickOut)
