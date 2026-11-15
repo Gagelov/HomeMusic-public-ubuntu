@@ -160,6 +160,23 @@ function rowFromUpload(u: UploadOut): RowState {
   };
 }
 
+/** What the listener chose on the page — in the albums' heads and in the rows — is kept on the device while the
+ * files wait: the page may be closed or reloaded before they are brought in. Of a row only what differs from the
+ * page's own pick is kept, so a file looked for in the catalog again is not held to an old answer. */
+const FORM_KEY = 'hm-upload-form';
+interface SavedForm {
+  rows: Record<string, Partial<RowState>>;
+  chosen: Record<string, AlbumChoice>;
+}
+function savedForm(): SavedForm {
+  try {
+    const v = JSON.parse(localStorage.getItem(FORM_KEY) ?? '{}') as Partial<SavedForm>;
+    return { rows: v.rows ?? {}, chosen: v.chosen ?? {} };
+  } catch {
+    return { rows: {}, chosen: {} };
+  }
+}
+
 const fileWords = (codec?: string | null, kbps?: number | null) => [codec ? codec.toUpperCase() : null, kbps ? String(kbps) : null].filter(Boolean).join(' ');
 /** The record's release as the file is filed by it: no album for a single. */
 const catAlbum = (u: UploadOut): string | null => (u.match?.record_type === 'single' || !u.match?.album ? null : u.match.album);
@@ -263,7 +280,8 @@ export function UploadPage() {
   const pendingRes = useAsync((s) => api.uploads('uploaded', s), []);
   const [uploads, setUploads] = useState<UploadOut[]>([]);
   const [rows, setRows] = useState<Record<number, RowState>>({});
-  const [chosen, setChosen] = useState<Record<string, AlbumChoice>>({}); // by an album's key
+  const saved = useRef<SavedForm>(savedForm());
+  const [chosen, setChosen] = useState<Record<string, AlbumChoice>>(() => saved.current.chosen); // by an album's key
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -308,7 +326,7 @@ export function UploadPage() {
     });
     setRows((prev) => {
       const next = { ...prev };
-      for (const u of list) if (!next[u.id]) next[u.id] = rowFromUpload(u);
+      for (const u of list) if (!next[u.id]) next[u.id] = { ...rowFromUpload(u), ...saved.current.rows[u.id] };
       return next;
     });
   }, []);
@@ -316,6 +334,28 @@ export function UploadPage() {
   useEffect(() => {
     if (pendingRes.data) addUploads(pendingRes.data);
   }, [pendingRes.data, addUploads]);
+
+  // what was chosen is kept on the device (`savedForm`): once the waiting files are known — of them only
+  useEffect(() => {
+    if (pendingRes.loading) return;
+    try {
+      if (!uploads.length) {
+        localStorage.removeItem(FORM_KEY);
+        return;
+      }
+      const out: SavedForm = { rows: {}, chosen };
+      for (const u of uploads) {
+        const r = rows[u.id];
+        if (!r) continue;
+        const own = rowFromUpload(u);
+        const diff = Object.fromEntries(Object.entries(r).filter(([k, v]) => v !== (own as unknown as Record<string, unknown>)[k]));
+        if (Object.keys(diff).length) out.rows[u.id] = diff;
+      }
+      localStorage.setItem(FORM_KEY, JSON.stringify(out));
+    } catch {
+      /* no storage: the choices last for this page */
+    }
+  }, [rows, chosen, uploads, pendingRes.loading]);
 
   // a folder is picked by an input of its own: the attribute is not one React knows
   useEffect(() => folderRef.current?.setAttribute('webkitdirectory', ''), []);
