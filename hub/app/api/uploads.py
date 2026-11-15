@@ -399,12 +399,12 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
             spec.album, spec.album_artist, spec.year = album.title.strip(), album.album_artist.strip(), album.year
             spec.deezer_album_id, spec.upc = rel.get("deezer_album_id"), rel.get("upc")
             spec.release_date = released if released and released.year == album.year else None
-            spec.release_type = {"compile": "compilation"}.get(rel.get("record_type", ""), rel.get("record_type")) or "album"
+            spec.release_type = {"compile": "compilation"}.get(rel.get("record_type", ""), rel.get("record_type")) or ("single" if album.single else "album")
             spec.track_total = rel.get("track_total")
             spec.genre = spec.genre or rel.get("genre")
             # its place in the album: the catalog's when its record stands on this very release, else the file's
             there = bool(meta and rel.get("deezer_album_id") and meta.get("deezer_album_id") == rel.get("deezer_album_id"))
-            spec.track_no = tr.track_no or (meta.get("track_no") if there and meta else None) or tags.get("track_no")
+            spec.track_no = tr.track_no or (meta.get("track_no") if there and meta else None) or (1 if album.single else tags.get("track_no"))
             spec.disc_no = (meta.get("disc_no") if there and meta else None) or tags.get("disc_no") or 1
             spec.cover = covers.get(album.key)  # none: the cover the album has (`import_file`)
             wanted = (((await _own(s, user, album.cover_of_match)).probed_tags_json or {}).get("_match") or {}).get("meta", {}).get("cover_url") if album.cover_of_match else None

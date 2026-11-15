@@ -22,7 +22,8 @@ import { attempt, confirmDialog, toast } from '../lib/ui';
  * found — the catalog's and the ones inside the files, each with its size in pixels, its kind and its weight. Under
  * the head its files stand as the tracks of a playlist: the number, the cover that plays the file in the app's own
  * player, the name with everyone credited, the length — and what the catalog changes in the track, in a few words.
- * The singles follow, each with its own picture to choose. A row opens to be put right by hand (its ⋯).
+ * A single stands the same way — a head of its own with its artist, its year and its picture to choose, only
+ * without a name (a single is called as its track is), and its one file under it. A row opens to be put right by hand (its ⋯).
  *
  * «Перенести» brings in every file of the page. The rows are a playlist's: on a computer a table whose columns of
  * the file itself (its name, its size, what it is) can be hidden; a row's ⋯ is its menu — its names put right by
@@ -105,6 +106,8 @@ interface Picture {
 /** The files of one album, with everything the album may be called. */
 interface Group {
   key: string;
+  /** a single: one file that is of no album — its head has no name to choose */
+  single: boolean;
   files: UploadOut[];
   /** an upload whose catalog record stands on this release (none: the catalog does not know the album) */
   release: UploadOut | null;
@@ -429,7 +432,7 @@ export function UploadPage() {
       const r = row(u);
       const a = r.album.trim();
       if (!a || same(a, r.title)) {
-        keys.set(u.id, null);
+        keys.set(u.id, `s|${u.id}`); // a single: an «album» of its own
         continue;
       }
       const by = str(u.tags.album_artist) || u.artists?.[0] || r.artist;
@@ -445,21 +448,21 @@ export function UploadPage() {
     for (const u of uploads) {
       const k = keys.get(u.id);
       if (!k) continue;
-      const g = groups.get(k) ?? groups.set(k, { key: k, files: [], release: null, titles: [], artists: [], years: [], pictures: [], title: '', artist: '', year: '', cover: null }).get(k)!;
+      const g = groups.get(k) ?? groups.set(k, { key: k, single: k.startsWith('s|'), files: [], release: null, titles: [], artists: [], years: [], pictures: [], title: '', artist: '', year: '', cover: null }).get(k)!;
       g.files.push(u);
     }
     for (const g of groups.values()) {
       // the release is the album's own files' — not that of a file brought in from elsewhere by hand
-      const taken = g.files.filter((u) => usesCatalog(u, row(u)) && !!catAlbum(u) && natural.get(u.id) === g.key);
+      const taken = g.files.filter((u) => usesCatalog(u, row(u)) && (g.single || !!catAlbum(u)) && natural.get(u.id) === g.key);
       g.release = taken[0] ?? null;
       const m = g.release?.match;
-      const own = g.files.filter((u) => !u.single);
+      const own = g.single ? g.files : g.files.filter((u) => !u.single);
       g.titles = byCount([m ? catAlbum(g.release!) : null, ...own.map((u) => str(u.tags.album))]);
       // the release's main artist, everyone it is credited to as one line («Medoi The Maid, Lieath»), and what the files say
-      g.artists = byCount([m?.album_artist ?? null, (m?.album_artists?.length ?? 0) > 1 ? m!.album_artists!.join(', ') : null, ...own.map((u) => str(u.tags.album_artist) || u.artists?.[0])]);
+      g.artists = byCount([m?.album_artist ?? (g.single ? m?.artist : null) ?? null, (m?.album_artists?.length ?? 0) > 1 ? m!.album_artists!.join(', ') : null, ...own.map((u) => str(u.tags.album_artist) || u.artists?.[0])]);
       g.years = byCount([m?.year ? String(m.year) : null, ...own.map((u) => str(u.tags.year).slice(0, 4))]);
       g.title = (m ? catAlbum(g.release!) : null) ?? g.titles[0] ?? '';
-      g.artist = m?.album_artist ?? g.artists[0] ?? '';
+      g.artist = m?.album_artist ?? (g.single ? m?.artist : null) ?? g.artists[0] ?? '';
       g.year = m?.year ? String(m.year) : (g.years[0] ?? '');
       const pics = new Map<string, Picture>();
       const withCat = taken.find((u) => u.match?.cover_url);
@@ -492,7 +495,7 @@ export function UploadPage() {
   const ready = included.filter((u) => valid(u, rowOf(u)));
   const toFill = included.filter((u) => !valid(u, rowOf(u)));
   const isNone = (u: UploadOut) => !u.match?.ref;
-  const changes = (u: UploadOut) => usesCatalog(u, rowOf(u)) && changesOf(u, !!groupOf(u)).length > 0;
+  const changes = (u: UploadOut) => usesCatalog(u, rowOf(u)) && changesOf(u, !groupOf(u)?.single).length > 0;
   const counts = {
     fill: toFill.length,
     doubt: uploads.filter((u) => unsure(u, rowOf(u))).length,
@@ -503,8 +506,8 @@ export function UploadPage() {
   const passes = (u: UploadOut) =>
     only === 'fill' ? rowOf(u).include && !valid(u, rowOf(u)) : only === 'doubt' ? unsure(u, rowOf(u)) : only === 'changes' ? changes(u) : only === 'none' ? isNone(u) : only === 'twin' ? !!u.twin : true;
   const shown = uploads.filter(passes);
-  const shownGroups = [...all.groups.values()].map((g) => ({ g, files: g.files.filter(passes) })).filter((x) => x.files.length);
-  const shownSingles = shown.filter((u) => !all.keys.get(u.id));
+  // the albums, then the singles — each in the order its files came
+  const shownGroups = [...all.groups.values()].map((g) => ({ g, files: g.files.filter(passes) })).filter((x) => x.files.length).sort((a, b) => Number(a.g.single) - Number(b.g.single));
 
   /** The picture a file is shown with — and filed with: its album's, or a single's own choice. */
   const pictureOf = (u: UploadOut): string | null => {
@@ -530,7 +533,7 @@ export function UploadPage() {
       duration_s: u.duration_s ? Math.round(u.duration_s) : null,
     };
   };
-  const order = [...shownGroups.flatMap((x) => x.files), ...shownSingles];
+  const order = shownGroups.flatMap((x) => x.files);
   const play = (u: UploadOut) => listen(asTrack(u), order.map(asTrack), 'upload');
 
   /** Put these files into one album: one of the page's, or a new one of this name. */
@@ -618,10 +621,15 @@ export function UploadPage() {
       album_key: all.keys.get(u.id) ?? null, cover: r.cover, replace_track_id: r.replace && u.twin ? u.twin.track_id : null,
     };
   };
+  /** What a file is called once it is in: the catalog's name where its record is taken (in the file's own case). */
+  const titleOf = (u: UploadOut) => {
+    const r = rowOf(u);
+    return (usesCatalog(u, r) ? (same(u.title, u.match?.title) ? u.title : (u.match?.title ?? u.title)) : r.title.trim() || u.title) || u.orig_name;
+  };
   const albumIn = (g: Group): UploadAlbumIn => {
     const a = albumOf(g);
     return {
-      key: g.key, title: a.title.trim() || g.title, album_artist: a.artist.trim() || g.artist || 'Various Artists', year: toIntOrNull(a.year), release_of: g.release?.id ?? null,
+      key: g.key, single: g.single, title: g.single ? titleOf(g.files[0]) : a.title.trim() || g.title, album_artist: a.artist.trim() || g.artist || 'Various Artists', year: toIntOrNull(a.year), release_of: g.release?.id ?? null,
       cover_of_match: a.cover?.from === 'catalog' ? a.cover.upload : null, cover_of_file: a.cover?.from === 'file' ? a.cover.upload : null,
     };
   };
@@ -692,8 +700,8 @@ export function UploadPage() {
       r={rowOf(u)}
       desktop={desktop}
       cols={cols}
-      inAlbum={!!g}
-      number={g ? ((usesCatalog(u, rowOf(u)) && u.match?.track_no) || toIntOrNull(str(u.tags.track_no))) : at + 1}
+      inAlbum={!!g && !g.single}
+      number={g && !g.single ? ((usesCatalog(u, rowOf(u)) && u.match?.track_no) || toIntOrNull(str(u.tags.track_no))) : at + 1}
       picture={pictureOf(u)}
       picked={picked.has(u.id)}
       menu={menu === u.id}
@@ -841,19 +849,11 @@ export function UploadPage() {
           {desktop && shown.length > 0 && <TableHead cols={cols} onCols={setCols} />}
           {shown.length === 0 && <div className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6"><Empty icon="search" title="Под эту метку ничего не подходит" /></div>}
           {shownGroups.map(({ g, files }) => (
-            <section key={g.key} className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6" aria-label={`Альбом «${albumOf(g).title}»`}>
+            <section key={g.key} className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6" aria-label={g.single ? `Сингл «${titleOf(g.files[0])}»` : `Альбом «${albumOf(g).title}»`}>
               <AlbumHead g={g} now={albumOf(g)} said={chosen[g.key] ?? {}} onChoose={(patch) => choose(g, patch)} shown={files.length} />
               {files.map((u, i) => row(u, g, i))}
             </section>
           ))}
-          {shownSingles.length > 0 && (
-            <section className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6" aria-label="Синглы и треки без альбома">
-              <div className="rounded-t-2xl border-b border-line/60 bg-fg/[0.04] px-4 py-2 text-xs text-muted">
-                <span className="text-sm font-semibold text-fg">Синглы и треки без альбома</span> · <span className="tabular-nums">{shownSingles.length}</span>
-              </div>
-              {shownSingles.map((u, i) => row(u, null, i))}
-            </section>
-          )}
         </>
       )}
 
@@ -871,12 +871,12 @@ export function UploadPage() {
         </div>
       )}
       {editing !== null && uploads.some((u) => u.id === editing) && (
-        <EditNames u={uploads.find((u) => u.id === editing)!} r={rowOf(uploads.find((u) => u.id === editing)!)} inAlbum={!!all.keys.get(editing)} onChange={(patch) => setRow(editing, patch)} onClose={() => setEditing(null)} />
+        <EditNames u={uploads.find((u) => u.id === editing)!} r={rowOf(uploads.find((u) => u.id === editing)!)} onChange={(patch) => setRow(editing, patch)} onClose={() => setEditing(null)} />
       )}
       {toAlbum && (
         <AlbumPick
           count={toAlbum.length}
-          albums={[...all.groups.values()].map((g) => ({ key: g.key, title: albumOf(g).title, artist: albumOf(g).artist, files: g.files.length }))}
+          albums={[...all.groups.values()].filter((g) => !g.single).map((g) => ({ key: g.key, title: albumOf(g).title, artist: albumOf(g).artist, files: g.files.length }))}
           onClose={() => setToAlbum(null)}
           onPick={(into) => gather(toAlbum, into)}
         />
@@ -971,11 +971,12 @@ function AlbumHead({ g, now, said, onChoose, shown }: { g: Group; now: { title: 
   return (
     <div className="rounded-t-2xl border-b border-line/60 bg-fg/[0.04] px-4 pb-3 pt-2">
       <div className="pb-1 text-[11px] text-dim">
-        Альбом · {g.files.length} {plural(g.files.length, ['файл', 'файла', 'файлов'])}
+        {g.single ? 'Сингл' : `Альбом · ${g.files.length} ${plural(g.files.length, ['файл', 'файла', 'файлов'])}`}
         {shown < g.files.length ? ` · показано ${shown}` : ''}
         {g.release ? '' : ' · в каталоге не найден'}
       </div>
-      {field('title', 'Название', g.titles, now.title, 'без названия')}
+      {/* a single is called as its track is: there is no name to choose */}
+      {!g.single && field('title', 'Название', g.titles, now.title, 'без названия')}
       {field('artist', 'Исполнитель', g.artists, now.artist, 'не указан')}
       {field('year', 'Год', g.years, now.year, 'не указан')}
       {g.pictures.length > 0 && (
@@ -994,10 +995,19 @@ function AlbumHead({ g, now, said, onChoose, shown }: { g: Group; now: { title: 
 
 /** A picture an album may take, with what it is under it: its size in pixels, its kind, its weight. */
 function PictureOption({ p, on, only, onClick }: { p: Picture; on: boolean; only: boolean; onClick: () => void }) {
-  const fetched = useCatalogCover(p.from === 'catalog' ? p.upload : null);
+  // the catalog's picture is fetched to be measured only once its head is on the screen: a page has hundreds
+  const box = useRef<HTMLButtonElement>(null);
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    if (seen || p.from !== 'catalog' || !box.current) return;
+    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && setSeen(true), { rootMargin: '200px' });
+    io.observe(box.current);
+    return () => io.disconnect();
+  }, [seen, p.from]);
+  const fetched = useCatalogCover(p.from === 'catalog' && seen ? p.upload : null);
   const [px, rest] = pictureWords(p.from === 'catalog' ? fetched : p.info);
   return (
-    <button type="button" aria-pressed={on} disabled={only} onClick={onClick} title={p.from === 'catalog' ? 'Обложка из каталога' : `Обложка из ${p.count} ${plural(p.count, ['файла', 'файлов', 'файлов'])}`} className="flex w-[5.5rem] flex-col items-center gap-1 text-center">
+    <button ref={box} type="button" aria-pressed={on} disabled={only} onClick={onClick} title={p.from === 'catalog' ? 'Обложка из каталога' : `Обложка из ${p.count} ${plural(p.count, ['файла', 'файлов', 'файлов'])}`} className="flex w-[5.5rem] flex-col items-center gap-1 text-center">
       <span className={cx('rounded-lg transition', on && !only ? 'ring-2 ring-accent' : !only && 'opacity-60 hover:opacity-100')}>
         <Cover src={p.url} size={72} alt="" />
       </span>
@@ -1069,18 +1079,6 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   else if (has) notes.push(<span key="off" className="text-[11px] text-dim">как в файле</span>);
   else notes.push(<span key="none" className="text-[11px] text-dim">трека нет в каталоге</span>);
   const quality = fileWords(u.codec, u.bitrate_kbps);
-  // a single chooses its own picture, where there are two
-  const mine = u.tags.has_cover ? uploadCoverUrl(u.id) : null;
-  const theirs = by && m?.cover_url ? (imageUrl(m.cover_url) as string) : null;
-  const pictures = !inAlbum && mine && theirs && (
-    <span className="flex shrink-0 items-center gap-1" title="Обложка сингла" data-own>
-      {([['catalog', theirs], ['file', mine]] as const).map(([which, url]) => (
-        <button key={which} type="button" aria-pressed={r.cover === which} aria-label={which === 'catalog' ? 'Обложка из каталога' : 'Обложка из файла'} title={which === 'catalog' ? 'Обложка из каталога' : 'Обложка из файла'} onClick={() => onChange({ cover: which })} className={cx('rounded transition', r.cover === which ? 'ring-2 ring-accent' : 'opacity-45 hover:opacity-100')}>
-          <Cover src={url} size={22} alt="" />
-        </button>
-      ))}
-    </span>
-  );
   const cover = (
     <button type="button" data-own aria-label={playing ? 'Пауза' : `Слушать «${title}»`} onClick={onPlay} className="group/c relative flex h-10 w-10 shrink-0 items-center justify-center">
       <Cover src={picture} size={40} alt="" />
@@ -1184,7 +1182,6 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
             {names}
             <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
               {notes}
-              {pictures}
               <span className="text-[11px] tabular-nums text-dim">{fmtDuration(u.duration_s)}</span>
               {u.weak && <span className="text-[11px] text-warn">{quality}</span>}
             </span>
@@ -1193,7 +1190,6 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
         {desktop && (
           <span className="flex min-w-0 flex-wrap items-center gap-1">
             {notes}
-            {pictures}
           </span>
         )}
         {desktop && cols.file && <span className="truncate text-[13px] text-muted" title={u.orig_name}>{u.orig_name}</span>}
@@ -1222,9 +1218,9 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   );
 }
 
-/** The names of a file written by hand: its own, not the catalog's. A single also says its album here — a name
- * makes it an album's file. */
-function EditNames({ u, r, inAlbum, onChange, onClose }: { u: UploadOut; r: RowState; inAlbum: boolean; onChange: (patch: Partial<RowState>) => void; onClose: () => void }) {
+/** The names of a file written by hand: its own, not the catalog's. What its album is — and a single's artist, year
+ * and picture — is said in the head over it; a file is put into another album by its menu. */
+function EditNames({ u, r, onChange, onClose }: { u: UploadOut; r: RowState; onChange: (patch: Partial<RowState>) => void; onClose: () => void }) {
   return (
     <Sheet
       open
@@ -1244,16 +1240,6 @@ function EditNames({ u, r, inAlbum, onChange, onClose }: { u: UploadOut; r: RowS
         <Field label="Исполнители (через запятую)">
           <input className="input" value={r.artist} onChange={(e) => onChange({ artist: e.target.value })} />
         </Field>
-        {!inAlbum && (
-          <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-3">
-            <Field label="Альбом">
-              <input className="input" value={r.album} placeholder="Пусто — сингл" onChange={(e) => onChange({ album: e.target.value })} />
-            </Field>
-            <Field label="Год">
-              <input className="input" inputMode="numeric" value={r.year} onChange={(e) => onChange({ year: e.target.value.replace(/\D/g, '').slice(0, 4) })} />
-            </Field>
-          </div>
-        )}
       </div>
       {u.match?.ref && <p className="pt-3 text-xs text-dim">Данные каталога для этого файла отключены. Вернуть — «Взять данные каталога» в меню строки.</p>}
     </Sheet>

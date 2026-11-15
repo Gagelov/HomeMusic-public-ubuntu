@@ -666,6 +666,7 @@ class UploadAlbumIn(BaseModel):
     title: str = Field(min_length=1, max_length=512)
     album_artist: str = Field(min_length=1, max_length=512)
     year: int | None = None
+    single: bool = False  # a single: one file, the «album» is the track itself (its name is the track's)
     release_of: int | None = None
     cover_of_match: int | None = None
     cover_of_file: int | None = None

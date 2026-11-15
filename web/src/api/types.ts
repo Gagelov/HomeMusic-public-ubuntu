@@ -649,6 +649,8 @@ export interface UploadAlbumIn {
   title: string;
   album_artist: string;
   year?: number | null;
+  /** a single: one file, the «album» is the track itself */
+  single?: boolean;
   release_of?: number | null;
   cover_of_match?: number | null;
   cover_of_file?: number | null;
