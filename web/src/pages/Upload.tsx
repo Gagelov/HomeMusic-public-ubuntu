@@ -743,7 +743,7 @@ export function UploadPage() {
     ['all', 'Все', uploads.length],
     ['fill', 'Нужно заполнить', counts.fill, true],
     ['changes', 'Изменится', counts.changes],
-    ['doubt', 'Уточню на шаге 2', counts.doubt],
+    ['doubt', 'Уточню на следующем шаге', counts.doubt],
     ['none', 'Не найдено', counts.none],
     ['twin', 'Уже есть', counts.twin],
   ];
@@ -911,7 +911,7 @@ export function UploadPage() {
               {tracksWord(toFill.length)} без названия или исполнителя не {plural(toFill.length, ['перенесётся', 'перенесутся', 'перенесутся'])}, пока вы {plural(toFill.length, ['его', 'их', 'их'])} не заполните — метка «Нужно заполнить». Остальные {ready.length} можно переносить.
             </p>
           )}
-          {only === 'doubt' && <p className="px-4 pt-2 text-xs text-muted lg:px-6">В каталоге есть похожая запись, но не точно эта: другая длина или версия. Такие треки переносятся со своими тегами, а на шаге 2 запись каталога скачивается и сравнивается с вашим файлом по звуку.</p>}
+          {only === 'doubt' && <p className="px-4 pt-2 text-xs text-muted lg:px-6">В каталоге есть похожая запись, но не точно эта: другая длина или версия. Такие треки переносятся со своими тегами, а на следующем шаге запись каталога скачивается и сравнивается с вашим файлом по звуку.</p>}
 
           {desktop && shown.length > 0 && <TableHead cols={cols} onCols={setCols} />}
           {shown.length === 0 && <div className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6"><Empty icon="search" title="Под эту метку ничего не подходит" /></div>}
@@ -1162,7 +1162,7 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   const pill = (text: ReactNode, key?: string | number) => <span key={key} className="rounded-full bg-info/20 px-1.5 text-info" title="Из каталога">{text}</span>;
   const was = (text: ReactNode) => <span className="text-dim line-through" title="Было в файле">{text}</span>;
   const doubt = unsure(u, r) && (
-    <span title={`В каталоге похожая запись: «${m?.title}» — ${m?.artist}. ${m?.why ?? ''}`} className="ml-2 rounded-full bg-warn/15 px-2 py-0.5 align-middle text-[11px] text-warn">уточню по звуку на шаге 2</span>
+    <span title={`В каталоге похожая запись: «${m?.title}» — ${m?.artist}. ${m?.why ?? ''}`} className="ml-2 rounded-full bg-warn/15 px-2 py-0.5 align-middle text-[11px] text-warn">уточню по звуку на следующем шаге</span>
   );
   const theirs = (m?.artists?.length ? m.artists : [m?.artist ?? '']).filter(Boolean);
   const mine = (u.artists ?? []).map(low);
@@ -1290,7 +1290,7 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
         )}
         {desktop && cols.file && <span className="truncate text-[13px] text-muted" title={u.orig_name}>{u.orig_name}</span>}
         {desktop && cols.size && <span className="text-[13px] tabular-nums text-muted">{fmtSize(u.size)}</span>}
-        {desktop && cols.quality && <span><span className={cx('whitespace-nowrap text-[13px]', u.weak ? 'rounded-full bg-warn/15 px-2 py-0.5 text-warn' : 'text-muted')} title={u.weak ? 'Слабый файл: на шаге 2 поищу лучше' : undefined}>{quality || '—'}</span></span>}
+        {desktop && cols.quality && <span><span className={cx('whitespace-nowrap text-[13px]', u.weak ? 'rounded-full bg-warn/15 px-2 py-0.5 text-warn' : 'text-muted')} title={u.weak ? 'Слабый файл: на следующем шаге поищу лучше' : undefined}>{quality || '—'}</span></span>}
         {desktop && <span className="text-right text-xs tabular-nums text-dim">{fmtDuration(u.duration_s)}</span>}
         {dots}
       </div>
