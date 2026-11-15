@@ -7,6 +7,7 @@ import { useDragAction, type DragKind } from '../lib/dragAction';
 import { tracksWord } from '../lib/format';
 import { closePlaylistsSheet, usePlaylistsSheet } from '../lib/playlistsSheet';
 import { BulkPlaylists } from './PlaylistsButton';
+import { FindFile } from './FindFile';
 import { ShareSheet } from './ShareSheet';
 import { OfflineBanner } from './Offline';
 import { PlaylistMenu } from './PlaylistMenu';
@@ -56,6 +57,7 @@ export function Overlays() {
       <TagsSheet />
       <PlaylistMenu />
       <TrackEdit />
+      <FindFile />
       <TelegramSetup />
       <ShareSheet />
       <PlaylistsSheet />

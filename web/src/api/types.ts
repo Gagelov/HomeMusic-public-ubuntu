@@ -720,7 +720,7 @@ export interface QualityRow {
   cover_url?: string | null;
   state: 'queued' | 'searching' | 'found' | 'replaced' | 'none' | 'kept';
   /** identify: whether the track is the catalog's record `record`, told by the sound */
-  kind: 'better' | 'identify';
+  kind: 'better' | 'identify' | 'picked';
   record?: string | null;
   progress: number;
   /** the catalog knows the song */
@@ -736,6 +736,32 @@ export interface QualityRow {
   /** the file it had is still kept: both can be heard, the old one brought back */
   can_revert?: boolean;
   updated_at: string;
+}
+
+/** A track of the library and the file it plays from, as «Найти другой файл» shows it. */
+export interface TrackFileOut {
+  track_id: number;
+  title: string;
+  artist: string;
+  duration_s?: number | null;
+  cover_url?: string | null;
+  explicit?: boolean | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  source?: string | null;
+  name?: string | null;
+}
+
+/** How a file found for a track compares with the track's own: by the sound (`verdict`: same / alike / other /
+ * unknown) and as a file. `taken`: it is the track's file now. */
+export interface PickOut {
+  likeness?: number | null;
+  verdict: 'same' | 'alike' | 'other' | 'unknown';
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  duration_s?: number | null;
+  better: boolean;
+  taken: boolean;
 }
 
 export interface QualityOut {

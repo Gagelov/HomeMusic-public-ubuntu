@@ -1,5 +1,6 @@
 import { useState, type MouseEvent, type ReactNode } from 'react';
 import { deleteFile } from '../lib/deleteFile';
+import { openFindFile } from '../lib/findFile';
 import { openTrackEdit } from '../lib/trackEdit';
 import { createPortal } from 'react-dom';
 import { setDisliked, useDisliked, type DislikeTarget } from '../lib/dislikes';
@@ -211,6 +212,17 @@ function TrackMenu({ track, extra, inPlayer, lean, noTags, onClose }: { track: M
           hint={disliked ? 'Трек снова может попадать в миксы' : 'Трек не будет попадать в миксы и «Мою волну»'}
           onClick={() => toggle(target, disliked)}
         />
+        {track.has_file && track.library_track_id != null && (
+          <MenuItem
+            icon="search"
+            label="Найти другой файл…"
+            hint="Без цензуры или в лучшем качестве — вместо этого"
+            onClick={() => {
+              onClose();
+              openFindFile({ library_track_id: track.library_track_id as number, title: track.title, artist: track.artist });
+            }}
+          />
+        )}
         {track.has_file && track.library_track_id != null && (
           <MenuItem
             icon="trash"

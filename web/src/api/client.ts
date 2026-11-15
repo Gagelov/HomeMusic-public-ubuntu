@@ -77,7 +77,9 @@ import type {
   TasteOnboardingOut,
   CoverInfo,
   FileRowOut,
+  PickOut,
   QualityOut,
+  TrackFileOut,
   SplitAlbums,
   TrackEditEntry,
   TrackEditOut,
@@ -433,6 +435,12 @@ export const api = {
   qualityStart: (track_ids?: number[]) => request<{ queued: number }>('POST', '/api/quality/start', { json: { track_ids: track_ids ?? null } }),
   qualityAccept: (id: number) => request<OkOut>('POST', `/api/quality/${id}/accept`),
   qualityDecline: (id: number) => request<OkOut>('POST', `/api/quality/${id}/decline`),
+  /** A track of the library and the file it plays from («Найти другой файл»). */
+  trackFile: (id: number, signal?: AbortSignal) => request<TrackFileOut>('GET', `/api/quality/track/${id}`, { signal }),
+  /** Download a file found for the track and say how it compares with the track's own. */
+  fileWeigh: (id: number, pick: { ref?: string; url?: string }) => request<PickOut>('POST', `/api/quality/track/${id}/weigh`, { json: pick }),
+  /** Put the picked file in the place of the track's own (`sure`: though it is not the same recording). */
+  fileTake: (id: number, pick: { ref?: string; url?: string; sure?: boolean }) => request<PickOut>('POST', `/api/quality/track/${id}/take`, { json: pick }),
   /** Take back the file a track had before a better one was put in its place. */
   qualityRevert: (id: number) => request<OkOut>('POST', `/api/quality/${id}/revert`),
   qualityPeaks: (id: number, signal?: AbortSignal) => request<{ current: number[]; found: number[]; was: number[] }>('GET', `/api/quality/${id}/peaks`, { signal }),

@@ -333,6 +333,39 @@ async def unshelve(moved: list[tuple[Path, Path]]) -> None:
             await asyncio.to_thread(_move, trashed, home)
 
 
+async def likeness_to(s: AsyncSession, track_id: int, path: Path) -> float | None:
+    """How alike a file sounds to the one the track has, 0…1 (None: it could not be told)."""
+    old = (await s.execute(select(TrackFile).where(TrackFile.track_id == track_id).options(undefer(TrackFile.chroma))
+                           .order_by(TrackFile.id.desc()).limit(1))).scalar_one_or_none()
+    if old is None:
+        return None
+    mine = old.chroma
+    if not mine:  # a file from before the pictures of sound, or one brought back from the trash
+        drawn = await acoustic.of_file(library_abs(old.path))
+        mine = drawn[0] if drawn else None
+        old.chroma = mine or b""
+    got = await acoustic.of_file(path)
+    if not mine or not got:
+        return None
+    return round(await asyncio.to_thread(acoustic.likeness, got[0], mine), 3)
+
+
+async def take_picked(s: AsyncSession, user_id: int, track: Track, path: Path, *, codec: str | None, bitrate_kbps: int | None,
+                      provider: str | None, source_url: str | None, duration_s: float | None, likeness: float | None) -> Upgrade:
+    """Put a file the listener picked themself in the place of the track's own — whatever it sounds like: a version
+    without the censor's cuts, another master, are picked on purpose. It is written down as any replacement, so the
+    two can be heard side by side and the old one taken back («Качество звука» → «Заменено»)."""
+    old = (await current_files(s, [track.id])).get(track.id)
+    row = Upgrade(user_id=user_id, track_id=track.id, kind="picked", state="replaced", codec=codec, bitrate_kbps=bitrate_kbps,
+                  likeness=likeness, provider=provider, source_url=source_url, note="файл выбран вручную",
+                  was_codec=old.codec if old else None, was_kbps=old.bitrate_kbps if old else None)
+    s.add(row)
+    row.was_path = await put(s, track.id, path, user_id=user_id, codec=codec, bitrate_kbps=bitrate_kbps, provider=provider,
+                             source_url=source_url, duration_s=duration_s)
+    await s.flush()
+    return row
+
+
 def staged(row: Upgrade) -> Path | None:
     p = get_settings().staging_dir / Path(row.staged_path) if row.staged_path else None
     return p if p is not None and p.is_file() else None

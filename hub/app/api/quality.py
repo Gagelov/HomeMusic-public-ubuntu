@@ -185,3 +185,146 @@ async def peaks(row_id: int, user: User = Depends(current_user), s: AsyncSession
         except HTTPException:
             out[which] = []
     return out
+
+
+# --- another file for a track, picked by the listener ------------------------------------------------------------
+
+
+class TrackFileOut(BaseModel):
+    """A track of the library and the file it plays from, as «Найти другой файл» shows it."""
+
+    track_id: int
+    title: str
+    artist: str
+    duration_s: int | None = None
+    cover_url: str | None = None
+    explicit: bool | None = None
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    source: str | None = None
+    name: str | None = None  # the file's own name
+
+
+class PickIn(BaseModel):
+    """A file to weigh or to take: one the search showed (`ref`: "file:<provider>:<id>") or the page of a track at
+    a source (`url`). `sure`: take it though it does not sound like the track's own."""
+
+    ref: str | None = Field(default=None, max_length=300)
+    url: str | None = Field(default=None, max_length=2048)
+    sure: bool = False
+
+
+class PickOut(BaseModel):
+    likeness: float | None = None  # how alike it sounds to the track's own file, 0…1 (None: not told)
+    verdict: str  # same / alike / other / unknown
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    duration_s: int | None = None
+    better: bool = False  # the better file of the two
+    taken: bool = False  # it is the track's file now
+
+
+async def _track_and_file(s: AsyncSession, track_id: int) -> tuple[Track, TrackFile]:
+    t = await s.get(Track, track_id)
+    f = await current_file(s, track_id) if t is not None else None
+    if t is None or f is None:
+        raise HTTPException(404, "У трека нет файла в библиотеке")
+    return t, f
+
+
+@router.get("/track/{track_id}", response_model=TrackFileOut)
+async def track_file(track_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    t, f = await _track_and_file(s, track_id)
+    return TrackFileOut(track_id=t.id, title=t.title, artist=t.artist, duration_s=t.duration_s, cover_url=_cover(t),
+                        explicit=t.explicit, codec=f.codec, bitrate_kbps=f.bitrate_kbps, source=f.source,
+                        name=f.path.rsplit("/", 1)[-1])
+
+
+@router.get("/track/{track_id}/audio")
+async def track_audio(track_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    """The file the track plays from, to hear it beside the ones found."""
+    _, f = await _track_and_file(s, track_id)
+    path = library_abs(f.path)
+    if not path.is_file():
+        raise HTTPException(404, "Файла нет")
+    return FileResponse(path, headers={"Cache-Control": "no-store"})
+
+
+async def _fetch_pick(body: PickIn, t: Track):
+    """The file a pick names, on the Hub's disk (kept for a while: weighed first, taken after): (path, candidate)."""
+    import hashlib
+
+    from app import listen
+    from app.api.downloads import candidate_from_url
+    from app.config import get_settings
+    from app.providers.base import TrackQuery
+    from app.services import svc
+
+    if body.url:
+        cand = await candidate_from_url(body.url, TrackQuery(artist=t.artist, title=t.title))
+    elif body.ref:
+        try:
+            cand = (await listen.choose(body.ref)).candidate
+        except listen.ListenError as e:
+            raise HTTPException(e.status, str(e)) from e
+    else:
+        raise HTTPException(400, "Не указан файл")
+    provider = svc.providers.get(cand.provider) if cand is not None else None
+    if cand is None or provider is None:
+        raise HTTPException(404, "Файл не найден: повторите поиск")
+    key = hashlib.md5(f"{cand.provider}:{cand.provider_id}".encode()).hexdigest()[:16]
+    folder = get_settings().staging_dir / "picks" / key
+    have = [p for p in folder.glob("*") if p.is_file()] if folder.is_dir() else []
+    if have:
+        return have[0], cand
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        return await provider.fetch(cand, folder), cand
+    except Exception as e:
+        raise HTTPException(502, f"Источник не отдал файл: {e}") from e
+
+
+async def _weigh(s: AsyncSession, t: Track, f: TrackFile, body: PickIn):
+    from app.library import acoustic, probe, quality
+
+    path, cand = await _fetch_pick(body, t)
+    try:
+        info = await probe.probe(path)
+    except Exception:
+        info = None
+    alike = await upgrade.likeness_to(s, t.id, path)
+    codec, kbps = (info.codec, info.bitrate_kbps) if info else (None, cand.bitrate_kbps)
+    verdict = "unknown" if alike is None else "same" if alike >= acoustic.SAME else "alike" if alike >= acoustic.ALIKE else "other"
+    out = PickOut(likeness=alike, verdict=verdict, codec=codec, bitrate_kbps=kbps,
+                  duration_s=round(info.duration_s) if info and info.duration_s else cand.duration_s,
+                  better=quality.better(codec, kbps, f.codec, f.bitrate_kbps))
+    return out, path, cand, info
+
+
+@router.post("/track/{track_id}/weigh", response_model=PickOut)
+async def weigh(track_id: int, body: PickIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    """Download a file found for the track and say how it compares with the track's own: by the sound, and as a file."""
+    t, f = await _track_and_file(s, track_id)
+    return (await _weigh(s, t, f, body))[0]
+
+
+@router.post("/track/{track_id}/take", response_model=PickOut)
+async def take(track_id: int, body: PickIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    """Put the picked file in the place of the track's own. One that does not sound like the same recording is taken
+    only when the listener says so (`sure`): 409 says how alike it is."""
+    import shutil
+
+    t, f = await _track_and_file(s, track_id)
+    out, path, cand, info = await _weigh(s, t, f, body)
+    if out.verdict != "same" and not body.sure:
+        raise HTTPException(409, {"likeness": out.likeness, "verdict": out.verdict})
+    folder = path.parent
+    await upgrade.take_picked(s, user.id, t, path, codec=out.codec, bitrate_kbps=out.bitrate_kbps, provider=cand.provider,
+                              source_url=cand.page_url, duration_s=info.duration_s if info else None, likeness=out.likeness)
+    shutil.rmtree(folder, ignore_errors=True)
+    await enqueue_scan(s)
+    await s.commit()
+    notify()
+    bus.publish(user.id, "library", {"kind": "imported", "track_id": t.id})
+    out.taken = True
+    return out
