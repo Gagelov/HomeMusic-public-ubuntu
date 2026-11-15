@@ -16,8 +16,9 @@ const NAMES: Record<string, string> = { deezer: 'Deezer', lastfm: 'Last.fm', cat
  * may be known in several places — a catalog keeps more than one record of some, Last.fm knows them by the name —
  * so before the line stand those places' small round pictures. A tap on them (or on the line) lays them out: each
  * round picture grows into a plate of its own — the service, the name the artist has there, its own numbers — and
- * a tap on a plate opens the artist's page there; the line then stands under the plates. A tap on the line folds
- * them back. Whether they are laid out is kept on the device, for every artist's page. */
+ * a tap on a plate opens the artist's page there. Laid out, the plates say everything the line did, so the line is
+ * not shown: after the plates stands the button that folds them back. Whether they are laid out is kept on the
+ * device, for every artist's page. */
 export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[]; /** the releases of the page, each once */ releases: number }) {
   const [open, setOpen] = useState(() => {
     try {
@@ -87,10 +88,18 @@ export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[
             </span>
           );
         })}
+        {/* laid out, the plates say it all: the line is not repeated — only the way to fold them back */}
+        {open && (
+          <button type="button" onClick={toggle} aria-expanded aria-label="Свернуть" title="Свернуть" className="mb-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-fg/25 bg-bg/60 text-muted transition hover:border-fg hover:text-fg">
+            <Icon name="chevron" size={14} className="-rotate-90" />
+          </button>
+        )}
       </div>
-      <button type="button" onClick={toggle} aria-expanded={open} title={open ? 'Свернуть' : 'Где известен исполнитель'} className="text-left">
-        {line}
-      </button>
+      {!open && (
+        <button type="button" onClick={toggle} aria-expanded={false} title="Где известен исполнитель" className="text-left">
+          {line}
+        </button>
+      )}
     </div>
   );
 }
