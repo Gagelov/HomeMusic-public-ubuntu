@@ -267,11 +267,26 @@ function useTwoFiles() {
 function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening: ReturnType<typeof useTwoFiles>; busy: boolean; onYes: () => void; onNo: () => void }) {
   const peaks = useAsync((s) => api.qualityPeaks(r.id, s), [r.id]);
   const done = r.state === 'replaced'; // replaced already: the file it had beside the one it has, the new one taken
-  const lane = (which: 'current' | 'found' | 'was', label: string, words: string, good: boolean, taken = false) => {
+  // where the two files part though they are one recording: the places a censor's cut shows as
+  const gaps = peaks.data?.gaps ?? [];
+  type Which = 'current' | 'found' | 'was';
+  const [upper, lower]: [Which, Which] = done ? ['was', 'current'] : ['current', 'found'];
+  const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  const lengthOf = (which: Which) => peaks.data?.length?.[which] ?? r.duration_s ?? 0;
+  const hear = (which: Which, at: number) => {
+    const len = lengthOf(which);
+    if (len) listening.play(`${r.id}:${which}`, `/api/quality/${r.id}/audio/${which}`, Math.min(0.999, Math.max(0, (at - 2) / len)));
+  };
+  const lane = (which: Which, label: string, words: string, good: boolean, taken = false) => {
     const key = `${r.id}:${which}`;
     const src = `/api/quality/${r.id}/audio/${which}`;
     const playing = listening.on?.key === key;
     const bars = peaks.data?.[which] ?? [];
+    const len = lengthOf(which);
+    const marked = (i: number) => {
+      const t = ((i + 0.5) / bars.length) * len;
+      return !!len && gaps.some((g) => (which === upper ? t >= g.at && t <= g.to : t >= g.other_at && t <= g.other_to));
+    };
     return (
       <div className="flex items-center gap-3 py-1">
         <span className="w-14 shrink-0 text-[11px] text-dim">{label}</span>
@@ -289,7 +304,7 @@ function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening
           }}
         >
           {bars.length ? (
-            bars.map((v, i) => <span key={i} className={cx('min-w-px flex-1 rounded-sm', playing && i / bars.length <= (listening.on?.at ?? 0) ? 'bg-accent' : 'bg-fg/30')} style={{ height: `${Math.max(6, v)}%` }} />)
+            bars.map((v, i) => <span key={i} className={cx('min-w-px flex-1 rounded-sm', marked(i) ? 'bg-danger' : playing && i / bars.length <= (listening.on?.at ?? 0) ? 'bg-accent' : 'bg-fg/30')} style={{ height: `${Math.max(6, v)}%` }} />)
           ) : (
             <span className="h-1 w-full rounded bg-fg/10" />
           )}
@@ -304,7 +319,22 @@ function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening
       {r.kind === 'identify' && !done && <p className="pb-1 text-xs text-muted">Каталог считает, что это «{r.record}». «Это она» — трек получит её название, альбом и обложку; файл заменится, только если найденный лучше.</p>}
       {done ? lane('was', 'Был', fileWords(r.was_codec, r.was_kbps), false) : lane('current', 'Сейчас', fileWords(r.was_codec, r.was_kbps), false)}
       {done ? lane('current', 'Стал', fileWords(r.codec, r.bitrate_kbps), true, true) : lane('found', 'Найден', fileWords(r.codec, r.bitrate_kbps), true)}
-      {done && <p className="pt-1 text-xs text-muted">Сверка по звуку отличает одну запись от другой, но не цензурную копию от оригинала — это слышно только на слух. Прежний файл хранится 30 дней.</p>}
+      {gaps.length > 0 && (
+        <div className="pt-1 text-xs">
+          <p className="pb-1 text-danger">Файлы расходятся в {gaps.length === 1 ? 'одном месте' : `${gaps.length} местах`} — так выглядит вырезанное или запиканное слово. Послушайте оба:</p>
+          <ul className="space-y-1">
+            {gaps.map((g) => (
+              <li key={g.at} className="flex flex-wrap items-center gap-2">
+                <span className="w-24 tabular-nums text-fg">{clock(g.at)}–{clock(g.to)}</span>
+                <button type="button" onClick={() => hear(upper, g.at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ {done ? 'был' : 'сейчас'}</button>
+                <button type="button" onClick={() => hear(lower, g.other_at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ {done ? 'стал' : 'найден'}</button>
+                {g.quieter && <span className="text-muted">здесь тише файл «{g.quieter === 'upper' ? (done ? 'был' : 'сейчас') : done ? 'стал' : 'найден'}» — похоже, вырезано в нём</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {done && gaps.length === 0 && !peaks.loading && <p className="pt-1 text-xs text-muted">Отличающихся мест не нашлось. Очень короткую вырезку сверка может не заметить — если сомневаетесь, послушайте. Прежний файл хранится 30 дней.</p>}
       <div className="flex flex-wrap items-center gap-2 pt-2">
         <Button small variant="primary" busy={busy && !done} onClick={onYes}>
           {done ? 'Оставить новый' : r.kind === 'identify' ? 'Это она' : 'Заменить'}

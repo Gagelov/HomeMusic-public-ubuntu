@@ -762,6 +762,27 @@ export interface PickOut {
   duration_s?: number | null;
   better: boolean;
   taken: boolean;
+  /** where the two part though they are one recording: the track's file's moments, and which falls quiet there */
+  gaps?: FileGap[];
+}
+
+/** A place where two files of one recording part — what a censor's cut shows as: `at`…`to` in the first file (the
+ * track's own, the upper lane), `other_at`…`other_to` in the second; `quieter` — which of them falls quiet there. */
+export interface FileGap {
+  at: number;
+  to: number;
+  other_at: number;
+  other_to: number;
+  depth: number;
+  quieter?: 'mine' | 'other' | 'upper' | 'lower' | null;
+}
+
+export interface QualityPeaks {
+  current: number[];
+  found: number[];
+  was: number[];
+  gaps: FileGap[];
+  length: Record<string, number | null>;
 }
 
 export interface QualityOut {

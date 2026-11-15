@@ -157,6 +157,11 @@ async def judge(s: AsyncSession, track_id: int, path: Path, codec: str | None, k
     track = await s.get(Track, track_id)
     near = not (duration_s and track and track.duration_s) or abs(duration_s - track.duration_s) <= SAME_LENGTH_S
     if alike >= acoustic.SAME and near:
+        # the same recording — yet a copy with words cut out is that too: where the two part at some places, the
+        # listener hears them and says
+        gaps = await acoustic.differences(library_abs(old.path), path)
+        if gaps:
+            return "ask", f"та же запись (сходство {alike:.2f}), но отличается {places(gaps)} — возможно, в одном из файлов вырезаны слова", alike
         return "replace", f"та же запись (сходство по звуку {alike:.2f})", alike
     return "ask", f"похожая запись (сходство по звуку {alike:.2f}) — возможно, другая версия", alike
 
@@ -212,7 +217,8 @@ async def _settle(s: AsyncSession, meta: dict[str, Any], track_id: int, path: Pa
     found = dict(codec=codec, bitrate_kbps=kbps, likeness=alike, provider=getattr(cand, "provider", None),
                  source_url=getattr(cand, "page_url", None))
     near = not (duration_s and track.duration_s) or abs(duration_s - track.duration_s) <= SAME_LENGTH_S
-    if alike >= acoustic.SAME and near:
+    gaps = await acoustic.differences(library_abs(old.path), path) if alike >= acoustic.SAME and near and better else []
+    if alike >= acoustic.SAME and near and not gaps:
         await adopt(s, track, meta)
         was = None
         if better:
@@ -228,7 +234,9 @@ async def _settle(s: AsyncSession, meta: dict[str, Any], track_id: int, path: Pa
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.unlink(missing_ok=True)
     await asyncio.to_thread(_move, path, dest)
-    words = (f"похожая запись (сходство по звуку {alike:.2f})" if alike < acoustic.SAME else f"звучит так же (сходство {alike:.2f}), но длина другая")
+    words = (f"похожая запись (сходство по звуку {alike:.2f})" if alike < acoustic.SAME
+             else f"та же запись (сходство {alike:.2f}), но отличается {places(gaps)} — возможно, в одном из файлов вырезаны слова" if gaps
+             else f"звучит так же (сходство {alike:.2f}), но длина другая")
     await mark_in(s, meta, state="found", staged_path=rel.as_posix(), note=words, **found)
     return "found", words
 
@@ -364,6 +372,12 @@ async def take_picked(s: AsyncSession, user_id: int, track: Track, path: Path, *
                              source_url=source_url, duration_s=duration_s)
     await s.flush()
     return row
+
+
+def places(gaps: list[dict[str, Any]]) -> str:
+    """Where two files part, in words: «на 1:02», «в 3 местах (0:41, 1:02, 2:10)»."""
+    at = [acoustic.clock(g["at"]) for g in gaps]
+    return f"на {at[0]}" if len(at) == 1 else f"в {len(at)} местах ({', '.join(at[:4])}{'…' if len(at) > 4 else ''})"
 
 
 def staged(row: Upgrade) -> Path | None:

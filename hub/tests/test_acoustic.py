@@ -187,3 +187,25 @@ async def test_a_better_file_takes_the_place_of_a_weak_one(env, tmp_path):
     assert (await c.post(f"/api/quality/{row.id}/accept")).status_code == 409
     assert (await c.post(f"/api/quality/{row.id}/decline")).status_code == 200
     assert (await c.get("/api/quality")).json()["rows"][0]["state"] in ("kept", "queued")
+
+
+def test_where_two_files_of_one_recording_part():
+    """A copy with a second cut out is the same recording — and another sound where the cut is."""
+    from app.library import acoustic
+
+    rnd = random.Random(21)
+    one = [rnd.getrandbits(32) for _ in range(1600)]  # ≈ 200 s
+    noisy = lambda v: v ^ (1 << rnd.randrange(32))  # noqa: E731 — another encoding: a bit of each frame differs
+    copy = [noisy(v) for v in one]
+    assert acoustic.parts(one, 200.0, copy, 200.0) == []
+    cut = list(copy)
+    for i in range(480, 492):  # a second and a half, a minute in
+        cut[i] = rnd.getrandbits(32)
+    (gap,) = acoustic.parts(one, 200.0, cut, 200.0)
+    assert 58 <= gap["at"] <= 61 and 61 <= gap["to"] <= 64 and gap["depth"] < 0.75
+    assert abs(gap["at"] - gap["other_at"]) < 0.2
+    # the cut copy starts two seconds later: the place is told in each file's own time
+    (late,) = acoustic.parts(one, 200.0, cut[16:], 198.0)
+    assert 58 <= late["at"] <= 61 and 56 <= late["other_at"] <= 59
+    # another recording altogether: nothing to lay side by side
+    assert acoustic.parts(one, 200.0, [rnd.getrandbits(32) for _ in range(1600)], 200.0) == []

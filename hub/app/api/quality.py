@@ -177,13 +177,24 @@ async def audio(row_id: int, which: str, user: User = Depends(current_user), s: 
 @router.get("/{row_id}/peaks")
 async def peaks(row_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> dict:
     """The loudness of the two files along their length: what the listener moves through them by."""
+    from app.library import acoustic
+
     row = await _row(s, user, row_id)
-    out = {}
+    out: dict = {}
+    paths = {}
     for which in ("current", "found", "was"):
         try:
-            out[which] = await upgrade.peaks(await _file(s, row, which))
+            paths[which] = await _file(s, row, which)
+            out[which] = await upgrade.peaks(paths[which])
         except HTTPException:
             out[which] = []
+    # where the two files heard side by side part: the upper one's moments (`at`…`to`) and the lower one's
+    # (`other_at`…`other_to`), and which of them falls quiet there — «upper» / «lower»
+    upper, lower = ("was", "current") if "was" in paths else ("current", "found")
+    gaps = await acoustic.differences(paths[upper], paths[lower]) if upper in paths and lower in paths else []
+    out["gaps"] = [{**g, "quieter": {"mine": "upper", "other": "lower"}.get(g.get("quieter"))} for g in gaps]
+    whole = {w: await acoustic.of_whole(paths[w]) for w in (upper, lower) if w in paths}
+    out["length"] = {w: (v[1] if v else None) for w, v in whole.items()}
     return out
 
 
@@ -222,6 +233,9 @@ class PickOut(BaseModel):
     duration_s: int | None = None
     better: bool = False  # the better file of the two
     taken: bool = False  # it is the track's file now
+    # where the two part though they are one recording: the track's file's moments, and which falls quiet there
+    # («mine» — the track's own, «other» — this one): the places a censor's cut shows as
+    gaps: list[dict] = []
 
 
 async def _track_and_file(s: AsyncSession, track_id: int) -> tuple[Track, TrackFile]:
@@ -295,9 +309,10 @@ async def _weigh(s: AsyncSession, t: Track, f: TrackFile, body: PickIn):
     alike = await upgrade.likeness_to(s, t.id, path)
     codec, kbps = (info.codec, info.bitrate_kbps) if info else (None, cand.bitrate_kbps)
     verdict = "unknown" if alike is None else "same" if alike >= acoustic.SAME else "alike" if alike >= acoustic.ALIKE else "other"
+    gaps = await acoustic.differences(library_abs(f.path), path) if verdict == "same" else []
     out = PickOut(likeness=alike, verdict=verdict, codec=codec, bitrate_kbps=kbps,
                   duration_s=round(info.duration_s) if info and info.duration_s else cand.duration_s,
-                  better=quality.better(codec, kbps, f.codec, f.bitrate_kbps))
+                  better=quality.better(codec, kbps, f.codec, f.bitrate_kbps), gaps=gaps)
     return out, path, cand, info
 
 

@@ -21,6 +21,8 @@ import shutil
 from array import array
 from pathlib import Path
 
+from typing import Any
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
@@ -76,6 +78,125 @@ async def of_file(path: Path) -> tuple[bytes, float] | None:
     except Exception as e:
         log.info("fpcalc %s: %r", path.name, e)
         return None
+
+
+WHOLE_S = 1800  # of a file listened to when two files are laid side by side (`parts`): all of it
+_whole: dict[tuple[str, float], tuple[list[int], float]] = {}
+
+
+async def of_whole(path: Path) -> tuple[list[int], float] | None:
+    """The picture of the whole of the file's sound, and the file's length (kept for the Hub's run: a pair is laid
+    side by side more than once)."""
+    if not available():
+        return None
+    try:
+        key = (str(path), path.stat().st_mtime)
+        if key in _whole:
+            return _whole[key]
+        proc = await asyncio.create_subprocess_exec(
+            "fpcalc", "-raw", "-json", "-length", str(WHOLE_S), str(path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), TIMEOUT_S * 3)
+        body = json.loads(out or b"{}")
+        values = [int(v) for v in body.get("fingerprint") or []]
+        if len(values) < MIN_OVERLAP:
+            return None
+        if len(_whole) > 60:
+            _whole.clear()
+        _whole[key] = (values, float(body.get("duration") or 0))
+        return _whole[key]
+    except Exception as e:
+        log.info("fpcalc (whole) %s: %r", path.name, e)
+        return None
+
+
+# Where two files of one recording part. A copy with the rude words cut out is the same recording almost everywhere
+# — its likeness to the uncut one is as high as that of any two encodings (0.93 and over) — and quite another sound
+# for a second or two where the cut is: muted, bleeped, sung over. So the two pictures are laid side by side frame
+# by frame, and the places where they agree far less than they do on the whole are the places to listen to.
+# Measured: a second of silence put into a copy drops the agreement there to 0.6–0.7 (half a second: to about
+# 0.75, at the edge of what is seen); two honest encodings of one master never fell under 0.8 anywhere but at the
+# very ends, where fades and silence differ by themselves.
+PARTS_WINDOW = 6  # frames (≈ 0.75 s) the agreement is averaged over
+PARTS_DROP = 0.2  # how far under the pair's own average a place must fall
+PARTS_EDGE = 20  # frames at each end that are not looked at
+PARTS_MIN_ALIKE = 0.85  # two files less alike than this are not one recording: nothing to lay side by side
+
+
+def parts(a: list[int], da: float, b: list[int], db: float) -> list[dict[str, float]]:
+    """The places where two files of one recording differ: [{at, to — seconds in the first file; other_at, other_to
+    — the same place in the second; depth — the agreement there, 0…1}]. Nothing where the two are not one recording
+    at all, or do not differ anywhere in particular."""
+    if len(a) < MIN_OVERLAP or len(b) < MIN_OVERLAP or not da or not db:
+        return []
+    best, shift = 0.0, 0
+    for sh in range(-SHIFT, SHIFT + 1):  # where the second begins against the first
+        x, y = (a[sh:], b) if sh >= 0 else (a, b[-sh:])
+        n = min(len(x), len(y), 900)
+        if n < MIN_OVERLAP:
+            continue
+        v = sum(32 - (x[i] ^ y[i]).bit_count() for i in range(0, n, 3)) / (32 * len(range(0, n, 3)))
+        if v > best:
+            best, shift = v, sh
+    x, y = (a[shift:], b) if shift >= 0 else (a, b[-shift:])
+    n = min(len(x), len(y))
+    agree = [(32 - (x[i] ^ y[i]).bit_count()) / 32 for i in range(n)]
+    mean = sum(agree) / n
+    if mean < PARTS_MIN_ALIKE:
+        return []
+    half = PARTS_WINDOW // 2
+    smooth = [sum(agree[max(0, i - half): i + half + 1]) / len(agree[max(0, i - half): i + half + 1]) for i in range(n)]
+    spans: list[list[float]] = []
+    start = None
+    for i in range(PARTS_EDGE, n - PARTS_EDGE):
+        low = smooth[i] < mean - PARTS_DROP
+        if low and start is None:
+            start = i
+        if start is not None and (not low or i == n - PARTS_EDGE - 1):
+            if spans and start - spans[-1][1] < 2 * PARTS_WINDOW:  # two dips of one place
+                spans[-1][1], spans[-1][2] = i, min(spans[-1][2], min(smooth[start:i + 1]))
+            else:
+                spans.append([start, i, min(smooth[start:i + 1])])
+            start = None
+    dt_a, dt_b = da / len(a), db / len(b)
+    off_a, off_b = (shift, 0) if shift >= 0 else (0, -shift)
+    # a frame says what sounds a little after it: the place is given a margin on both sides
+    return [{"at": max(0.0, round((i + off_a) * dt_a - 0.5, 1)), "to": round((j + off_a) * dt_a + 1.5, 1),
+             "other_at": max(0.0, round((i + off_b) * dt_b - 0.5, 1)), "other_to": round((j + off_b) * dt_b + 1.5, 1),
+             "depth": round(d, 2)} for i, j, d in spans]
+
+
+async def loudness(path: Path, at: float, to: float) -> float | None:
+    """How loud the file is between two moments (the mean of its samples' sizes), to tell which of two files falls
+    silent at a place where they part."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-v", "error", "-ss", f"{max(0.0, at):.2f}", "-t", f"{max(0.3, to - at):.2f}", "-i", str(path),
+            "-ac", "1", "-ar", "8000", "-f", "s16le", "-", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        raw, _ = await asyncio.wait_for(proc.communicate(), TIMEOUT_S)
+        samples = array("h")
+        samples.frombytes(raw[: len(raw) // 2 * 2])
+        return sum(abs(v) for v in samples) / len(samples) if samples else None
+    except Exception as e:
+        log.info("loudness %s: %r", path.name, e)
+        return None
+
+
+async def differences(mine: Path, other: Path) -> list[dict[str, Any]]:
+    """Where a file parts with another of the same recording (`parts`), each place with which of the two is the
+    quieter there (`quieter`: "mine" / "other" / None — neither clearly): a muted word is a hole in the sound."""
+    a, b = await of_whole(mine), await of_whole(other)
+    if a is None or b is None:
+        return []
+    found: list[dict[str, Any]] = await asyncio.to_thread(parts, a[0], a[1], b[0], b[1])
+    for g in found:
+        x, y = await loudness(mine, g["at"], g["to"]), await loudness(other, g["other_at"], g["other_to"])
+        g["quieter"] = None if not x or not y else "mine" if x * 1.4 < y else "other" if y * 1.4 < x else None
+    return found
+
+
+def clock(s: float) -> str:
+    return f"{int(s) // 60}:{int(s) % 60:02d}"
 
 
 def likeness(a: list[int] | bytes, b: list[int] | bytes) -> float:

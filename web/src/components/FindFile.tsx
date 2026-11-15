@@ -24,6 +24,7 @@ export function FindFile() {
 }
 
 const fileWords = (codec?: string | null, kbps?: number | null) => [codec ? codec.toUpperCase() : null, kbps ? String(kbps) : null].filter(Boolean).join(' ') || '—';
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const CLEAN = /(без мата|цензур|clean|radio edit|радио верси)/i;
 const UNCENSORED = /(без цензур|uncensored|explicit|нецензур)/i;
 
@@ -88,6 +89,19 @@ function Window({ track }: { track: FileSought }) {
       setBusy(null);
       if ('ref' in pick) toast('Источник не отдал файл', 'error');
       return;
+    }
+    const gaps = w.verdict === 'same' ? (w.gaps ?? []) : [];
+    if (gaps.length > 0) {
+      const quiet = gaps.filter((g) => g.quieter === 'other').length;
+      const ok = await confirmDialog({
+        title: 'Файлы расходятся местами',
+        body: `Запись та же, но отличается на ${gaps.map((g) => clock(g.at)).join(', ')}. Так выглядит вырезанное или запиканное слово` + (quiet ? ' — и там тише именно найденный файл' : '') + '. Заменить всё равно? Сравнить и вернуть прежний можно будет в «Качество звука».',
+        okLabel: 'Заменить',
+      });
+      if (!ok) {
+        setBusy(null);
+        return;
+      }
     }
     if (w.verdict !== 'same') {
       const ok = await confirmDialog({
@@ -154,6 +168,11 @@ function Window({ track }: { track: FileSought }) {
             {told && told.likeness != null && (
               <span className={told.verdict === 'same' ? 'text-accent' : told.verdict === 'alike' ? 'text-warn' : 'text-danger'}>
                 {told.verdict === 'same' ? 'та же запись' : told.verdict === 'alike' ? 'похожа' : 'другая запись'} · {told.likeness.toFixed(2)}
+              </span>
+            )}
+            {told && (told.gaps?.length ?? 0) > 0 && (
+              <span className="text-danger" title="Так выглядит вырезанное или запиканное слово">
+                расходится с вашим: {(told.gaps ?? []).map((g) => `${clock(g.at)}${g.quieter === 'other' ? ' (тут тише)' : g.quieter === 'mine' ? ' (у вас тише)' : ''}`).join(', ')}
               </span>
             )}
           </span>

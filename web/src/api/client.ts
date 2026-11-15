@@ -78,6 +78,7 @@ import type {
   CoverInfo,
   FileRowOut,
   PickOut,
+  QualityPeaks,
   QualityOut,
   TrackFileOut,
   SplitAlbums,
@@ -443,7 +444,7 @@ export const api = {
   fileTake: (id: number, pick: { ref?: string; url?: string; sure?: boolean }) => request<PickOut>('POST', `/api/quality/track/${id}/take`, { json: pick }),
   /** Take back the file a track had before a better one was put in its place. */
   qualityRevert: (id: number) => request<OkOut>('POST', `/api/quality/${id}/revert`),
-  qualityPeaks: (id: number, signal?: AbortSignal) => request<{ current: number[]; found: number[]; was: number[] }>('GET', `/api/quality/${id}/peaks`, { signal }),
+  qualityPeaks: (id: number, signal?: AbortSignal) => request<QualityPeaks>('GET', `/api/quality/${id}/peaks`, { signal }),
   /** Which record of the catalog an uploaded file is: `ref` — this one, picked by hand; none — look for it again. */
   matchUpload: (id: number, ref?: string | null) => request<UploadOut>('POST', `/api/uploads/${id}/match`, { json: { ref: ref ?? null } }),
 
