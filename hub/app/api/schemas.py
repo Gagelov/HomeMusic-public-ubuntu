@@ -634,25 +634,40 @@ class UploadOut(BaseModel):
 
 class UploadTrackIn(BaseModel):
     """A file to bring into the library. `catalog`: as the song of the catalog it was told to be
-    (`UploadOut.match`) — the names, the release, the year and the cover are the catalog's then, and the fields
-    below are not read. Else by these fields: `album` empty (or the track's own name) — a single."""
+    (`UploadOut.match`) — its name, artists and number are the catalog's then, and `title`/`artist` are not read.
+    `album_key`: the album of the request it goes into (`UploadCommitIn.albums`) — the album's name, artist, year
+    and cover are said there, once for all its files. No key: by `album` — empty (or the track's own name) is a
+    single, whose picture is `cover`."""
 
     upload_id: int
     catalog: bool = False
     title: str = ""
     artist: str = ""
+    album_key: str | None = Field(default=None, max_length=600)
     album: str | None = None
     album_artist: str | None = None
     year: int | None = None
-    track_no: int | None = None  # its place in the album (none: the file's own)
-    # whose picture the track is filed with: the catalog's, or the one in the file (none: the catalog's for a song
-    # of the catalog, else the file's). An album has one cover — its first file's choice; `own_cover`: the file's
-    # picture is this track's own besides, over the album's (a file whose picture is not its album's)
+    track_no: int | None = None  # its place in the album (none: the catalog's, else the file's own)
+    # a single's picture: the catalog's, or the one in the file (none: the catalog's for a song of the catalog)
     cover: Literal["catalog", "file"] | None = None
-    own_cover: bool = False
     # the library's track this file takes the place of the file of (the upload is the better one): it becomes
     # that track's file, not a track of its own
     replace_track_id: int | None = None
+
+
+class UploadAlbumIn(BaseModel):
+    """An album the files of a request go into, as the listener chose it among what its files and the catalog say.
+    `release_of`: an upload whose catalog record stands on this release — the album is that release then (its kind,
+    its catalog id). The cover: the catalog's picture of that upload's record (`cover_of_match`), or the picture
+    inside an uploaded file (`cover_of_file`); neither — the album keeps the cover it has."""
+
+    key: str = Field(max_length=600)
+    title: str = Field(min_length=1, max_length=512)
+    album_artist: str = Field(min_length=1, max_length=512)
+    year: int | None = None
+    release_of: int | None = None
+    cover_of_match: int | None = None
+    cover_of_file: int | None = None
 
 
 class UploadMatchIn(BaseModel):
@@ -663,6 +678,7 @@ class UploadMatchIn(BaseModel):
 
 class UploadCommitIn(BaseModel):
     tracks: list[UploadTrackIn] = Field(max_length=200)
+    albums: list[UploadAlbumIn] = Field(default_factory=list, max_length=200)
     playlist_ids: list[str] = Field(default_factory=list, max_length=50)  # several playlists at once
     star: bool = False  # the imported tracks go into «Любимое» too
     # the playlist that keeps what was uploaded together («Загружено 14 ноября»): the user's playlist of this name,
@@ -675,6 +691,9 @@ class UploadCommitOut(BaseModel):
     album_ids: list[int] = []  # the albums the files went into, in their order
     track_ids: list[int] = []  # the tracks they became
     weak: int = 0  # how many of them have a weak file: «Качество звука» looks for a better one
+    # how many were filed under their own names with a record of the catalog only like them: «Качество звука»
+    # settles by the sound whether the record is theirs
+    unsure: int = 0
     imported: int
 
 

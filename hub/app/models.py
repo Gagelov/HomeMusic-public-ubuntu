@@ -336,6 +336,10 @@ class Upgrade(Base):
     track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
     item_id: Mapped[int | None] = mapped_column(ForeignKey("download_items.id", ondelete="SET NULL"))
     state: Mapped[str] = mapped_column(String(16), default="queued")
+    # what is looked for: "better" — a better file of the track; "identify" — whether the track is the catalog's
+    # record `meta_json` (a download's meta of it), told by the sound of that record's file
+    kind: Mapped[str] = mapped_column(String(16), default="better")
+    meta_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     staged_path: Mapped[str | None] = mapped_column(String(1024))  # relative to staging/
     codec: Mapped[str | None] = mapped_column(String(16))  # of the file found
     bitrate_kbps: Mapped[int | None] = mapped_column(Integer)

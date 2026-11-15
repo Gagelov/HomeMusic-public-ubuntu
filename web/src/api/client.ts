@@ -75,6 +75,7 @@ import type {
   StarOut,
   StarredOut,
   TasteOnboardingOut,
+  CoverInfo,
   FileRowOut,
   QualityOut,
   SplitAlbums,
@@ -422,6 +423,8 @@ export const api = {
   },
   deleteUpload: (id: number) => request<OkOut>('DELETE', `/api/uploads/${id}`),
   commitUploads: (payload: UploadCommitIn) => request<UploadCommitOut>('POST', '/api/uploads/commit', { json: payload }),
+  /** What the catalog's picture of an uploaded file's record is: its size in pixels, its kind, its weight. */
+  uploadCatalogCover: (id: number) => request<CoverInfo>('GET', `/api/uploads/${id}/catalog-cover`),
   /** Half a minute of the catalog's record an uploaded file was told to be: where it is heard from. */
   uploadPreview: (id: number) => request<{ url: string }>('GET', `/api/uploads/${id}/preview`),
   /** «Качество звука»: the weak files looked for anew, and how many nothing was looked for yet. */

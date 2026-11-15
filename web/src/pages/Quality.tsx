@@ -14,7 +14,11 @@ import { Steps } from './Upload';
  * track has (the Hub: `library/upgrade.py`): the same recording in a better file takes the old one's place by
  * itself («Заменено»); one that is only alike — a version, a remaster — is kept aside («Ждут решения») and the
  * listener says: both files play whole here, each with the picture of its loudness to move through it by. Nothing
- * better — the row says why. The search goes on in the Hub: the page may be closed and come back to. */
+ * better — the row says why. The search goes on in the Hub: the page may be closed and come back to.
+ *
+ * The same page settles what the first step could not (`kind` "identify"): a file the catalog only had something
+ * like went in under its own names; here the record's file is downloaded and the two are compared by the sound —
+ * the same recording takes the record's names and cover by itself, one only alike waits for the listener's word. */
 
 type Tab = 'found' | 'replaced' | 'none' | 'queue';
 const TABS: [Tab, string][] = [
@@ -58,7 +62,7 @@ export function QualityPage() {
   const say = async (r: QualityRow, yes: boolean) => {
     setBusy(`${r.id}`);
     listening.stop();
-    const ok = await attempt(() => (yes ? api.qualityAccept(r.id) : api.qualityDecline(r.id)), yes ? 'Файл заменён' : undefined);
+    const ok = await attempt(() => (yes ? api.qualityAccept(r.id) : api.qualityDecline(r.id)), yes ? (r.kind === 'identify' ? 'Данные каталога применены' : 'Файл заменён') : undefined);
     setBusy(null);
     if (!ok) return;
     if (yes) window.dispatchEvent(new Event(EDITED_EVENT));
@@ -146,6 +150,7 @@ export function QualityPage() {
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[15px]">{r.title}</span>
                           <span className="block truncate text-[13px] text-muted">{r.artist}</span>
+                          {r.kind === 'identify' && r.record && r.state !== 'replaced' && <span className="block truncate text-[11px] text-dim">та ли это запись: {r.record}</span>}
                         </span>
                         <RowState r={r} />
                       </div>
@@ -190,6 +195,7 @@ function RowState({ r }: { r: QualityRow }) {
     );
   if (r.state === 'found') return pill(`сходство ${(r.likeness ?? 0).toFixed(2)}`, 'bg-warn/15 text-warn', r.note ?? undefined);
   if (r.state === 'searching') return pill(r.progress > 0 ? `скачиваю · ${Math.round(r.progress * 100)}%` : 'ищу…', 'bg-info/15 text-info');
+  if (r.state === 'queued' && r.kind === 'identify') return pill('в очереди · уточняю запись', 'bg-fg/5 text-muted', 'Скачаю запись, которую предлагает каталог, и сравню с вашим файлом по звуку');
   if (r.state === 'queued') return pill(r.known ? 'в очереди' : 'в очереди · нет в каталоге', 'bg-fg/5 text-muted', r.known ? undefined : 'Каталог не знает эту песню: ищу по названию из файла, это дольше и реже удаётся');
   return (
     <span className="flex min-w-0 shrink items-center gap-2">
@@ -270,14 +276,15 @@ function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening
   };
   return (
     <div className="pt-2 md:pl-[3.25rem]">
+      {r.kind === 'identify' && <p className="pb-1 text-xs text-muted">Каталог считает, что это «{r.record}». «Это она» — трек получит её название, альбом и обложку; файл заменится, только если найденный лучше.</p>}
       {lane('current', 'Сейчас', fileWords(r.was_codec, r.was_kbps), false)}
       {lane('found', 'Найден', fileWords(r.codec, r.bitrate_kbps), true)}
       <div className="flex flex-wrap items-center gap-2 pt-2">
         <Button small variant="primary" busy={busy} onClick={onYes}>
-          Заменить
+          {r.kind === 'identify' ? 'Это она' : 'Заменить'}
         </Button>
         <Button small disabled={busy} onClick={onNo}>
-          Оставить мой
+          {r.kind === 'identify' ? 'Нет, другая запись' : 'Оставить мой'}
         </Button>
         <span className="min-w-0 truncate text-[11px] text-dim">
           {[r.provider ? `источник: ${providerLabel(r.provider)}` : null, r.duration_s ? fmtDuration(r.duration_s) : null, r.note].filter(Boolean).join(' · ')}

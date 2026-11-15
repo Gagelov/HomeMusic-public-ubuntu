@@ -760,3 +760,27 @@ async def test_a_file_tells_how_it_came(env):
     # the player's answer says so too
     r = (await c.get("/api/listen", params={"ref": f"nd:{item['nd_song_id']}"})).json()
     assert r["kind"] == "library" and r["journal"] and r["track_id"] == item["track_id"]
+
+
+async def test_an_album_is_said_once_for_its_files(env, tmp_path):
+    """The files of an album get its name, artist and year from the album of the request, whatever each file says;
+    the picture inside one of them is the album's cover."""
+    c = env["client"]
+    files = []
+    for i in range(2):
+        p = make_mp3(tmp_path / f"a{i}.mp3", seconds=2)
+        files.append(("files", (f"Кто - Песня {i}.mp3", p.read_bytes(), "audio/mpeg")))
+    ups = (await c.post("/api/uploads", files=files)).json()
+    assert [(u["artist"], u["title"]) for u in ups] == [("Кто", "Песня 0"), ("Кто", "Песня 1")]  # read out of the names
+    payload = {
+        "albums": [{"key": "k", "title": "Сборник", "album_artist": "Кто", "year": 2020}],
+        "tracks": [{"upload_id": u["id"], "title": u["title"], "artist": u["artist"], "album_key": "k", "track_no": i + 1}
+                   for i, u in enumerate(ups)],
+    }
+    r = await c.post("/api/uploads/commit", json=payload)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["imported"] == 2 and len(out["album_ids"]) == 1 and out["unsure"] == 0
+    album = (await c.get(f"/api/library/albums/{out['album_ids'][0]}")).json()
+    assert (album["title"], album["album_artist"], album["year"]) == ("Сборник", "Кто", 2020)
+    assert sorted(t["track_no"] for t in album["tracks"]) == [1, 2]

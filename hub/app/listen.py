@@ -634,6 +634,8 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
     otherwise all sources at once and nothing opened (the stream opens it). `remembered`: a remembered pick
     may be used."""
     t0 = time.monotonic()
+    if ref.startswith(UPLOAD_REF + ":"):
+        return await _resolve_upload(ref)
     try:
         src, id_ = split_ref(ref)
     except ValueError as e:
@@ -687,6 +689,25 @@ async def _resolve_file(ref: str, *, probe: bool, remembered: bool) -> Choice:
         raise ListenError(502, "Источник не отдаёт этот файл")
     _choices[ref] = choice
     return choice
+
+
+UPLOAD_REF = "up"  # "up:<upload>": a file brought to the Hub that is not in the library yet («Загрузить файлы»)
+
+
+async def _resolve_upload(ref: str) -> Choice:
+    """An uploaded file waiting to be brought in: it plays as it lies in staging."""
+    from app.library.recognize import names_of
+    from app.models import Upload
+
+    ident = ref.split(":", 1)[1]
+    async with session_scope() as s:
+        u = await s.get(Upload, int(ident)) if ident.isdigit() else None
+        found = (u.staging_path, u.probed_tags_json or {}, u.orig_name, u.duration_s) if u is not None and u.status == "uploaded" else None
+    path = get_settings().staging_dir / found[0] if found else None
+    if not found or path is None or not path.is_file():
+        raise ListenError(404, "Этого файла уже нет среди загруженных")
+    artist, title = names_of(found[1], found[2])
+    return Choice(ref, "library", artist, title, round(found[3]) if found[3] else None, path=path)
 
 
 async def _resolve_song(ref: str, song_id: str) -> Choice:

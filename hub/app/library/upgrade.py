@@ -13,6 +13,12 @@ against the one the track has:
 Nothing better: the old file stays, and nobody is asked anything. What became of each track is written down
 (`upgrades`) and shown on «Качество звука».
 
+The same step settles what the first could not. A file the catalog only has something *like* — another length,
+«demo» in its name — was filed under its own names, with the record kept (`start_identify`). The record's file is
+downloaded and compared with the track's by the sound: the same recording — the track is the record's song after
+all, and takes its names, its release and its cover (`adopt`), and the file too when it is the better one; only
+alike — the listener hears both and says; another recording — the track stays as it is.
+
 The track stays the track: its places in playlists, its likes, its lyrics, its tags and its names are its own; only
 the file under it changes. The old file goes to the trash folder with the rest of what is deleted.
 """
@@ -84,6 +90,30 @@ async def start(s: AsyncSession, user_id: int, track_ids: list[int]) -> int:
     return len(tracks)
 
 
+async def start_identify(s: AsyncSession, user_id: int, track: Track, meta: dict[str, Any]) -> None:
+    """Queue the settling of what the track is: `meta` — the catalog's record it may be (a download's meta)."""
+    from app.jobs.queue import enqueue as enqueue_job
+    from app.providers.base import TrackQuery
+
+    f = (await current_files(s, [track.id])).get(track.id)
+    batch = DownloadBatch(user_id=user_id, origin="upgrade", title="Качество звука")
+    s.add(batch)
+    await s.flush()
+    row = Upgrade(user_id=user_id, track_id=track.id, kind="identify", meta_json=meta,
+                  was_codec=f.codec if f else None, was_kbps=f.bitrate_kbps if f else None)
+    s.add(row)
+    await s.flush()
+    q = TrackQuery(artist=str(meta.get("artist") or track.artist), title=str(meta.get("title") or track.title),
+                   duration_s=meta.get("duration_s"), isrc=meta.get("isrc"), explicit=meta.get("explicit"))
+    item = DownloadItem(batch_id=batch.id, user_id=user_id, force=True, query_json={
+        "query": q.model_dump(), "upgrade": row.id, "replaces_song": f.nd_song_id if f else None,
+        "meta": {**meta, "upgrade_of": track.id, "upgrade_row": row.id, "identify": True}})
+    s.add(item)
+    await s.flush()
+    row.item_id = item.id
+    await enqueue_job(s, "download_item", {"item_id": item.id})
+
+
 def of_meta(meta: dict[str, Any]) -> int | None:
     """The track a download is looking for a better file of (None: an ordinary download)."""
     v = meta.get("upgrade_of")
@@ -137,6 +167,8 @@ async def take(meta: dict[str, Any], path: Path, check: Any, cand: Any, user_id:
     info = check.info
     codec, kbps = (info.codec, info.bitrate_kbps) if info else (None, getattr(cand, "bitrate_kbps", None))
     async with session_scope() as s:
+        if meta.get("identify"):
+            return await _settle(s, meta, track_id, path, codec, kbps, info.duration_s if info else None, cand, user_id)
         verdict, words, alike = await judge(s, track_id, path, codec, kbps, info.duration_s if info else None)
         if verdict == "no":
             return None, words
@@ -154,6 +186,93 @@ async def take(meta: dict[str, Any], path: Path, check: Any, cand: Any, user_id:
         await asyncio.to_thread(_move, path, dest)
         await mark_in(s, meta, state="found", staged_path=rel.as_posix(), **found)
         return "found", words
+
+
+async def _settle(s: AsyncSession, meta: dict[str, Any], track_id: int, path: Path, codec: str | None, kbps: int | None,
+                  duration_s: float | None, cand: Any, user_id: int) -> tuple[str | None, str]:
+    """The file of the record the track may be, against the track's own: see the module's last paragraph."""
+    old = (await s.execute(select(TrackFile).where(TrackFile.track_id == track_id).options(undefer(TrackFile.chroma))
+                           .order_by(TrackFile.id.desc()).limit(1))).scalar_one_or_none()
+    track = await s.get(Track, track_id)
+    if old is None or track is None:
+        return None, "у трека нет файла"
+    mine = old.chroma
+    if not mine:
+        drawn = await acoustic.of_file(library_abs(old.path))
+        mine = drawn[0] if drawn else None
+    got = await acoustic.of_file(path)
+    if not mine or not got:
+        return None, "не удалось сравнить по звуку"
+    alike = round(await asyncio.to_thread(acoustic.likeness, got[0], mine), 3)
+    if alike < acoustic.ALIKE:
+        return None, f"по звуку это другая запись (сходство {alike:.2f})"
+    better = quality.better(codec, kbps, old.codec, old.bitrate_kbps)
+    found = dict(codec=codec, bitrate_kbps=kbps, likeness=alike, provider=getattr(cand, "provider", None),
+                 source_url=getattr(cand, "page_url", None))
+    near = not (duration_s and track.duration_s) or abs(duration_s - track.duration_s) <= SAME_LENGTH_S
+    if alike >= acoustic.SAME and near:
+        await adopt(s, track, meta)
+        if better:
+            await put(s, track_id, path, user_id=user_id, **{k: found[k] for k in ("codec", "bitrate_kbps", "provider", "source_url")},
+                      duration_s=duration_s)
+        else:
+            path.unlink(missing_ok=True)
+        words = f"та же запись (сходство по звуку {alike:.2f}): взяты данные каталога" + (", файл заменён лучшим" if better else ", файл оставлен ваш")
+        await mark_in(s, meta, state="replaced", staged_path=None, note=words, **found)
+        return "replaced", words
+    rel = Path("upgrades") / f"{meta.get('upgrade_row') or track_id}{path.suffix.lower()}"
+    dest = get_settings().staging_dir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.unlink(missing_ok=True)
+    await asyncio.to_thread(_move, path, dest)
+    words = (f"похожая запись (сходство по звуку {alike:.2f})" if alike < acoustic.SAME else f"звучит так же (сходство {alike:.2f}), но длина другая")
+    await mark_in(s, meta, state="found", staged_path=rel.as_posix(), note=words, **found)
+    return "found", words
+
+
+async def adopt(s: AsyncSession, track: Track, meta: dict[str, Any]) -> None:
+    """The track is the catalog's record `meta` after all: it takes the record's names, its number, its release and
+    the release's cover — as a file found in the catalog is filed in the first step."""
+    from app.jobs.downloads import _parse_date, fetch_cover
+    from app.library import editor
+    from app.library.importer import _write_cover_file, album_reldir, get_or_create_album
+    from app.library.tracks import by_ref
+
+    released = _parse_date(meta.get("release_date"))
+    single = not meta.get("album")
+    spec = ImportSpec(
+        artist=meta.get("artist") or track.artist, title=meta.get("title") or track.title, artists=meta.get("artists") or [],
+        album=meta.get("album") or meta.get("title") or track.title, album_artist=meta.get("album_artist") or meta.get("artist"),
+        year=meta.get("year") or (released.year if released else None), release_date=released,
+        release_type={"compile": "compilation"}.get(meta.get("record_type", ""), meta.get("record_type")) or ("single" if single else "album"),
+        deezer_album_id=meta.get("deezer_album_id"), upc=meta.get("upc"), genre=meta.get("genre"))
+    async with library_lock:
+        album = await get_or_create_album(s, spec)
+        await s.flush()
+        folder = library_abs(album_reldir(album))
+        if not (folder / "cover.jpg").is_file():
+            cover = await fetch_cover(meta.get("cover_url"))
+            if cover:
+                from app.library import tagger
+
+                await asyncio.to_thread(_write_cover_file, folder, tagger.prepare_cover(cover))
+                album.cover_path = (album_reldir(album) / "cover.jpg").as_posix()
+    # a name the catalog only writes in other letters' case stays as the file has it
+    if spec.title.casefold() != track.title.casefold():
+        track.title = spec.title
+    track.artist = spec.artist
+    track.track_no = meta.get("track_no") or (1 if single else track.track_no)
+    track.disc_no = meta.get("disc_no") or track.disc_no
+    track.isrc = (str(meta["isrc"]).upper() if meta.get("isrc") else track.isrc)
+    ref = str(meta.get("track_ref") or "")
+    if ref and await by_ref(s, ref) is None:
+        track.ref = ref
+    track.catalog = {**(track.catalog or {}), "artists": meta.get("artists") or [], "cover_url": meta.get("cover_url")}
+    if track.album_id != album.id:
+        await editor.move_tracks(s, [track.id], album)
+    else:
+        await editor.update_track(s, track, title=track.title)
+    await s.flush()
 
 
 async def mark_in(s: AsyncSession, meta: dict[str, Any], **fields: Any) -> None:
@@ -220,6 +339,15 @@ async def accept(s: AsyncSession, row: Upgrade, user_id: int) -> None:
     path = staged(row)
     if row.state != "found" or path is None:
         raise ValueError("Файл уже не ждёт решения")
+    track = await s.get(Track, row.track_id)
+    old = (await current_files(s, [row.track_id])).get(row.track_id)
+    if row.kind == "identify" and track is not None:  # «это она»: the record's names — and its file if it is better
+        await adopt(s, track, row.meta_json or {})
+        if old is not None and not quality.better(row.codec, row.bitrate_kbps, old.codec, old.bitrate_kbps):
+            path.unlink(missing_ok=True)
+            row.state, row.staged_path = "replaced", None
+            row.note = "вы подтвердили запись: взяты данные каталога, файл оставлен ваш"
+            return
     await put(s, row.track_id, path, user_id=user_id, codec=row.codec, bitrate_kbps=row.bitrate_kbps,
               provider=row.provider, source_url=row.source_url)
     row.state, row.staged_path = "replaced", None

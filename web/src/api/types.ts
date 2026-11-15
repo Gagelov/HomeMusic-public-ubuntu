@@ -553,6 +553,14 @@ export interface ClearOut {
 
 // --- uploads ----------------------------------------------------------------------------------
 
+export interface CoverInfo {
+  hash?: string;
+  w?: number;
+  h?: number;
+  format?: string | null;
+  size?: number;
+}
+
 export interface UploadTags {
   title?: string | null;
   artist?: string | null;
@@ -563,8 +571,9 @@ export interface UploadTags {
   year?: number | null;
   genre?: string | null;
   has_cover?: boolean;
-  /** the mark of the file's picture: files of one album whose pictures differ are told by it */
-  cover_hash?: string | null;
+  /** the picture inside the file: the mark of its bytes (one picture in two files is told by it), its size in
+   * pixels, its kind and its weight */
+  cover_info?: CoverInfo | null;
   duration_s?: number | null;
   [key: string]: unknown;
 }
@@ -623,10 +632,23 @@ export interface UploadTrackIn {
   year?: number | null;
   /** the library's track whose file this one takes the place of */
   replace_track_id?: number | null;
-  /** whose picture the track is filed with (an album has one cover: its first file's choice) */
+  /** the album of the request it goes into (`UploadCommitIn.albums`); none: a single */
+  album_key?: string | null;
+  /** a single's picture: the catalog's or the one in the file */
   cover?: 'catalog' | 'file' | null;
-  /** the file's picture is this track's own besides, over its album's */
-  own_cover?: boolean;
+}
+
+/** An album the files of a request go into, as it was chosen among what its files and the catalog say.
+ * `release_of`: an upload whose catalog record stands on this release; the cover — the catalog's picture of an
+ * upload's record, or the picture inside an uploaded file. */
+export interface UploadAlbumIn {
+  key: string;
+  title: string;
+  album_artist: string;
+  year?: number | null;
+  release_of?: number | null;
+  cover_of_match?: number | null;
+  cover_of_file?: number | null;
 }
 
 /** The song of the catalog an uploaded file was told to be: `found` — it is that song; `doubt` — a record is like
@@ -657,6 +679,7 @@ export interface SplitAlbums {
 
 export interface UploadCommitIn {
   tracks: UploadTrackIn[];
+  albums?: UploadAlbumIn[];
   /** the playlists the imported tracks go into as well */
   playlist_ids?: string[];
   /** the imported tracks go into «Любимое» too */
@@ -674,6 +697,8 @@ export interface UploadCommitOut {
   track_ids: number[];
   /** how many of them have a weak file: «Качество звука» looks for a better one */
   weak: number;
+  /** how many were filed under their own names with a record only like them: the sound settles it there */
+  unsure: number;
 }
 
 /** A track of «Качество звука»: a weak file a better one is looked for in the place of. `state`: queued, searching,
@@ -685,6 +710,9 @@ export interface QualityRow {
   artist: string;
   cover_url?: string | null;
   state: 'queued' | 'searching' | 'found' | 'replaced' | 'none' | 'kept';
+  /** identify: whether the track is the catalog's record `record`, told by the sound */
+  kind: 'better' | 'identify';
+  record?: string | null;
   progress: number;
   /** the catalog knows the song */
   known: boolean;

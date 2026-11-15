@@ -252,17 +252,69 @@ async def resolve_catalog_track(q: TrackQuery) -> CatalogTrack | None:
 # --- candidates ------------------------------------------------------------------------------
 
 
+# The catalog's pictures live under several host names with the same paths, and they refuse this network by spells:
+# the same address gives the picture now and 403 a moment later, and after a run of requests all of them refuse for
+# a while. So a picture is asked of each name in turn, unhurriedly, and one that came is kept on the Hub's disk
+# (`staging/covers`): it is asked for once. One that does not come is owed (`owe_cover`): asked for again later.
+_COVER_HOSTS = ("cdn-images.dzcdn.net", "e-cdns-images.dzcdn.net", "e-cdn-images.dzcdn.net")
+_COVER_PACE_S = 0.25
+_cover_gate = asyncio.Lock()
+
+
+def _cover_kept(url: str) -> Path:
+    import hashlib
+
+    return get_settings().staging_dir / "covers" / f"{hashlib.md5(url.encode()).hexdigest()}.img"
+
+
 async def fetch_cover(url: str | None) -> bytes | None:
     if not url:
         return None
-    try:
-        async with make_client(timeout=30) as c:
-            r = await c.get(url)
-            if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
-                return r.content
-    except httpx.HTTPError as e:
-        log.warning("cover download failed %s: %r", url, e)
+    kept = _cover_kept(url)
+    if kept.is_file():
+        return await asyncio.to_thread(kept.read_bytes)
+    named = next((h for h in _COVER_HOSTS if f"//{h}/" in url), None)
+    tries = list(dict.fromkeys(url.replace(named, h) for h in (*_COVER_HOSTS[1:], _COVER_HOSTS[0]))) if named else [url]
+    async with _cover_gate:
+        if kept.is_file():  # it came while this request waited its turn
+            return await asyncio.to_thread(kept.read_bytes)
+        for u in tries:
+            await asyncio.sleep(_COVER_PACE_S)
+            try:
+                async with make_client(timeout=30) as c:
+                    r = await c.get(u)
+                    if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
+                        kept.parent.mkdir(parents=True, exist_ok=True)
+                        await asyncio.to_thread(kept.write_bytes, r.content)
+                        return r.content
+            except httpx.HTTPError as e:
+                log.warning("cover download failed %s: %r", u, e)
+    log.info("cover not given just now: %s", url)
     return None
+
+
+async def owe_cover(s: AsyncSession, album_id: int, url: str) -> None:
+    """The album is to have the catalog's picture `url`, and the catalog did not give it just now: it is asked for
+    again later, and put on the album when it comes (`handle_album_cover`)."""
+    await enqueue(s, "album_cover", {"album_id": album_id, "url": url}, max_attempts=12)
+
+
+@handler("album_cover")
+async def handle_album_cover(job: Job) -> None:
+    from app.library import editor
+    from app.models import Album
+
+    url = str(job.payload_json["url"])
+    cover = await fetch_cover(url)
+    if cover is None:
+        raise RuntimeError("каталог пока не отдаёт обложку")
+    async with session_scope() as s:
+        album = await s.get(Album, int(job.payload_json["album_id"]))
+        if album is None:
+            return
+        await editor.set_album_cover(s, album, cover)
+        await enqueue_scan(s)
+    notify()
 
 
 def _parse_date(v: Any) -> date | None:
@@ -531,7 +583,7 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
             path.unlink(missing_ok=True)
             await step(item_id, "bad", f"Не подошёл: {check.reason}", cand)
             continue
-        if check.blown_from_kbps and upgrade_of:  # made of a poorer file: no better than what there is
+        if check.blown_from_kbps and upgrade_of and not meta.get("identify"):  # made of a poorer file: no better than what there is
             last_reason = f"{cand.provider}: по звуку около {check.blown_from_kbps} кбит/с"
             path.unlink(missing_ok=True)
             await step(item_id, "bad", f"Не подошёл на замену: по звуку около {check.blown_from_kbps} кбит/с", cand)

@@ -37,6 +37,8 @@ class QualityRow(BaseModel):
     artist: str
     cover_url: str | None = None
     state: str  # queued / searching / found / replaced / none / kept
+    kind: str = "better"  # "identify": whether the track is the catalog's record `record`, told by the sound
+    record: str | None = None  # that record, in words: «Название — Исполнитель · альбом»
     progress: float = 0  # of the download under way, 0…1
     known: bool = False  # the catalog knows the song: it is found sooner and surer
     was_codec: str | None = None
@@ -53,6 +55,13 @@ class QualityRow(BaseModel):
 class QualityOut(BaseModel):
     rows: list[QualityRow]
     weak: int  # weak files the asker looks after that nothing was looked for yet
+
+
+def _record(meta: dict | None) -> str | None:
+    m = meta or {}
+    if not m.get("title"):
+        return None
+    return f"{m['title']} — {m.get('artist') or ''}" + (f" · «{m['album']}»" if m.get("album") else "")
 
 
 def _cover(t: Track) -> str | None:
@@ -81,6 +90,7 @@ async def listed(user: User = Depends(current_user), s: AsyncSession = Depends(g
         seen.add(t.id)
         out.append(QualityRow(
             id=row.id, track_id=t.id, title=t.title, artist=t.artist, cover_url=_cover(t), state=row.state,
+            kind=row.kind, record=_record(row.meta_json) if row.kind == "identify" else None,
             progress=float(progress or 0) if row.state == "searching" else 0, known=str(t.ref or "").startswith("dz:"),
             was_codec=row.was_codec, was_kbps=row.was_kbps, codec=row.codec, bitrate_kbps=row.bitrate_kbps,
             likeness=row.likeness, provider=row.provider, note=row.note, duration_s=t.duration_s, updated_at=row.updated_at))
