@@ -399,6 +399,13 @@ async def user_events(s: AsyncSession, user_id: int, days: float = 30, *, kinds:
 # --- «Не нравится» ---------------------------------------------------------------------------------------------
 
 
+async def _of_artist(s: AsyncSession, artist_ref: str):
+    """The marks of an artist: one put on any record a catalog keeps of them is a mark of the artist."""
+    from app.library import artists
+
+    return Dislike.artist_ref.in_((await artists.whole(s, artist_ref))[0])
+
+
 def _target(ref: str | None, nd_song_id: str | None, artist_ref: str | None):
     if artist_ref:
         return Dislike.artist_ref == artist_ref
@@ -414,7 +421,7 @@ async def add_dislike(s: AsyncSession, user_id: int, *, ref: str | None = None, 
     one row (the ids it lacked are filled in). None: nothing to name."""
     if not artist_ref and complete:
         ref, nd_song_id = await Ids(s).complete(ref, nd_song_id)
-    cond = _target(ref, nd_song_id, artist_ref)
+    cond = await _of_artist(s, artist_ref) if artist_ref else _target(ref, nd_song_id, None)
     if cond is None:
         return None
     row = (await s.execute(select(Dislike).where(Dislike.user_id == user_id, cond).limit(1))).scalar_one_or_none()
@@ -432,7 +439,7 @@ async def remove_dislikes(s: AsyncSession, user_id: int, *, ref: str | None = No
                           artist_ref: str | None = None, complete: bool = True) -> int:
     if not artist_ref and complete:
         ref, nd_song_id = await Ids(s).complete(ref, nd_song_id)
-    cond = _target(ref, nd_song_id, artist_ref)
+    cond = await _of_artist(s, artist_ref) if artist_ref else _target(ref, nd_song_id, None)
     if cond is None:
         return 0
     res = await s.execute(delete(Dislike).where(Dislike.user_id == user_id, cond))

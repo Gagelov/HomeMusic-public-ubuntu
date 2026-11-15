@@ -59,9 +59,15 @@ async def _outs(s: AsyncSession, rows: list[Dislike]) -> list[DislikeOut]:
     by_song = dict((await s.execute(select(TrackFile.nd_song_id, TrackFile.track_id)
                                     .where(TrackFile.nd_song_id.in_(songs)))).all()) if songs else {}
     by_ref = dict((await s.execute(select(Track.ref, Track.id).where(Track.ref.in_(refs)))).all()) if refs else {}
+    from app.library import artists
+
+    # a mark on an artist is of the whole artist: every record a catalog keeps of them, every spelling
+    whole = {d.id: await artists.whole(s, d.artist_ref, d.artist) for d in rows if d.artist_ref}
     return [DislikeOut(id=d.id, track_id=by_song.get(d.nd_song_id) or by_ref.get(d.ref), ref=d.ref,
                        nd_song_id=d.nd_song_id, artist_ref=d.artist_ref, artist=d.artist, title=d.title,
-                       source=d.source, created_at=d.created_at) for d in rows]
+                       source=d.source, created_at=d.created_at,
+                       artist_refs=whole[d.id][0] if d.id in whole else [], artist_names=whole[d.id][1] if d.id in whole else [])
+            for d in rows]
 
 
 async def _named(s: AsyncSession, track_id: int | None, ref: str | None, nd_song_id: str | None):

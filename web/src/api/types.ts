@@ -1408,6 +1408,10 @@ export interface DislikeOut {
   title: string | null;
   source: 'app' | 'pwa' | 'yandex_import' | string;
   created_at: string;
+  /** of an artist's mark: everything the artist is known by — every record a catalog keeps of them and every
+   * spelling of the name. The mark is of all of it */
+  artist_refs?: string[];
+  artist_names?: string[];
 }
 
 // --- «Микс дня» and the taste (MIXES.md 6) ----------------------------------------------------------

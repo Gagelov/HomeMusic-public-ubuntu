@@ -202,3 +202,22 @@ async def test_a_catalog_keeps_several_records_of_one_artist_and_a_namesake_is_s
         await s.rollback()
     r = await c.post(f"/api/artists/{a['id']}/apart", json={"other_id": band["id"]})
     assert r.status_code == 200 and r.json()["suggestions"] == []
+
+    # «Не включать» is of the whole artist: put on one record, it is of the other too — and not of the namesake
+    r = await c.post("/api/dislikes", json={"artist_ref": "dz:2", "artist": "LSP"})
+    assert r.status_code == 200 and sorted(r.json()["artist_refs"]) == ["dz:1", "dz:2"], r.text
+    assert sorted(r.json()["artist_names"]) == ["LSP", "ЛСП"]
+    assert (await c.post("/api/dislikes", json={"artist_ref": "dz:1", "artist": "ЛСП"})).json()["id"] == r.json()["id"]  # one mark
+    from sqlalchemy import select
+
+    from app.mixes.taste import build_profile
+    from app.models import User
+
+    async with session_scope() as s:
+        user = (await s.execute(select(User).limit(1))).scalars().first()
+        prof = await build_profile(s, user)
+        hid = lambda name, ref: prof.disliked(ref=None, nd_song_id=None, artist=name, artist_ref=ref, artists=[name], artist_refs=[ref])  # noqa: E731
+        assert hid("ЛСП", "dz:1") and hid("LSP", "dz:2") and hid("lsp", None)
+        assert not hid("LSP", "dz:3")  # the namesake's own record says it is somebody else
+    assert (await c.delete("/api/dislikes", params={"artist_ref": "dz:1"})).json() == {"removed": 1}
+    assert (await c.get("/api/dislikes")).json() == []

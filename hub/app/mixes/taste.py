@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from itertools import zip_longest
+
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -28,6 +30,7 @@ from app.matching.normalize import fingerprint, normalize_artist
 from app.mixes.embedder import song_key
 from app.models import Dislike, DownloadItem, MixSettings, Track, User, utcnow
 from app.plays import Ids, user_events
+from app.library import artists as artist_names
 
 log = logging.getLogger(__name__)
 
@@ -121,9 +124,11 @@ class Profile:
         (`artists`, `artist_refs`): a track a hidden artist only features on is theirs too."""
         if (ref and ref in self.disliked_ids) or (nd_song_id and song_key(nd_song_id) in self.disliked_ids):
             return True
-        if any(r and r in self.disliked_artist_refs for r in (artist_ref, *(artist_refs or ()))):
-            return True
-        return any(a and artist_key(a) in self.disliked_artists for a in (artist, *(artists or ())))
+        # an artist is told by the catalog's record of them; by the name only where the track gives no record —
+        # a namesake of somebody hidden is not hidden
+        credited = [(artist, artist_ref), *zip_longest(artists or (), artist_refs or ())]
+        return any((r in self.disliked_artist_refs) if r else bool(a and artist_key(a) in self.disliked_artists)
+                   for a, r in credited)
 
     @property
     def empty(self) -> bool:
@@ -279,10 +284,10 @@ async def build_profile(s: AsyncSession, user: User, now: datetime | None = None
         t.last_event = max(filter(None, [t.last_event, item.created_at]), default=None)
 
     for d in (await s.execute(select(Dislike).where(Dislike.user_id == user.id))).scalars():
-        if d.artist_ref:
-            p.disliked_artist_refs.add(d.artist_ref)
-            if d.artist:
-                p.disliked_artists.add(artist_key(d.artist))
+        if d.artist_ref:  # the whole artist: every record a catalog keeps of them, every spelling
+            refs, names = await artist_names.whole(s, d.artist_ref, d.artist)
+            p.disliked_artist_refs.update(refs)
+            p.disliked_artists.update(artist_key(n) for n in names if n)
             continue
         p.disliked_ids.update(k for k in (d.ref, song_key(d.nd_song_id) if d.nd_song_id else None) if k)
         t = await b.track(d.ref, d.nd_song_id)

@@ -114,9 +114,19 @@ async def load_snapshot(session, user_id: int, *, now: datetime) -> TasteSnapsho
         if not quiet(item.query_json):
             downloads.append(SavedDownload((item.query_json.get("meta") or {}).get("track_ref"), nd,
                                            item.created_at))
-    dislikes = tuple(DislikedTarget(x.ref, x.nd_song_id, x.artist_ref, x.artist or "", x.title or "", x.created_at)
-        for x in (await session.execute(select(Dislike).where(Dislike.user_id == user_id,
-                                                             Dislike.created_at <= now))).scalars())
+    from app.library import artists
+
+    marked: list[DislikedTarget] = []
+    for x in (await session.execute(select(Dislike).where(Dislike.user_id == user_id, Dislike.created_at <= now))).scalars():
+        if not x.artist_ref:
+            marked.append(DislikedTarget(x.ref, x.nd_song_id, None, x.artist or "", x.title or "", x.created_at))
+            continue
+        # a mark on an artist is of the whole artist: every record a catalog keeps of them, every spelling
+        refs, names = await artists.whole(session, x.artist_ref, x.artist)
+        names = names or [x.artist or ""]
+        marked += [DislikedTarget(None, None, r, names[0], "", x.created_at) for r in refs]
+        marked += [DislikedTarget(None, None, x.artist_ref, n, "", x.created_at) for n in names[1:]]
+    dislikes = tuple(marked)
     # Local verified pairs are metadata, not additional user events.
     ids = Ids(session)
     pairs = {(x.ref, x.nd_song_id) for x in rows if x.target_type == "track"}

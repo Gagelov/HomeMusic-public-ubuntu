@@ -66,7 +66,7 @@ export function refreshDislikes(force = false): Promise<void> {
 }
 
 const matches = (d: DislikeOut, t: DislikeTarget) =>
-  t.artist_ref ? d.artist_ref === t.artist_ref : (!!t.track_id && d.track_id === t.track_id) || (!!t.ref && d.ref === t.ref) || (!!t.nd_song_id && d.nd_song_id === t.nd_song_id);
+  t.artist_ref ? d.artist_ref === t.artist_ref || !!d.artist_refs?.includes(t.artist_ref) : (!!t.track_id && d.track_id === t.track_id) || (!!t.ref && d.ref === t.ref) || (!!t.nd_song_id && d.nd_song_id === t.nd_song_id);
 
 export function isDisliked(t: DislikeTarget): boolean {
   return rows.some((d) => matches(d, t));
@@ -90,9 +90,15 @@ export function ofHiddenArtist(t: { artist?: string | null; artist_ref?: string 
   const hidden = rows.filter((d) => d.artist_ref);
   if (!hidden.length) return false;
   const credited = t.artists?.length ? t.artists.map((a) => (typeof a === 'string' ? { name: a } : a)) : (t.artist ?? '').split(',').map((name) => ({ name }));
-  const refs = new Set<string>([t.artist_ref, ...(t.artist_refs ?? []), ...credited.map((a) => ('ref' in a ? a.ref : null))].filter((x): x is string => !!x));
-  const names = new Set(credited.map((a) => nameKey(a.name)).filter(Boolean));
-  return hidden.some((d) => refs.has(d.artist_ref as string) || (!!d.artist && names.has(nameKey(d.artist))));
+  // who the track is by: each artist with the catalog's record of them, where the track says it
+  const by = credited.map((a, i): { name: string; ref: string | null } => ({ name: nameKey(a.name), ref: (('ref' in a ? a.ref : null) as string | null | undefined) ?? t.artist_refs?.[i] ?? (i === 0 ? t.artist_ref : null) ?? null }));
+  // a mark is of the whole artist — every record a catalog keeps of them, every spelling. An artist is told by
+  // the record; by the name only where the track gives none (a library file): a namesake is not hidden
+  return hidden.some((d) => {
+    const refs = new Set([d.artist_ref as string, ...(d.artist_refs ?? [])]);
+    const names = new Set([d.artist, ...(d.artist_names ?? [])].filter((x): x is string => !!x).map(nameKey));
+    return by.some((a) => (a.ref ? refs.has(a.ref) : !!a.name && names.has(a.name)));
+  });
 }
 
 export function useOfHiddenArtist(t: Parameters<typeof ofHiddenArtist>[0]): boolean {

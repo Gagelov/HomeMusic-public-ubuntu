@@ -1164,6 +1164,10 @@ class DislikeOut(BaseModel):
     title: str | None = None
     source: str  # app/pwa/yandex_import
     created_at: datetime
+    # of an artist's mark: everything the artist is known by — every record a catalog keeps of them (`artist_ref`
+    # among them) and every spelling of the name. The mark is of all of it
+    artist_refs: list[str] = []
+    artist_names: list[str] = []
 
 
 MixMode = Literal["normal", "favorites", "discover"]

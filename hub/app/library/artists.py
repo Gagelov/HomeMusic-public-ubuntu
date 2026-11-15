@@ -109,7 +109,8 @@ async def who(s: AsyncSession, name: str | None, ref: str | None = None, source:
     yet becomes an artist. None: neither was given.
 
     A record the Hub has tied says who it is, whatever the name. One not tied yet is the artist's of that
-    spelling when they have no record so far (their first), and a new artist's otherwise — perhaps a namesake."""
+    spelling when they have no record in that catalog so far (their first there), and a new artist's otherwise —
+    perhaps a namesake: a catalog that keeps two records under one name may well mean two artists."""
     a = await by_ref(s, ref)
     if a is not None:
         return a
@@ -120,26 +121,43 @@ async def who(s: AsyncSession, name: str | None, ref: str | None = None, source:
         return a or await _new(s, name, source, spelling=True)
     if a is None:
         a = await _new(s, name, source, spelling=True)
-    elif await profiles(s, a.id):
+    elif any(r.partition(":")[0] == ref.partition(":")[0] for r in await profiles(s, a.id)):
         a = await _new(s, name, source, spelling=False)
     s.add(ArtistRef(ref=ref, artist_id=a.id))
     await s.flush()
     return a
 
 
+async def whole(s: AsyncSession, ref: str | None, name: str | None = None) -> tuple[list[str], list[str]]:
+    """Everything an artist is known by — every record a catalog keeps of them, and their name with every
+    spelling — for the artist a record (or, with none, a name) stands for. What is said of an artist (they are
+    not to be played, say) is said of all of this. Somebody the Hub does not know is what was given."""
+    a = await by_ref(s, ref) if ref else await holder(s, name)
+    if a is None:
+        return ([ref] if ref else []), ([name] if name else [])
+    refs = await profiles(s, a.id)
+    spelt = (await s.execute(select(ArtistName.name).where(ArtistName.artist_id == a.id).order_by(ArtistName.id))).scalars().all()
+    names_: list[str] = []
+    for n in (a.name, *spelt):
+        if key(n) not in {key(x) for x in names_}:
+            names_.append(n)
+    return ([ref] if ref and ref not in refs else []) + refs, names_
+
+
 class Reader:
     """Names as they are here, for what a catalog says (`reader`): nothing is made, nobody is tied."""
 
-    def __init__(self, tied: dict[str, tuple[int, str]], held: dict[str, tuple[int, str, bool]]):
-        self.tied, self.held = tied, held
+    def __init__(self, tied: dict[str, tuple[int, str]], held: dict[str, tuple[int, str, set[str]]]):
+        self.tied, self.held = tied, held  # `held`: spelling -> (artist, name, the catalogs they have a record in)
 
     def artist(self, name: str | None, ref: str | None = None) -> tuple[int, str] | None:
         """(the artist's id, their name) for a name and the catalog's record of them; None: not somebody known —
-        or a record not tied, under a spelling of an artist who has records of their own (a namesake, perhaps)."""
+        or a record not tied, under a spelling of an artist who has a record of their own in that catalog (a
+        namesake, perhaps)."""
         if ref and ref in self.tied:
             return self.tied[ref]
         hit = self.held.get(key(name))
-        if hit is None or (ref and hit[2]):
+        if hit is None or (ref and ref.partition(":")[0] in hit[2]):
             return None
         return hit[0], hit[1]
 
@@ -153,11 +171,14 @@ async def reader(s: AsyncSession, names_: Iterable[str | None], refs: Iterable[s
     refs = {r for r in refs if r}
     tied = {r: (i, n) for r, i, n in (await s.execute(
         select(ArtistRef.ref, Artist.id, Artist.name).join(Artist, Artist.id == ArtistRef.artist_id).where(ArtistRef.ref.in_(refs)))).all()} if refs else {}
-    held: dict[str, tuple[int, str, bool]] = {}
+    held: dict[str, tuple[int, str, set[str]]] = {}
     if keys:
         rows = (await s.execute(select(ArtistName.key, Artist.id, Artist.name).join(Artist, Artist.id == ArtistName.artist_id).where(ArtistName.key.in_(keys)))).all()
-        with_records = set((await s.execute(select(ArtistRef.artist_id).where(ArtistRef.artist_id.in_({i for _, i, _ in rows})))).scalars()) if rows else set()
-        held = {k: (i, n, i in with_records) for k, i, n in rows}
+        catalogs: dict[int, set[str]] = {}
+        if rows:
+            for i, r in (await s.execute(select(ArtistRef.artist_id, ArtistRef.ref).where(ArtistRef.artist_id.in_({i for _, i, _ in rows})))).all():
+                catalogs.setdefault(i, set()).add(r.partition(":")[0])
+        held = {k: (i, n, catalogs.get(i, set())) for k, i, n in rows}
     return Reader(tied, held)
 
 
