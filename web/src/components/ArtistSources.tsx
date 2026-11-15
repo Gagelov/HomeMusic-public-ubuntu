@@ -48,9 +48,10 @@ export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[
 
   const move = 'transition-all duration-300 ease-out';
   return (
-    <div className="flex flex-wrap items-center gap-x-2">
+    // folded, it is one line whatever the width: the round pictures, then the words — cut short where they do not fit
+    <div className={cx('flex min-w-0 items-center gap-x-2', open && 'flex-wrap')}>
       {/* the places: round pictures, one over the edge of another — or, laid out, a plate each */}
-      <div className={cx('flex flex-wrap items-center [text-shadow:none]', open ? 'w-full pb-1' : 'cursor-pointer pl-1.5')} onClick={open ? undefined : toggle}>
+      <div className={cx('flex items-center [text-shadow:none]', open ? 'w-full flex-wrap pb-1' : 'shrink-0 cursor-pointer pl-1.5')} onClick={open ? undefined : toggle}>
         {sources.map((s, i) => {
           const facts = [
             s.followers ? `${num(s.followers)} ${plural(s.followers, ['поклонник', 'поклонника', 'поклонников'])}` : null,
@@ -97,7 +98,7 @@ export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[
         )}
       </div>
       {!open && (
-        <button type="button" onClick={toggle} aria-expanded={false} title="Где известен исполнитель" className="text-left">
+        <button type="button" onClick={toggle} aria-expanded={false} title={line} className="min-w-0 flex-1 truncate text-left">
           {line}
         </button>
       )}

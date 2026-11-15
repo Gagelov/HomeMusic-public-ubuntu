@@ -156,7 +156,9 @@ export function ArtistPage({ refId }: { refId: string }) {
           </Button>
         </div>
       ) : (
-        <div className="flex flex-wrap items-center gap-2 px-4 pb-3 lg:px-6">
+        <div className="flex items-center px-4 pb-3 lg:px-6">
+          {/* the buttons go sideways where they do not fit; the ⋯ stays at the right edge, whatever the width */}
+          <div className="no-scrollbar -my-1 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1 pr-5 [mask-image:linear-gradient(to_right,#000_calc(100%-1.25rem),transparent)] [&>*]:shrink-0">
           <button
             type="button"
             onClick={() => void follow()}
@@ -181,7 +183,8 @@ export function ArtistPage({ refId }: { refId: string }) {
           )}
           {/* the other projects of who it is: each leads to its own page */}
           <ArtistProjects card={names.card} />
-          <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="relative flex h-11 w-11 items-center justify-center rounded-full text-muted hover:text-fg">
+          </div>
+          <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted hover:text-fg">
             <Icon name="more" size={24} />
             {/* somebody looks like the same artist under another spelling: «Имя и написания» says who */}
             {artistHint(names.card) && <span aria-hidden="true" className="absolute right-2 top-2 h-2 w-2 rounded-full bg-info" />}
