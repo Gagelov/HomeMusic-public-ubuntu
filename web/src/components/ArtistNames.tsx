@@ -25,6 +25,15 @@ export function ArtistAlsoLine({ card, className }: { card: ArtistCardOut | null
   return also.length ? <div className={className} title="Другие написания имени">{also.join(', ')}</div> : null;
 }
 
+/** An artist's round picture in a button: the catalog's or an album's cover — else the first letter of the name. */
+function Avatar({ name, src }: { name: string; src?: string | null }) {
+  return (
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-fg/15 text-xs font-semibold text-muted">
+      {src ? <img src={imageUrl(src) as string} alt="" loading="lazy" className="h-full w-full object-cover" /> : name.trim().charAt(0).toUpperCase()}
+    </span>
+  );
+}
+
 /** The other projects of who the artist is, as buttons of the page's row — each a round picture and the name,
  * leading to the project's own page. */
 export function ArtistProjects({ card }: { card: ArtistCardOut | null }) {
@@ -37,9 +46,7 @@ export function ArtistProjects({ card }: { card: ArtistCardOut | null }) {
           title={`Другой проект: ${[p.name, ...p.also].join(', ')}`}
           className="flex h-9 min-w-0 max-w-full items-center gap-2 rounded-full border border-fg/40 pl-1 pr-4 text-sm text-fg transition hover:border-fg active:scale-95"
         >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-fg/15 text-xs font-semibold text-muted">
-            {p.picture_url ? <img src={imageUrl(p.picture_url) as string} alt="" loading="lazy" className="h-full w-full object-cover" /> : p.name.trim().charAt(0).toUpperCase()}
-          </span>
+          <Avatar name={p.name} src={p.picture_url} />
           <span className="truncate">{p.name}</span>
         </Link>
       ))}
@@ -138,11 +145,12 @@ function NamesWindow({ card, onChange, onClose }: { card: ArtistCardOut; onChang
           <section className="rounded-xl bg-info/10 px-3 py-2 text-[13px]">
             <p className="pb-1 text-muted">Похоже на того же исполнителя:</p>
             {card.suggestions.map((x) => (
-              <p key={x.id} className="flex flex-wrap items-center gap-x-3 py-0.5">
+              <p key={x.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1">
                 {/* who it is: their own page, to look before the two are joined */}
-                <Link to={x.ref ? `/artist/${enc(x.ref)}` : `/artist-named/${enc(x.name)}`} onClick={onClose} className="text-sm hover:underline">
-                  {x.name}
-                  {x.nb_fans ? <span className="text-dim"> · {x.nb_fans.toLocaleString('ru-RU')} в каталоге</span> : null}
+                <Link to={x.ref ? `/artist/${enc(x.ref)}` : `/artist-named/${enc(x.name)}`} onClick={onClose} title="Открыть страницу этого исполнителя" className="flex h-9 min-w-0 max-w-full items-center gap-2 rounded-full border border-fg/40 pl-1 pr-3 text-sm text-fg transition hover:border-fg">
+                  <Avatar name={x.name} src={x.picture_url} />
+                  <span className="truncate">{x.name}</span>
+                  {x.nb_fans ? <span className="shrink-0 text-[12px] text-dim">{x.nb_fans.toLocaleString('ru-RU')} в каталоге</span> : null}
                 </Link>
                 <button type="button" className="text-info hover:underline" onClick={() => void merge({ other_id: x.id }, x.name)}>объединить</button>
                 <button type="button" className="text-info hover:underline" onClick={() => void run(() => api.artistAddProject(card.id, { other_id: x.id }))}>это его проект</button>
