@@ -12,12 +12,13 @@ import { startDownload } from '../lib/actions';
 import { setDisliked, useDisliked } from '../lib/dislikes';
 import { tracksWord } from '../lib/format';
 import { useAsync, useRememberScrollX } from '../lib/hooks';
+import { imageUrl } from '../lib/img';
 import { Link, enc, navigate } from '../lib/router';
 import { copyText } from '../lib/share';
 import { toggleLike, useLiked } from '../lib/stars';
 import { confirmDialog, toast } from '../lib/ui';
 import { canWave, startWave } from '../lib/wave';
-import { Hero, PlayPair } from './MediaLibrary';
+import { PlayPair } from './MediaLibrary';
 
 /** An artist's page (`/artist/<ref>`; a library artist the catalog knows opens it too): a list's head — the photo,
  * the name, ▶ and the shuffle of the popular tracks — then a row of buttons: «Подписаться», «Вам нравится» (the
@@ -133,21 +134,21 @@ export function ArtistPage({ refId }: { refId: string }) {
   );
 
   const shownName = names.card?.name ?? artist.name;
+  const photo = imageUrl(artist.picture_url);
   const facts = <ArtistSources sources={d.sources ?? []} releases={releases.length} />;
 
   return (
     <div className={hidden ? 'grayscale' : undefined}>
-      {/* the wide picture: before everything, so it stays at the top of the window while the page goes over it */}
-      {d.banner_url && <BannerPicture src={d.banner_url} />}
+      {/* the picture over the page: before everything, so it stays at the top of the window while the page goes over
+          it. The wide one where the artist has it; else their own photo, out of focus — the round photo stands on it */}
+      {(d.banner_url || photo) && <BannerPicture src={(d.banner_url ?? photo) as string} blurred={!d.banner_url} />}
       <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" />
-      {d.banner_url ? (
-        <Banner name={shownName} sub={facts} tracks={hidden ? undefined : top} />
-      ) : (
-        <Hero kicker="Исполнитель" cover={artist.picture_url} round title={shownName} sub={facts} tracks={hidden ? undefined : top} context="artist" />
-      )}
+      <Banner name={shownName} photo={d.banner_url ? undefined : (photo ?? null)} tracks={hidden ? undefined : top} />
 
       {/* what goes up over the picture has the page's own colour under it */}
-      <div className={d.banner_url ? 'relative z-[1] bg-bg' : undefined}>
+      <div className="relative z-[1] bg-bg">
+      {/* what is known of the artist, and where from: one line under the picture */}
+      <div className="px-4 pb-3 pt-1 text-sm text-muted lg:px-6">{facts}</div>
       {hidden ? (
         <div className="mx-4 mb-3 rounded-2xl bg-danger/15 px-4 py-3 text-sm text-fg lg:mx-6">
           <p>Вы не слушаете этого исполнителя. Его треков нет в волне, миксах и открытиях, а в плейлистах они пропускаются.</p>
@@ -249,7 +250,7 @@ const BANNER_H = 'h-[clamp(15rem,34vw,26rem)]';
  * over it (moved after every scroll instead, it lagged a frame behind and sprang). As the page covers it a shade of
  * the page's colour comes over it too; that is set a frame at a time on the element, and a shade a frame late is
  * not seen. */
-function BannerPicture({ src }: { src: string }) {
+function BannerPicture({ src, blurred }: { src: string; /** not a wide picture but the artist's photo: shown out of focus, as a ground */ blurred?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = box.current;
@@ -273,7 +274,7 @@ function BannerPicture({ src }: { src: string }) {
   return (
     <div aria-hidden="true" className="pointer-events-none sticky top-(--page-top) z-0 h-0">
       <div ref={box} className={cx('absolute inset-x-0 top-0 overflow-hidden', BANNER_H)}>
-        <img src={src} alt="" className="h-full w-full object-cover object-[center_25%]" />
+        <img src={src} alt="" className={cx('h-full w-full object-cover', blurred ? 'scale-150 blur-3xl brightness-[0.55] saturate-150' : 'object-[center_25%]')} />
         <div style={{ opacity: 'var(--shade, 0)' }} className="absolute inset-0 bg-bg" />
       </div>
     </div>
@@ -281,19 +282,29 @@ function BannerPicture({ src }: { src: string }) {
 }
 
 /** The head of the page over that picture: as tall as it, reaching up under the bar with «back»; the name in large
- * over its darkened foot, what is known of the artist under the name, ▶ and the shuffle beside it. The round photo
- * is not shown then — it is the same person twice. */
-function Banner({ name, sub, tracks }: { name: string; sub: ReactNode; tracks?: readonly TrackOut[] }) {
+ * over its darkened foot, ▶ and the shuffle beside the name — on a phone and on a computer alike, and on the side
+ * they keep in the bar once the page is scrolled. Over a wide picture the round photo is not shown — it is the same
+ * person twice; where there is none (`photo` given: the address, or null for no photo at all) the round photo
+ * stands on the ground made of it: in the middle on a phone, before the name on a computer. */
+function Banner({ name, photo, tracks }: { name: string; photo?: string | null; tracks?: readonly TrackOut[] }) {
+  const round = 'absolute left-1/2 top-[calc(3.75rem+env(safe-area-inset-top))] h-28 w-28 shrink-0 -translate-x-1/2 rounded-full shadow-xl lg:static lg:h-44 lg:w-44 lg:translate-x-0';
   return (
     <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex items-end', BANNER_H)}>
       <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-t from-bg via-bg/45 to-black/15" />
-      <div className="flex w-full items-end gap-3 px-4 pb-4 lg:px-6 lg:pb-5">
+      <div className="flex w-full items-end gap-3 px-4 pb-4 lg:gap-6 lg:px-6 lg:pb-5">
+        {photo !== undefined &&
+          (photo ? (
+            <img src={photo} alt="" className={cx(round, 'object-cover')} />
+          ) : (
+            <span className={cx(round, 'flex items-center justify-center bg-fg/10 text-muted')}>
+              <Icon name="user" size={40} />
+            </span>
+          ))}
         <div className="min-w-0 flex-1">
           <div className="hidden text-sm text-fg/80 lg:block">Исполнитель</div>
           <h2 data-list-title className="line-clamp-2 break-words text-4xl font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)] lg:text-7xl">
             {name}
           </h2>
-          {sub && <div className="mt-2 text-sm text-fg/85 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)]">{sub}</div>}
         </div>
         {!!tracks?.length && <PlayPair tracks={tracks} context="artist" />}
       </div>
