@@ -733,6 +733,8 @@ export interface QualityRow {
   provider?: string | null;
   note?: string | null;
   duration_s?: number | null;
+  /** the file it had is still kept: both can be heard, the old one brought back */
+  can_revert?: boolean;
   updated_at: string;
 }
 

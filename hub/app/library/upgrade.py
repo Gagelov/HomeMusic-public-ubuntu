@@ -20,7 +20,9 @@ all, and takes its names, its release and its cover (`adopt`), and the file too 
 alike — the listener hears both and says; another recording — the track stays as it is.
 
 The track stays the track: its places in playlists, its likes, its lyrics, its tags and its names are its own; only
-the file under it changes. The old file goes to the trash folder with the rest of what is deleted.
+the file under it changes. The old file goes to the trash folder with the rest of what is deleted — and while it
+lies there the listener can hear the two side by side and take the old one back (`revert`): the sound tells one
+recording from another, not a censored copy from the one with the words in it.
 """
 
 from __future__ import annotations
@@ -175,9 +177,9 @@ async def take(meta: dict[str, Any], path: Path, check: Any, cand: Any, user_id:
         found = dict(codec=codec, bitrate_kbps=kbps, likeness=alike, provider=getattr(cand, "provider", None),
                      source_url=getattr(cand, "page_url", None), note=words)
         if verdict == "replace":
-            await put(s, track_id, path, user_id=user_id, **{k: found[k] for k in ("codec", "bitrate_kbps", "provider", "source_url")},
-                      duration_s=info.duration_s if info else None)
-            await mark_in(s, meta, state="replaced", staged_path=None, **found)
+            was = await put(s, track_id, path, user_id=user_id, **{k: found[k] for k in ("codec", "bitrate_kbps", "provider", "source_url")},
+                            duration_s=info.duration_s if info else None)
+            await mark_in(s, meta, state="replaced", staged_path=None, was_path=was, **found)
             return "replaced", words
         rel = Path("upgrades") / f"{meta.get('upgrade_row') or track_id}{path.suffix.lower()}"
         dest = get_settings().staging_dir / rel
@@ -212,13 +214,14 @@ async def _settle(s: AsyncSession, meta: dict[str, Any], track_id: int, path: Pa
     near = not (duration_s and track.duration_s) or abs(duration_s - track.duration_s) <= SAME_LENGTH_S
     if alike >= acoustic.SAME and near:
         await adopt(s, track, meta)
+        was = None
         if better:
-            await put(s, track_id, path, user_id=user_id, **{k: found[k] for k in ("codec", "bitrate_kbps", "provider", "source_url")},
-                      duration_s=duration_s)
+            was = await put(s, track_id, path, user_id=user_id, **{k: found[k] for k in ("codec", "bitrate_kbps", "provider", "source_url")},
+                            duration_s=duration_s)
         else:
             path.unlink(missing_ok=True)
         words = f"та же запись (сходство по звуку {alike:.2f}): взяты данные каталога" + (", файл заменён лучшим" if better else ", файл оставлен ваш")
-        await mark_in(s, meta, state="replaced", staged_path=None, note=words, **found)
+        await mark_in(s, meta, state="replaced", staged_path=None, note=words, was_path=was, **found)
         return "replaced", words
     rel = Path("upgrades") / f"{meta.get('upgrade_row') or track_id}{path.suffix.lower()}"
     dest = get_settings().staging_dir / rel
@@ -283,7 +286,7 @@ async def mark_in(s: AsyncSession, meta: dict[str, Any], **fields: Any) -> None:
 
 
 async def put(s: AsyncSession, track_id: int, path: Path, *, user_id: int | None, codec: str | None,
-              bitrate_kbps: int | None, provider: str | None, source_url: str | None, duration_s: float | None = None) -> None:
+              bitrate_kbps: int | None, provider: str | None, source_url: str | None, duration_s: float | None = None) -> str | None:
     """Put the file under the track, in the place of the files it has: tagged as the track is named, in the track's
     album. The old files go to the trash folder; if the new one does not come in, they are put back."""
     track = await s.get(Track, track_id)
@@ -303,6 +306,7 @@ async def put(s: AsyncSession, track_id: int, path: Path, *, user_id: int | None
     except Exception:
         await unshelve(moved)
         raise
+    return str(moved[-1][0]) if moved else None  # where the file it had lies now
 
 
 async def shelve(s: AsyncSession, track_id: int) -> list[tuple[Path, Path]]:
@@ -348,9 +352,26 @@ async def accept(s: AsyncSession, row: Upgrade, user_id: int) -> None:
             row.state, row.staged_path = "replaced", None
             row.note = "вы подтвердили запись: взяты данные каталога, файл оставлен ваш"
             return
-    await put(s, row.track_id, path, user_id=user_id, codec=row.codec, bitrate_kbps=row.bitrate_kbps,
-              provider=row.provider, source_url=row.source_url)
+    row.was_path = await put(s, row.track_id, path, user_id=user_id, codec=row.codec, bitrate_kbps=row.bitrate_kbps,
+                             provider=row.provider, source_url=row.source_url)
     row.state, row.staged_path = "replaced", None
+
+
+def was(row: Upgrade) -> Path | None:
+    """The file the track had before, while it is kept in the trash folder."""
+    p = Path(row.was_path) if row.was_path else None
+    return p if p is not None and p.is_file() else None
+
+
+async def revert(s: AsyncSession, row: Upgrade, user_id: int) -> None:
+    """The listener takes back the file the track had: it comes out of the trash folder into the new one's place
+    (the new one goes there in its turn)."""
+    path = was(row)
+    if row.state != "replaced" or path is None:
+        raise ValueError("Прежнего файла уже нет — он хранится 30 дней")
+    await put(s, row.track_id, path, user_id=user_id, codec=row.was_codec, bitrate_kbps=row.was_kbps, provider="upload",
+              source_url=None)
+    row.state, row.was_path, row.note = "kept", None, "вы вернули свой файл"
 
 
 async def decline(s: AsyncSession, row: Upgrade) -> None:

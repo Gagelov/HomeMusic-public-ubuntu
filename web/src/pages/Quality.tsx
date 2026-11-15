@@ -16,6 +16,11 @@ import { Steps } from './Upload';
  * listener says: both files play whole here, each with the picture of its loudness to move through it by. Nothing
  * better — the row says why. The search goes on in the Hub: the page may be closed and come back to.
  *
+ * A file replaced by itself can be heard too («Заменено» → «Сравнить»): the one the track had and the one it has
+ * now, side by side, with the new one marked as taken — and the old one brought back while the Hub keeps it. The
+ * sound tells one recording from another, not a censored copy from the one with the words in it: that is for the
+ * listener to hear.
+ *
  * The same page settles what the first step could not (`kind` "identify"): a file the catalog only had something
  * like went in under its own names; here the record's file is downloaded and the two are compared by the sound —
  * the same recording takes the record's names and cover by itself, one only alike waits for the listener's word. */
@@ -35,6 +40,7 @@ export function QualityPage() {
   const rows = useMemo(() => res.data?.rows ?? [], [res.data]);
   const [tab, setTab] = useState<Tab | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [open, setOpen] = useState<number | null>(null); // the replaced track whose two files are being heard
   const byTab = useMemo(() => {
     const out: Record<Tab, QualityRow[]> = { found: [], replaced: [], none: [], queue: [] };
     for (const r of rows) out[tabOf(r)].push(r);
@@ -66,6 +72,17 @@ export function QualityPage() {
     setBusy(null);
     if (!ok) return;
     if (yes) window.dispatchEvent(new Event(EDITED_EVENT));
+    res.reload(true);
+  };
+  const back = async (r: QualityRow) => {
+    if (!(await confirmDialog({ title: `Вернуть прежний файл: «${r.title}»?`, body: 'Найденный файл уйдёт в корзину, трек снова будет играть ваш.', okLabel: 'Вернуть' }))) return;
+    setBusy(`${r.id}`);
+    listening.stop();
+    const ok = await attempt(() => api.qualityRevert(r.id), 'Прежний файл возвращён');
+    setBusy(null);
+    if (!ok) return;
+    setOpen(null);
+    window.dispatchEvent(new Event(EDITED_EVENT));
     res.reload(true);
   };
   const takeAll = async () => {
@@ -153,6 +170,11 @@ export function QualityPage() {
                           {r.kind === 'identify' && r.record && r.state !== 'replaced' && <span className="block truncate text-[11px] text-dim">та ли это запись: {r.record}</span>}
                         </span>
                         <RowState r={r} />
+                        {r.can_revert && (
+                          <Button small onClick={() => { listening.stop(); setOpen(open === r.id ? null : r.id); }}>
+                            {open === r.id ? 'Свернуть' : 'Сравнить'}
+                          </Button>
+                        )}
                       </div>
                       {r.state === 'found' && (
                         <Compare
@@ -163,6 +185,7 @@ export function QualityPage() {
                           onNo={() => void say(r, false)}
                         />
                       )}
+                      {r.can_revert && open === r.id && <Compare r={r} listening={listening} busy={busy === `${r.id}`} onYes={() => setOpen(null)} onNo={() => void back(r)} />}
                       {r.state === 'searching' && r.progress > 0 && <ProgressBar value={r.progress} className="mt-2 max-w-md" />}
                     </li>
                   ))}
@@ -243,7 +266,8 @@ function useTwoFiles() {
 
 function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening: ReturnType<typeof useTwoFiles>; busy: boolean; onYes: () => void; onNo: () => void }) {
   const peaks = useAsync((s) => api.qualityPeaks(r.id, s), [r.id]);
-  const lane = (which: 'current' | 'found', label: string, words: string, good: boolean) => {
+  const done = r.state === 'replaced'; // replaced already: the file it had beside the one it has, the new one taken
+  const lane = (which: 'current' | 'found' | 'was', label: string, words: string, good: boolean, taken = false) => {
     const key = `${r.id}:${which}`;
     const src = `/api/quality/${r.id}/audio/${which}`;
     const playing = listening.on?.key === key;
@@ -271,20 +295,22 @@ function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening
           )}
         </button>
         <span className={cx('w-20 shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-center text-[11px]', good ? 'bg-accent/15 text-accent' : 'bg-warn/15 text-warn')}>{words}</span>
+        <span className="w-16 shrink-0 text-[11px] text-accent">{taken ? '✓ выбран' : ''}</span>
       </div>
     );
   };
   return (
     <div className="pt-2 md:pl-[3.25rem]">
-      {r.kind === 'identify' && <p className="pb-1 text-xs text-muted">Каталог считает, что это «{r.record}». «Это она» — трек получит её название, альбом и обложку; файл заменится, только если найденный лучше.</p>}
-      {lane('current', 'Сейчас', fileWords(r.was_codec, r.was_kbps), false)}
-      {lane('found', 'Найден', fileWords(r.codec, r.bitrate_kbps), true)}
+      {r.kind === 'identify' && !done && <p className="pb-1 text-xs text-muted">Каталог считает, что это «{r.record}». «Это она» — трек получит её название, альбом и обложку; файл заменится, только если найденный лучше.</p>}
+      {done ? lane('was', 'Был', fileWords(r.was_codec, r.was_kbps), false) : lane('current', 'Сейчас', fileWords(r.was_codec, r.was_kbps), false)}
+      {done ? lane('current', 'Стал', fileWords(r.codec, r.bitrate_kbps), true, true) : lane('found', 'Найден', fileWords(r.codec, r.bitrate_kbps), true)}
+      {done && <p className="pt-1 text-xs text-muted">Сверка по звуку отличает одну запись от другой, но не цензурную копию от оригинала — это слышно только на слух. Прежний файл хранится 30 дней.</p>}
       <div className="flex flex-wrap items-center gap-2 pt-2">
-        <Button small variant="primary" busy={busy} onClick={onYes}>
-          {r.kind === 'identify' ? 'Это она' : 'Заменить'}
+        <Button small variant="primary" busy={busy && !done} onClick={onYes}>
+          {done ? 'Оставить новый' : r.kind === 'identify' ? 'Это она' : 'Заменить'}
         </Button>
-        <Button small disabled={busy} onClick={onNo}>
-          {r.kind === 'identify' ? 'Нет, другая запись' : 'Оставить мой'}
+        <Button small busy={busy && done} disabled={busy && !done} onClick={onNo}>
+          {done ? 'Вернуть мой файл' : r.kind === 'identify' ? 'Нет, другая запись' : 'Оставить мой'}
         </Button>
         <span className="min-w-0 truncate text-[11px] text-dim">
           {[r.provider ? `источник: ${providerLabel(r.provider)}` : null, r.duration_s ? fmtDuration(r.duration_s) : null, r.note].filter(Boolean).join(' · ')}

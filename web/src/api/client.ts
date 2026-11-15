@@ -433,7 +433,9 @@ export const api = {
   qualityStart: (track_ids?: number[]) => request<{ queued: number }>('POST', '/api/quality/start', { json: { track_ids: track_ids ?? null } }),
   qualityAccept: (id: number) => request<OkOut>('POST', `/api/quality/${id}/accept`),
   qualityDecline: (id: number) => request<OkOut>('POST', `/api/quality/${id}/decline`),
-  qualityPeaks: (id: number, signal?: AbortSignal) => request<{ current: number[]; found: number[] }>('GET', `/api/quality/${id}/peaks`, { signal }),
+  /** Take back the file a track had before a better one was put in its place. */
+  qualityRevert: (id: number) => request<OkOut>('POST', `/api/quality/${id}/revert`),
+  qualityPeaks: (id: number, signal?: AbortSignal) => request<{ current: number[]; found: number[]; was: number[] }>('GET', `/api/quality/${id}/peaks`, { signal }),
   /** Which record of the catalog an uploaded file is: `ref` — this one, picked by hand; none — look for it again. */
   matchUpload: (id: number, ref?: string | null) => request<UploadOut>('POST', `/api/uploads/${id}/match`, { json: { ref: ref ?? null } }),
 

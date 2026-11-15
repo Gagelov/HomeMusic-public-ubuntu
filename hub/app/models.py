@@ -349,6 +349,8 @@ class Upgrade(Base):
     note: Mapped[str | None] = mapped_column(Text)
     was_codec: Mapped[str | None] = mapped_column(String(16))  # of the file it had
     was_kbps: Mapped[int | None] = mapped_column(Integer)
+    # where that file lies now, in the trash folder (absolute): heard beside the new one, and brought back, while kept
+    was_path: Mapped[str | None] = mapped_column(String(1024))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

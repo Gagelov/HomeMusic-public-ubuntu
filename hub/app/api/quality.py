@@ -49,6 +49,7 @@ class QualityRow(BaseModel):
     provider: str | None = None
     note: str | None = None
     duration_s: int | None = None
+    can_revert: bool = False  # the file it had is still kept: both can be heard, the old one brought back
     updated_at: datetime
 
 
@@ -93,7 +94,8 @@ async def listed(user: User = Depends(current_user), s: AsyncSession = Depends(g
             kind=row.kind, record=_record(row.meta_json) if row.kind == "identify" else None,
             progress=float(progress or 0) if row.state == "searching" else 0, known=str(t.ref or "").startswith("dz:"),
             was_codec=row.was_codec, was_kbps=row.was_kbps, codec=row.codec, bitrate_kbps=row.bitrate_kbps,
-            likeness=row.likeness, provider=row.provider, note=row.note, duration_s=t.duration_s, updated_at=row.updated_at))
+            likeness=row.likeness, provider=row.provider, note=row.note, duration_s=t.duration_s,
+            can_revert=row.state == "replaced" and upgrade.was(row) is not None, updated_at=row.updated_at))
     return QualityOut(rows=out, weak=len([i for i in await _weak_ids(s, user) if i not in seen]))
 
 
@@ -128,6 +130,21 @@ async def accept(row_id: int, user: User = Depends(current_user), s: AsyncSessio
     return {"ok": True}
 
 
+@router.post("/{row_id}/revert")
+async def revert(row_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> dict:
+    """Take back the file the track had before a better one was put in its place."""
+    row = await _row(s, user, row_id)
+    try:
+        await upgrade.revert(s, row, user.id)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    await enqueue_scan(s)
+    await s.commit()
+    notify()
+    bus.publish(user.id, "library", {"kind": "imported", "track_id": row.track_id})
+    return {"ok": True}
+
+
 @router.post("/{row_id}/decline")
 async def decline(row_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> dict:
     row = await _row(s, user, row_id)
@@ -141,6 +158,8 @@ async def decline(row_id: int, user: User = Depends(current_user), s: AsyncSessi
 async def _file(s: AsyncSession, row: Upgrade, which: str):
     if which == "found":
         path = upgrade.staged(row)
+    elif which == "was":
+        path = upgrade.was(row)
     else:
         f = await current_file(s, row.track_id)
         path = library_abs(f.path) if f else None
@@ -151,7 +170,7 @@ async def _file(s: AsyncSession, row: Upgrade, which: str):
 
 @router.get("/{row_id}/audio/{which}")
 async def audio(row_id: int, which: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
-    """The file the track has («current») or the one found («found»), to listen to."""
+    """The file the track has («current»), the one found for it («found») or the one it had («was»), to listen to."""
     return FileResponse(await _file(s, await _row(s, user, row_id), which), headers={"Cache-Control": "no-store"})
 
 
@@ -160,7 +179,7 @@ async def peaks(row_id: int, user: User = Depends(current_user), s: AsyncSession
     """The loudness of the two files along their length: what the listener moves through them by."""
     row = await _row(s, user, row_id)
     out = {}
-    for which in ("current", "found"):
+    for which in ("current", "found", "was"):
         try:
             out[which] = await upgrade.peaks(await _file(s, row, which))
         except HTTPException:
