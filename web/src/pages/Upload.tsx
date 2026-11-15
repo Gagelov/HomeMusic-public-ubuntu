@@ -525,7 +525,16 @@ export function UploadPage() {
     only === 'fill' ? rowOf(u).include && !valid(u, rowOf(u)) : only === 'doubt' ? unsure(u, rowOf(u)) : only === 'changes' ? changes(u) : only === 'none' ? isNone(u) : only === 'twin' ? !!u.twin : true;
   const shown = uploads.filter(passes);
   // the albums, then the singles — each in the order its files came
-  const shownGroups = [...all.groups.values()].map((g) => ({ g, files: g.files.filter(passes) })).filter((x) => x.files.length).sort((a, b) => Number(a.g.single) - Number(b.g.single));
+  /** A file's place in its album: the catalog's where its record is taken, else the file's own (none: not said). */
+  const placeOf = (u: UploadOut): number | null => {
+    const r = rowOf(u);
+    const disc = toIntOrNull(str(u.tags.disc_no)) ?? 1;
+    const no = (usesCatalog(u, r) && u.match?.track_no) || toIntOrNull(str(u.tags.track_no));
+    return no ? disc * 1000 + no : null;
+  };
+  // an album's files stand as its tracks do: by their numbers, the ones without a number after them, as they came
+  const inOrder = (files: UploadOut[]) => files.map((u, i) => ({ u, i, at: placeOf(u) })).sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity) || a.i - b.i).map((x) => x.u);
+  const shownGroups = [...all.groups.values()].map((g) => ({ g, files: inOrder(g.files.filter(passes)) })).filter((x) => x.files.length).sort((a, b) => Number(a.g.single) - Number(b.g.single));
 
   /** The picture a file is shown with — and filed with: its album's, or a single's own choice. */
   const pictureOf = (u: UploadOut): string | null => {
