@@ -576,6 +576,24 @@ class RetryIn(BaseModel):
 # --- uploads -----------------------------------------------------------------------------
 
 
+class UploadMatch(BaseModel):
+    """The song of the catalog an uploaded file was told to be (`library/recognize.py`)."""
+
+    state: Literal["found", "doubt", "none"]
+    why: str | None = None  # of a doubt: what speaks against the record
+    by_hand: bool = False  # the listener picked the record
+    ref: str | None = None
+    title: str | None = None
+    artist: str | None = None
+    artists: list[str] = []
+    album: str | None = None
+    album_artist: str | None = None
+    record_type: str | None = None  # album / single / ep / compile
+    year: int | None = None
+    duration_s: int | None = None
+    cover_url: str | None = None
+
+
 class UploadTwin(BaseModel):
     """The library's track an uploaded file is of already."""
 
@@ -603,47 +621,56 @@ class UploadOut(BaseModel):
     artists: list[str] = []  # the artists read out of the file's line of them, the main one first
     codec: str | None = None
     bitrate_kbps: int | None = None
-    twin: UploadTwin | None = None  # the library has this recording
+    twin: UploadTwin | None = None
+    match: UploadMatch | None = None  # what song of the catalog the file is
+    weak: bool = False  # the file is heard to be poor (`library/quality.py`)
+    # the file's own names, read out of its tags and — where they are empty — its name
+    title: str = ""
+    artist: str = ""
+    single: bool = False  # its «album» is no album: nothing, «Single», the track's own name
+    duration_s: float | None = None  # the library has this recording
 
 
 class UploadTrackIn(BaseModel):
+    """A file to bring into the library. `catalog`: as the song of the catalog it was told to be
+    (`UploadOut.match`) — the names, the release, the year and the cover are the catalog's then, and the fields
+    below are not read. Else by these fields: `album` empty (or the track's own name) — a single."""
+
     upload_id: int
-    title: str
-    artist: str
-    track_no: int | None = None
-    disc_no: int | None = None
-    genre: str | None = None
-    explicit: bool | None = None
+    catalog: bool = False
+    title: str = ""
+    artist: str = ""
+    album: str | None = None
+    album_artist: str | None = None
+    year: int | None = None
+    track_no: int | None = None  # its place in the album (none: the file's own)
     # the library's track this file takes the place of the file of (the upload is the better one): it becomes
     # that track's file, not a track of its own
     replace_track_id: int | None = None
 
 
-class UploadAlbumIn(BaseModel):
-    mode: Literal["existing", "new"]
-    album_id: int | None = None  # mode=existing
-    title: str | None = None  # mode=new
-    album_artist: str | None = None
-    year: int | None = None
-    genre: str | None = None
-    release_type: Literal["album", "single", "ep", "compilation"] | None = "album"
+class UploadMatchIn(BaseModel):
+    """Which record of the catalog a file is: `ref` — this one, picked by hand; none — look for it again."""
+
+    ref: str | None = Field(default=None, max_length=64)
 
 
 class UploadCommitIn(BaseModel):
-    album: UploadAlbumIn
-    tracks: list[UploadTrackIn]
-    cover_from_upload_id: int | None = None  # use the embedded cover of this upload
-    playlist_id: str | None = None
+    tracks: list[UploadTrackIn] = Field(max_length=200)
     playlist_ids: list[str] = Field(default_factory=list, max_length=50)  # several playlists at once
     star: bool = False  # the imported tracks go into «Любимое» too
     # the playlist that keeps what was uploaded together («Загружено 14 ноября»): the user's playlist of this name,
     # made when there is none — so the parts of one import, and the imports of one day, are one list
     keep_in: str | None = Field(default=None, max_length=200)
     tag_ids: list[int] = Field(default_factory=list, max_length=50)  # ... and get these tags
+    # the weak files among them are looked for anew: the same recording in a better file takes the place of each
+    # (`library/upgrade.py`)
+    upgrade: bool = False
 
 
 class UploadCommitOut(BaseModel):
-    album_id: int
+    album_ids: list[int] = []  # the albums the files went into, in their order
+    upgrading: int = 0  # how many weak files a better one is being looked for
     imported: int
 
 

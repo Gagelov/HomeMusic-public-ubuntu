@@ -1,28 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { api, errorMessage, libraryCoverUrl, uploadCoverUrl } from '../api/client';
-import type { LibAlbumOut, ReleaseType, UploadCommitIn, UploadOut, UploadTrackIn } from '../api/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, errorMessage, uploadCoverUrl } from '../api/client';
+import type { TrackOut, UploadOut, UploadTrackIn } from '../api/types';
 import { Icon } from '../components/Icon';
-import { AlbumPicker } from '../components/pickers';
 import { PlaylistsPick } from '../components/PlaylistsButton';
-import { Button, Checkbox, Cover, ErrorState, Field, IconButton, Loading, Notice, PageHeader, ProgressBar, SectionTitle, Sheet, cx } from '../components/ui';
-import { fmtDuration, fmtSize, plural, stripExt, toIntOrNull, tracksWord } from '../lib/format';
-import { useAsync } from '../lib/hooks';
+import { Button, Checkbox, Cover, Empty, ErrorState, Field, IconButton, Loading, PageHeader, ProgressBar, Sheet, Spinner, cx } from '../components/ui';
+import { useDesktop } from '../lib/desktop';
+import { fmtDuration, fmtSize, plural, toIntOrNull, tracksWord } from '../lib/format';
+import { useAsync, useDebounced } from '../lib/hooks';
+import { imageUrl } from '../lib/img';
 import { navigate } from '../lib/router';
 import { openTagsPick, useTags } from '../lib/tags';
 import { attempt, confirmDialog, toast } from '../lib/ui';
-import { ReleaseTypeSelect } from './Files';
 
-/** «Загрузить файлы»: the user's own audio files into the library. Files are dropped anywhere on the page (a folder
- * too) or picked; the Hub reads their tags and the page shows them as a table that can be edited in place. By
- * default every file goes to the album its tags name («Из тегов»): the files are grouped by album and album artist,
- * a group whose album the library already has is added to it, a file without an album becomes a single. The whole
- * batch can go into one new album or one existing album instead. The server takes one album per commit, so the
- * page commits group by group. */
+/** «Загрузить файлы»: one's own audio files into the library. Files — or a folder, with what is inside its folders —
+ * are dropped anywhere on the page or picked. The Hub reads each file and looks for the song it is in the catalog
+ * (`library/recognize.py`): a row shows the file as it says of itself and, beside it, what it becomes in the
+ * library. A file found in the catalog is filed as that song — its artists one by one, its real release, year and
+ * cover; one the catalog only has something like («Проверьте сами») keeps its own names until the listener says the
+ * record is it; one the catalog does not know keeps its own, and an «album» that is no album (nothing, «Single»,
+ * the track's own name) makes it a single. A recording the library has already says so and is left out. The marks
+ * under the bar sort the rows out; a row opens to be put right by hand. */
 
 export const AUDIO_ACCEPT = 'audio/*,.mp3,.m4a,.flac,.ogg,.opus,.wav';
 const MAX_SIZE = 500 * 1024 * 1024;
-const VIEW_KEY = 'hm-upload-view';
 const AUDIO_EXT = /\.(mp3|m4a|aac|flac|ogg|oga|opus|wav)$/i;
+const CHUNK = 20; // files brought in by one request: the page says how far it has got
 
 export const isAudioFile = (f: File) => f.type.startsWith('audio/') || AUDIO_EXT.test(f.name);
 
@@ -44,32 +46,17 @@ interface RowState {
   /** the library has this recording (`UploadOut.twin`) and this file takes the place of its file — else, included,
    * it is added as a track of its own */
   replace: boolean;
+  /** filed as the song of the catalog it was told to be; else under the names below */
+  catalog: boolean;
   title: string;
   artist: string;
   album: string;
-  albumArtist: string;
   year: string;
-  genre: string;
-  trackNo: string;
-  discNo: string;
 }
 
-type AlbumMode = 'tags' | 'new' | 'existing';
-type CoverChoice = { kind: 'none' } | { kind: 'upload'; id: number } | { kind: 'file'; file: File; url: string };
-
-/** The files of one album of the «Из тегов» mode. */
-interface Group {
-  key: string;
-  title: string;
-  albumArtist: string;
-  year: string;
-  genre: string;
-  single: boolean;
-  uploads: UploadOut[];
-}
+type Only = 'all' | 'doubt' | 'none' | 'twin' | 'weak';
 
 const str = (v: unknown) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
-const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 function rowFromUpload(u: UploadOut): RowState {
   return {
@@ -77,20 +64,16 @@ function rowFromUpload(u: UploadOut): RowState {
     // place. One that only sounds like a track of the library (another version of the song) is a track of its own
     include: !u.twin || u.twin.better || !u.twin.sure,
     replace: !!u.twin?.better,
-    title: str(u.tags.title) || stripExt(u.orig_name),
-    artist: str(u.tags.artist) || str(u.tags.album_artist),
-    album: str(u.tags.album),
-    // a file that does not say whose its album is: the first of its artists' — a guest on one track does not make
-    // that track an album of its own
-    albumArtist: str(u.tags.album_artist) || u.artists?.[0] || '',
+    catalog: u.match?.state === 'found',
+    title: u.title,
+    artist: u.artist,
+    album: u.single ? '' : str(u.tags.album),
     year: str(u.tags.year).slice(0, 4),
-    genre: str(u.tags.genre),
-    trackNo: str(u.tags.track_no),
-    discNo: str(u.tags.disc_no),
   };
 }
 
-const fileWords = (codec?: string | null, kbps?: number | null) => [codec ? codec.toUpperCase() : null, kbps ? `${kbps} кбит/с` : null].filter(Boolean).join(' ');
+const fileWords = (codec?: string | null, kbps?: number | null) => [codec ? codec.toUpperCase() : null, kbps ? String(kbps) : null].filter(Boolean).join(' ');
+const kindWord = (type?: string | null, album?: string | null) => (type === 'single' || !album ? 'сингл' : type === 'ep' ? `EP «${album}»` : `«${album}»`);
 
 /** Under a file the library has already: which track it is, how it was told (by the sound of the two files, or by
  * their names and length) and what the library's file is — and what to do with this one: leave it out, put it in
@@ -106,7 +89,7 @@ function TwinNote({ u, r, onChange }: { u: UploadOut; r: RowState; onChange: (pa
   );
   const theirs = fileWords(twin.codec, twin.bitrate_kbps);
   return (
-    <div className="flex flex-wrap items-center gap-1.5 px-2 pb-1.5 text-[11px] text-info">
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-info">
       <span className="min-w-0 truncate" title={!twin.sure ? 'Звучит похоже, но не одинаково: так бывает у версии на другом языке или кавера на ту же музыку' : twin.by === 'sound' ? 'Та же запись — определено по звучанию файлов' : 'То же название, исполнитель и длительность'}>
         {twin.sure ? 'Уже есть' : 'Похоже на'}: «{twin.title}»{theirs ? ` · ${theirs}` : ''} · {twin.by === 'sound' ? 'по звуку' : 'по названию'}
         {twin.better ? ' · этот файл лучше' : ''}
@@ -144,44 +127,19 @@ async function filesFromDrop(dt: DataTransfer): Promise<File[]> {
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
 
-const cell = 'w-full min-w-0 truncate rounded-md bg-transparent px-2 py-1.5 text-sm outline-none transition hover:bg-fg/5 focus:bg-raised focus:ring-1 focus:ring-accent';
-
 export function UploadPage() {
+  const desktop = useDesktop();
   const pendingRes = useAsync((s) => api.uploads('uploaded', s), []);
   const [uploads, setUploads] = useState<UploadOut[]>([]);
   const [rows, setRows] = useState<Record<number, RowState>>({});
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const coverRef = useRef<HTMLInputElement>(null);
-
-  const [mode, setMode] = useState<AlbumMode>('tags');
-  const [albumTitle, setAlbumTitle] = useState('');
-  const [albumArtist, setAlbumArtist] = useState('');
-  const [year, setYear] = useState('');
-  const [genre, setGenre] = useState('');
-  const [type, setType] = useState<ReleaseType>('album');
-  const [prefilled, setPrefilled] = useState(false);
-  const [existing, setExisting] = useState<LibAlbumOut | null>(null);
-  const [albumPicker, setAlbumPicker] = useState(false);
-  const [cover, setCover] = useState<CoverChoice>({ kind: 'none' });
-  const [coverTouched, setCoverTouched] = useState(false);
+  const folderRef = useRef<HTMLInputElement>(null);
+  const [only, setOnly] = useState<Only>('all');
+  const [open, setOpen] = useState<number | null>(null); // the row that is being put right
+  const [finding, setFinding] = useState<UploadOut | null>(null); // the file a record is being picked for
   const [playlists, setPlaylists] = useState<{ id: string; name: string }[]>([]);
-  const [view, setView] = useState<'list' | 'albums'>(() => {
-    try {
-      return localStorage.getItem(VIEW_KEY) === 'albums' ? 'albums' : 'list';
-    } catch {
-      return 'list';
-    }
-  });
-  const chooseView = (v: 'list' | 'albums') => {
-    setView(v);
-    try {
-      localStorage.setItem(VIEW_KEY, v);
-    } catch {
-      /* storage unavailable: the choice lives until the page is closed */
-    }
-  };
   const [like, setLike] = useState(false);
   // What is uploaded is kept together in a playlist of the day («Загружено 14 ноября»), so that tracks nobody put
   // anywhere can still be found as one list. Turned off, it stays off on this device.
@@ -193,10 +151,10 @@ export function UploadPage() {
   };
   const [tagIds, setTagIds] = useState<number[]>([]); // the imported tracks get these tags of one's own
   const [plPicker, setPlPicker] = useState(false);
-  const [committing, setCommitting] = useState(false);
-  const [bulk, setBulk] = useState(false);
-  /** group key → the library album with the same title and artist (null: the library has none) */
-  const [known, setKnown] = useState<Record<string, LibAlbumOut | null>>({});
+  const [moving, setMoving] = useState<{ done: number; of: number } | null>(null);
+  // a weak file filed as a song of the catalog is looked for anew once it is in: the same recording in a better
+  // file takes its place (the Hub: library/upgrade.py)
+  const [upgrade, setUpgrade] = useState(true);
 
   const addUploads = useCallback((list: UploadOut[]) => {
     setUploads((prev) => {
@@ -214,24 +172,8 @@ export function UploadPage() {
     if (pendingRes.data) addUploads(pendingRes.data);
   }, [pendingRes.data, addUploads]);
 
-  // Pre-fill the «one new album» form and its cover from the first file's tags (once).
-  useEffect(() => {
-    if (prefilled || uploads.length === 0) return;
-    const t = uploads[0].tags;
-    setAlbumTitle((v) => v || str(t.album));
-    setAlbumArtist((v) => v || str(t.album_artist) || str(t.artist));
-    setYear((v) => v || str(t.year).slice(0, 4));
-    setGenre((v) => v || str(t.genre));
-    setPrefilled(true);
-  }, [uploads, prefilled]);
-
-  useEffect(() => {
-    if (coverTouched || cover.kind !== 'none') return;
-    const withCover = uploads.find((u) => u.tags.has_cover);
-    if (withCover) setCover({ kind: 'upload', id: withCover.id });
-  }, [uploads, cover.kind, coverTouched]);
-
-  useEffect(() => () => void (cover.kind === 'file' && URL.revokeObjectURL(cover.url)), [cover]);
+  // a folder is picked by an input of its own: the attribute is not one React knows
+  useEffect(() => folderRef.current?.setAttribute('webkitdirectory', ''), []);
 
   const startUpload = useCallback(
     async (files: File[]) => {
@@ -302,13 +244,12 @@ export function UploadPage() {
     };
   }, [startUpload]);
 
+  const setRow = (id: number, patch: Partial<RowState>) => setRows((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
   const removeUpload = async (u: UploadOut) => {
-    const ok = await confirmDialog({ title: 'Удалить файл?', body: u.orig_name, okLabel: 'Удалить', danger: true });
+    const ok = await confirmDialog({ title: 'Убрать файл?', body: u.orig_name, okLabel: 'Убрать', danger: true });
     if (!ok) return;
-    if (await attempt(() => api.deleteUpload(u.id))) {
-      setUploads((prev) => prev.filter((x) => x.id !== u.id));
-      if (cover.kind === 'upload' && cover.id === u.id) setCover({ kind: 'none' });
-    }
+    if (await attempt(() => api.deleteUpload(u.id))) setUploads((prev) => prev.filter((x) => x.id !== u.id));
   };
 
   /** The files left unchecked — what the library has already, as a rule — go off the server in one go. */
@@ -319,137 +260,77 @@ export function UploadPage() {
     const gone = new Set<number>();
     for (const u of out) if (await attempt(() => api.deleteUpload(u.id))) gone.add(u.id);
     setUploads((prev) => prev.filter((u) => !gone.has(u.id)));
-    if (cover.kind === 'upload' && gone.has(cover.id)) setCover({ kind: 'none' });
   };
 
-  const setRow = (id: number, patch: Partial<RowState>) => setRows((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  /** The record of the catalog a file is, picked by hand (or looked for again): the row is the catalog's then. */
+  const rematch = async (u: UploadOut, ref?: string | null) => {
+    const next = await attempt(() => api.matchUpload(u.id, ref));
+    if (!next) return;
+    setUploads((prev) => prev.map((x) => (x.id === u.id ? next : x)));
+    setRow(u.id, { catalog: ref ? true : next.match?.state === 'found' });
+  };
 
   const included = uploads.filter((u) => rows[u.id]?.include);
-  const invalid = included.filter((u) => !rows[u.id].title.trim() || !rows[u.id].artist.trim());
+  const usesCatalog = (u: UploadOut) => !!rows[u.id]?.catalog && !!u.match?.ref;
+  const invalid = included.filter((u) => !usesCatalog(u) && (!rows[u.id].title.trim() || !rows[u.id].artist.trim()));
+  const counts = useMemo(() => ({
+    doubt: uploads.filter((u) => u.match?.state === 'doubt').length,
+    none: uploads.filter((u) => !u.match || u.match.state === 'none').length,
+    twin: uploads.filter((u) => u.twin).length,
+    weak: uploads.filter((u) => u.weak).length,
+  }), [uploads]);
+  const shown = uploads.filter((u) => (only === 'doubt' ? u.match?.state === 'doubt' : only === 'none' ? !u.match || u.match.state === 'none' : only === 'twin' ? !!u.twin : only === 'weak' ? !!u.weak : true));
 
-  const groups = useMemo<Group[]>(() => {
-    const map = new Map<string, Group>();
-    for (const u of uploads) {
-      const r = rows[u.id];
-      if (!r?.include) continue;
-      const title = r.album.trim();
-      const by = (r.albumArtist || r.artist).trim();
-      const key = title ? `${title.toLowerCase()}|${by.toLowerCase()}` : `single:${u.id}`;
-      const g = map.get(key) ?? { key, title: title || r.title.trim(), albumArtist: by, year: r.year, genre: r.genre, single: !title, uploads: [] };
-      g.uploads.push(u);
-      map.set(key, g);
-    }
-    return [...map.values()];
-  }, [uploads, rows]);
-
-  // Which of the albums the library already has: their files are added to it instead of making a twin.
-  useEffect(() => {
-    if (mode !== 'tags') return;
-    const todo = groups.filter((g) => !g.single && g.albumArtist && !(g.key in known));
-    if (!todo.length) return;
-    const ctl = new AbortController();
-    const timer = window.setTimeout(() => {
-      for (const g of todo)
-        void api.libAlbums(g.title, 0, 20, ctl.signal)
-          .then((list) => setKnown((prev) => ({ ...prev, [g.key]: list.find((a) => same(a.title, g.title) && same(a.album_artist, g.albumArtist)) ?? null })))
-          .catch(() => undefined);
-    }, 400);
-    return () => {
-      window.clearTimeout(timer);
-      ctl.abort();
-    };
-  }, [groups, known, mode]);
-
-  const albumOk = mode === 'tags' ? true : mode === 'existing' ? !!existing : !!albumTitle.trim() && !!albumArtist.trim();
   const uploadingNow = transfers.some((t) => !t.error);
-  const canCommit = included.length > 0 && invalid.length === 0 && albumOk && !uploadingNow;
+  const canCommit = included.length > 0 && invalid.length === 0 && !uploadingNow && !moving;
 
-  const trackIn = (u: UploadOut, g: string | null): UploadTrackIn => {
+  const trackIn = (u: UploadOut): UploadTrackIn => {
     const r = rows[u.id];
-    return { upload_id: u.id, title: r.title.trim(), artist: r.artist.trim(), track_no: toIntOrNull(r.trackNo), disc_no: toIntOrNull(r.discNo), genre: g, replace_track_id: r.replace && u.twin ? u.twin.track_id : null };
+    return { upload_id: u.id, catalog: usesCatalog(u), title: r.title.trim(), artist: r.artist.trim(), album: r.album.trim() || null, year: toIntOrNull(r.year), replace_track_id: r.replace && u.twin ? u.twin.track_id : null };
   };
 
+  /** The files go in by parts, so that the page says how far it has got; what went in leaves the list. */
   const commit = async () => {
-    setCommitting(true);
+    const list = included;
     let imported = 0;
-    let lastAlbum: number | null = null;
-    let albums = 0;
-    if (mode === 'tags') {
-      for (const g of groups) {
-        const lib = g.single ? null : known[g.key];
-        const album: UploadCommitIn['album'] = lib
-          ? { mode: 'existing', album_id: lib.id }
-          : { mode: 'new', title: g.title, album_artist: g.albumArtist, year: toIntOrNull(g.year), genre: g.genre.trim() || null, release_type: g.single ? 'single' : 'album' };
-        const res = await attempt(() =>
-          api.commitUploads({
-            album,
-            tracks: g.uploads.map((u) => trackIn(u, lib ? null : rows[u.id].genre.trim() || null)),
-            // an album of the library keeps its cover
-            cover_from_upload_id: lib ? null : (g.uploads.find((u) => u.tags.has_cover)?.id ?? null),
-            playlist_ids: playlists.map((p) => p.id),
-            star: like,
-            tag_ids: tagIds,
-            keep_in: keep ? keepName : null,
-          }, null),
-        );
-        if (!res) break;
-        imported += res.imported;
-        lastAlbum = res.album_id;
-        albums++;
-        const done = new Set(g.uploads.map((u) => u.id));
-        setUploads((prev) => prev.filter((u) => !done.has(u.id)));
-      }
-    } else {
-      const res = await attempt(() =>
-        api.commitUploads(
-          {
-            album:
-              mode === 'existing'
-                ? { mode: 'existing', album_id: existing!.id }
-                : { mode: 'new', title: albumTitle.trim(), album_artist: albumArtist.trim(), year: toIntOrNull(year), genre: genre.trim() || null, release_type: type },
-            tracks: included.map((u) => trackIn(u, mode === 'new' ? genre.trim() || null : null)),
-            cover_from_upload_id: cover.kind === 'upload' ? cover.id : null,
-            playlist_ids: playlists.map((p) => p.id),
-            star: like,
-            tag_ids: tagIds,
-            keep_in: keep ? keepName : null,
-          },
-          cover.kind === 'file' ? cover.file : null,
-        ),
-      );
-      if (res) {
-        imported = res.imported;
-        lastAlbum = res.album_id;
-        albums = 1;
-      }
+    let upgrading = 0;
+    setMoving({ done: 0, of: list.length });
+    for (let i = 0; i < list.length; i += CHUNK) {
+      const part = list.slice(i, i + CHUNK);
+      const res = await attempt(() => api.commitUploads({ tracks: part.map(trackIn), playlist_ids: playlists.map((p) => p.id), star: like, tag_ids: tagIds, keep_in: keep ? keepName : null, upgrade }));
+      if (!res) break;
+      imported += res.imported;
+      upgrading += res.upgrading;
+      const done = new Set(part.map((u) => u.id));
+      setUploads((prev) => prev.filter((u) => !done.has(u.id)));
+      setMoving({ done: Math.min(i + CHUNK, list.length), of: list.length });
     }
-    setCommitting(false);
-    if (!albums) return;
-    toast(`Импортировано: ${tracksWord(imported)}`, 'success');
-    if (albums === 1 && lastAlbum !== null && (mode !== 'tags' || groups.length === 1)) navigate(`/library/album/${lastAlbum}`, { replace: true });
-    else if (mode !== 'tags' || albums === groups.length) navigate('/files', { replace: true });
+    setMoving(null);
+    if (!imported) return;
+    toast(`Перенесено: ${tracksWord(imported)}` + (upgrading ? `. Ищу лучшее качество для ${upgrading} — в фоне` : ''), 'success');
+    if (imported === list.length) navigate('/files', { replace: true });
   };
 
-  const coversAvailable = uploads.filter((u) => u.tags.has_cover);
   const totalSize = included.reduce((n, u) => n + u.size, 0);
-  const allOn = uploads.length > 0 && included.length === uploads.length;
-  const oneAlbumName = mode === 'new' ? albumTitle.trim() || 'Новый альбом' : (existing?.title ?? 'Альбом не выбран');
-
-  const summary = (() => {
-    if (mode !== 'tags' || !groups.length) return null;
-    const fresh = groups.filter((g) => !g.single && !known[g.key]).length;
-    const into = groups.filter((g) => !g.single && known[g.key]).reduce((n, g) => n + g.uploads.length, 0);
-    const singles = groups.filter((g) => g.single).length;
-    return [
-      fresh ? `${plural(fresh, ['Создастся', 'Создадутся', 'Создадутся'])} ${fresh} ${plural(fresh, ['альбом', 'альбома', 'альбомов'])}` : null,
-      into ? `${tracksWord(into)} ${plural(into, ['добавится', 'добавятся', 'добавятся'])} в альбомы библиотеки` : null,
-      singles ? `${tracksWord(singles)} без альбома ${plural(singles, ['станет синглом', 'станут синглами', 'станут синглами'])}` : null,
-    ].filter(Boolean).join(' · ');
-  })();
+  const toUpgrade = included.filter((u) => u.weak && usesCatalog(u)).length;
+  const allOn = shown.length > 0 && shown.every((u) => rows[u.id]?.include);
+  const chips: [Only, string, number | null][] = [
+    ['all', 'Все', uploads.length],
+    ['doubt', 'Проверьте сами', counts.doubt],
+    ['none', 'Не найдено', counts.none],
+    ['twin', 'Уже есть', counts.twin],
+    ['weak', 'Слабый файл', counts.weak],
+  ];
 
   const importButton = uploads.length > 0 && (
-    <Button variant="primary" small icon="check" busy={committing} disabled={!canCommit} onClick={commit}>
-      Импортировать{included.length ? ` ${tracksWord(included.length)}` : ''}
+    <Button variant="primary" small icon="check" busy={!!moving} disabled={!canCommit} onClick={commit}>
+      {moving ? `Переношу ${moving.done} из ${moving.of}` : `Перенести${included.length ? ` ${tracksWord(included.length)}` : ''}`}
+    </Button>
+  );
+
+  const pick = (label: string, ref: React.RefObject<HTMLInputElement | null>) => (
+    <Button small onClick={() => ref.current?.click()}>
+      {label}
     </Button>
   );
 
@@ -466,55 +347,71 @@ export function UploadPage() {
         </div>
       )}
 
-      <div className="px-4">
-        <input
-          ref={fileRef}
-          type="file"
-          multiple
-          accept={AUDIO_ACCEPT}
-          className="hidden"
-          onChange={(e) => {
-            const files = Array.from(e.target.files ?? []);
-            e.target.value = '';
-            if (files.length) void startUpload(files);
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          className={cx(
-            'flex w-full items-center gap-3 rounded-2xl border-2 border-dashed border-line bg-surface text-left transition hover:border-accent',
-            uploads.length ? 'px-4 py-3' : 'flex-col px-4 py-8 text-center',
-          )}
-        >
+      <div className="px-4 lg:px-6">
+        {[fileRef, folderRef].map((ref, i) => (
+          <input
+            key={i}
+            ref={ref}
+            type="file"
+            multiple
+            accept={i === 0 ? AUDIO_ACCEPT : undefined}
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+              e.target.value = '';
+              if (files.length) void startUpload(files);
+            }}
+          />
+        ))}
+        <div className={cx('flex items-center gap-3 rounded-2xl border-2 border-dashed border-line bg-surface', uploads.length ? 'px-4 py-3' : 'flex-col px-4 py-8 text-center')}>
           <span className={cx('flex shrink-0 items-center justify-center rounded-full bg-accent text-on-accent', uploads.length ? 'h-9 w-9' : 'h-12 w-12')}>
             <Icon name="upload" size={uploads.length ? 18 : 24} />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block font-semibold">{uploads.length ? 'Добавить ещё файлы' : 'Перетащите сюда аудиофайлы или папку'}</span>
-            <span className="block text-xs text-muted">{uploads.length ? 'Перетащите в любое место страницы или нажмите' : 'или нажмите, чтобы выбрать · MP3, M4A, FLAC, OGG/Opus, WAV · до 500 МБ на файл'}</span>
+            <span className="block font-semibold">{uploads.length ? 'Добавить ещё' : 'Перетащите сюда аудиофайлы или папку'}</span>
+            <span className="block text-xs text-muted">{uploads.length ? 'Перетащите файлы или папку в любое место страницы' : 'MP3, M4A, FLAC, OGG/Opus, WAV · до 500 МБ на файл · папка читается вместе с подпапками'}</span>
           </span>
-        </button>
+          <span className="flex shrink-0 flex-wrap justify-center gap-2">
+            {pick('Выбрать файлы', fileRef)}
+            {desktop && pick('Выбрать папку', folderRef)}
+          </span>
+        </div>
       </div>
 
       {transfers.length > 0 && (
-        <ul className="mt-3 space-y-2 px-4" aria-label="Передача файлов">
-          {transfers.map((t) => (
-            <li key={t.key} className="card p-3">
-              <div className="flex items-center gap-2 text-sm">
-                <span className="min-w-0 flex-1 truncate">{t.file.name}</span>
-                <span className="shrink-0 text-xs text-muted">{t.error ? '' : `${Math.round(t.progress * 100)}% · `}{fmtSize(t.file.size)}</span>
-                {t.error && <IconButton icon="x" label="Убрать" onClick={() => setTransfers((prev) => prev.filter((x) => x.key !== t.key))} />}
-              </div>
-              {t.error ? <div className="mt-1 text-xs text-danger">{t.error}</div> : <ProgressBar value={t.progress} className="mt-2" />}
-            </li>
-          ))}
-        </ul>
+        <div className="mx-4 mt-3 rounded-2xl bg-surface p-3 lg:mx-6" aria-label="Передача файлов">
+          {(() => {
+            const going = transfers.find((t) => !t.error);
+            const failed = transfers.filter((t) => t.error);
+            return (
+              <>
+                {going && (
+                  <>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="min-w-0 flex-1 truncate">{going.file.name}</span>
+                      <span className="shrink-0 text-xs tabular-nums text-muted">осталось {transfers.length - failed.length}</span>
+                    </div>
+                    <ProgressBar value={going.progress} className="mt-2" />
+                    <p className="pt-1.5 text-xs text-dim">Каждый файл сверяется с каталогом — это секунда-другая на файл. Вкладку не закрывайте.</p>
+                  </>
+                )}
+                {failed.map((t) => (
+                  <div key={t.key} className="flex items-center gap-2 pt-1 text-sm">
+                    <span className="min-w-0 flex-1 truncate">
+                      {t.file.name} <span className="text-xs text-danger">— {t.error}</span>
+                    </span>
+                    <IconButton icon="x" size={16} label="Убрать" onClick={() => setTransfers((prev) => prev.filter((x) => x.key !== t.key))} />
+                  </div>
+                ))}
+              </>
+            );
+          })()}
+        </div>
       )}
 
       {uploads.length > 0 && (
         <AfterImport
-          className="mx-4 mt-3"
+          className="mx-4 mt-3 lg:mx-6"
           count={included.length}
           like={like}
           onLike={setLike}
@@ -533,196 +430,65 @@ export function UploadPage() {
         <Loading text="Проверяю незавершённые загрузки…" />
       ) : pendingRes.error && !uploads.length ? (
         <ErrorState text={pendingRes.error} onRetry={() => pendingRes.reload()} />
-      ) : uploads.length === 0 ? (
-        <p className="px-6 py-8 text-center text-sm text-muted">Загруженные файлы появятся здесь таблицей: проверьте названия и альбомы и нажмите «Импортировать».</p>
-      ) : (
+      ) : uploads.length === 0 ? null : (
         <>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pt-5">
-            <span className="text-sm text-muted">Альбомы</span>
-            <div className="flex overflow-hidden rounded-full bg-surface p-0.5 text-sm" role="radiogroup" aria-label="Куда импортировать">
-              {([['tags', 'Из тегов файлов'], ['new', 'Один новый альбом'], ['existing', 'В существующий']] as const).map(([m, label]) => (
-                <button key={m} type="button" role="radio" aria-checked={mode === m} onClick={() => setMode(m)} className={cx('min-h-9 rounded-full px-3 transition', mode === m ? 'bg-raised font-semibold text-fg' : 'text-muted hover:text-fg')}>
+          <div className="flex flex-wrap items-center gap-2 px-4 pt-4 lg:px-6">
+            <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto" role="group" aria-label="Какие файлы показывать" style={{ scrollbarWidth: 'none' }}>
+              {chips.filter(([id, , n]) => id === 'all' || id === only || (n ?? 0) > 0).map(([id, label, n]) => (
+                <button key={id} type="button" aria-pressed={only === id} onClick={() => setOnly(only === id ? 'all' : id)} className={cx('shrink-0 rounded-full px-3 py-1.5 text-sm transition', only === id ? 'bg-fg font-semibold text-bg' : 'bg-fg/10 text-muted hover:text-fg')}>
                   {label}
+                  <span className={cx('pl-1.5 tabular-nums', only === id ? 'opacity-70' : 'text-dim')}>{n}</span>
                 </button>
               ))}
             </div>
-            <span className="flex-1" />
-            {mode === 'tags' && (
-              <div className="flex overflow-hidden rounded-full bg-surface p-0.5 text-sm" role="radiogroup" aria-label="Как показать файлы">
-                {([['list', 'Списком'], ['albums', 'По альбомам']] as const).map(([v, label]) => (
-                  <button key={v} type="button" role="radio" aria-checked={view === v} onClick={() => chooseView(v)} className={cx('min-h-9 rounded-full px-3 transition', view === v ? 'bg-raised font-semibold text-fg' : 'text-muted hover:text-fg')}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
             {included.length < uploads.length && (
               <Button small icon="trash" onClick={removeLeftOut}>
                 Убрать невыбранные · {uploads.length - included.length}
               </Button>
             )}
-            <Button small icon="edit" disabled={!included.length} onClick={() => setBulk(true)}>
-              Изменить выбранные
-            </Button>
           </div>
-
-          {mode === 'new' && (
-            <div className="card mx-4 mt-3 grid gap-3 p-3 md:grid-cols-[2fr_2fr_5rem_1fr_9rem]">
-              <Field label="Название альбома">
-                <input className="input" value={albumTitle} onChange={(e) => setAlbumTitle(e.target.value)} />
-              </Field>
-              <Field label="Исполнитель альбома">
-                <input className="input" value={albumArtist} onChange={(e) => setAlbumArtist(e.target.value)} />
-              </Field>
-              <Field label="Год">
-                <input className="input" inputMode="numeric" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))} />
-              </Field>
-              <Field label="Жанр">
-                <input className="input" value={genre} onChange={(e) => setGenre(e.target.value)} />
-              </Field>
-              <Field label="Тип">
-                <ReleaseTypeSelect value={type} onChange={setType} />
-              </Field>
-            </div>
+          {toUpgrade > 0 && (
+            <label className="flex cursor-pointer items-start gap-2 px-4 pt-3 text-sm lg:px-6">
+              <input type="checkbox" className="mt-0.5 accent-(--color-accent)" checked={upgrade} onChange={(e) => setUpgrade(e.target.checked)} />
+              <span>
+                После переноса поискать лучшее качество для слабых файлов · {toUpgrade}
+                <span className="block text-xs text-muted">В фоне, через обычные источники. Файл заменится, только если найдётся та же запись (сверка по звуку) в лучшем качестве; иначе останется ваш.</span>
+              </span>
+            </label>
           )}
-          {mode === 'existing' && (
-            <div className="card mx-4 mt-3 flex items-center gap-3 p-3">
-              {existing ? (
-                <>
-                  <Cover src={existing.has_cover ? libraryCoverUrl(existing.id, 100) : null} size={48} icon="disc" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate">{existing.title}</div>
-                    <div className="truncate text-xs text-muted">{[existing.album_artist, existing.year, tracksWord(existing.track_count)].filter(Boolean).join(' · ')}</div>
-                  </div>
-                  <Button small onClick={() => setAlbumPicker(true)}>
-                    Изменить
-                  </Button>
-                </>
-              ) : (
-                <Button small icon="search" onClick={() => setAlbumPicker(true)}>
-                  Выбрать альбом
-                </Button>
-              )}
-            </div>
-          )}
+          {invalid.length > 0 && <p className="px-4 pt-2 text-xs text-danger lg:px-6">У {tracksWord(invalid.length)} не хватает названия или исполнителя — откройте строку и впишите.</p>}
 
-          {invalid.length > 0 && <div className="px-4 pt-3"><Notice kind="error">Заполните название и исполнителя у {tracksWord(invalid.length)}</Notice></div>}
-
-          {mode === 'tags' && view === 'albums' ? (
-            <AlbumsView
-              uploads={uploads}
-              rows={rows}
-              known={known}
-              setRow={setRow}
-              patchRows={(ids, patch) => setRows((prev) => ({ ...prev, ...Object.fromEntries(ids.filter((id) => prev[id]).map((id) => [id, { ...prev[id], ...patch }])) }))}
-              onRemove={removeUpload}
-            />
-          ) : (
-          <div className="mx-4 mt-3 overflow-hidden rounded-2xl bg-surface" role="table" aria-label="Файлы">
-            <div role="row" className="hidden grid-cols-[2.75rem_minmax(0,3fr)_minmax(0,2fr)_minmax(0,2fr)_3.5rem_3.5rem_2.75rem] items-center gap-1 border-b border-line/60 pr-1 text-xs text-dim md:grid">
-              <Checkbox checked={allOn} onChange={(v) => setRows((prev) => Object.fromEntries(Object.entries(prev).map(([id, r]) => [id, { ...r, include: v }])))} label="Выбрать все файлы" />
-              <span className="px-2">Название</span>
-              <span className="px-2">Исполнитель</span>
-              <span className="px-2">Альбом</span>
-              <span className="px-2">№</span>
-              <span className="px-2 text-right">Время</span>
-              <span />
-            </div>
-            {uploads.map((u) => {
-              const r = rows[u.id];
-              if (!r) return null;
-              const bad = (v: string) => r.include && !v.trim() && 'ring-1 ring-danger/70';
-              const g = mode === 'tags' && r.include ? groups.find((x) => x.uploads.includes(u)) : undefined;
-              const inLibrary = g && !g.single && known[g.key];
-              return (
-                <div key={u.id} role="row" className={cx('grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-x-1 border-b border-line/60 py-1 pr-1 last:border-0 md:grid-cols-[2.75rem_minmax(0,3fr)_minmax(0,2fr)_minmax(0,2fr)_3.5rem_3.5rem_2.75rem] md:py-0', !r.include && 'opacity-50')}>
-                  <Checkbox checked={r.include} onChange={(v) => setRow(u.id, { include: v })} label={`Импортировать ${u.orig_name}`} />
-                  <div className="flex min-w-0 items-center gap-1">
-                    {u.tags.has_cover ? (
-                      <img src={uploadCoverUrl(u.id)} alt="" loading="lazy" className="h-10 w-10 shrink-0 rounded-md object-cover" />
-                    ) : (
-                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-raised text-dim" title="В файле нет обложки">
-                        <Icon name="note" size={18} />
-                      </span>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <input className={cx(cell, 'font-medium', bad(r.title))} value={r.title} placeholder="Название" aria-label="Название" onChange={(e) => setRow(u.id, { title: e.target.value })} />
-                      <div className="truncate px-2 pb-1 text-[11px] text-dim" title={u.orig_name}>
-                        {u.orig_name} · {fmtSize(u.size)}
-                        {u.error ? <span className="text-danger"> · {u.error}</span> : null}
-                      </div>
-                      {u.twin && <TwinNote u={u} r={r} onChange={(patch) => setRow(u.id, patch)} />}
-                    </div>
-                  </div>
-                  <IconButton icon="trash" label={`Удалить ${u.orig_name}`} size={18} className="text-dim md:order-last" onClick={() => removeUpload(u)} />
-                  <input className={cx(cell, 'col-start-2 md:col-start-auto', bad(r.artist))} value={r.artist} placeholder="Исполнитель" aria-label="Исполнитель" onChange={(e) => setRow(u.id, { artist: e.target.value })} />
-                  {mode === 'tags' ? (
-                    <div className="col-start-2 flex min-w-0 items-center gap-1 md:col-start-auto">
-                      <input className={cell} value={r.album} placeholder="Без альбома — сингл" aria-label="Альбом" onChange={(e) => setRow(u.id, { album: e.target.value })} />
-                      {inLibrary && <span className="shrink-0 rounded-full bg-info/15 px-2 py-0.5 text-[11px] text-info" title="Такой альбом уже есть в библиотеке — трек добавится в него">уже есть</span>}
-                    </div>
-                  ) : (
-                    <span className="col-start-2 truncate px-2 py-1.5 text-sm text-muted md:col-start-auto">{oneAlbumName}</span>
-                  )}
-                  <input className={cx(cell, 'hidden md:block')} inputMode="numeric" value={r.trackNo} placeholder="—" aria-label="Номер трека" onChange={(e) => setRow(u.id, { trackNo: e.target.value.replace(/\D/g, '') })} />
-                  <span className="hidden px-2 text-right text-xs tabular-nums text-dim md:block">{u.tags.duration_s ? fmtDuration(u.tags.duration_s) : ''}</span>
-                </div>
-              );
-            })}
-          </div>
-          )}
-          {summary && <p className="px-5 pt-2 text-xs text-muted">{summary}. Обложки берутся из самих файлов.</p>}
-
-          {mode !== 'tags' && (
-            <>
-              <SectionTitle>Обложка</SectionTitle>
-              <div className="no-scrollbar flex gap-3 overflow-x-auto px-4 pb-1">
-                <CoverOption selected={cover.kind === 'none'} label={mode === 'existing' ? 'Как у альбома' : 'Без обложки'} onClick={() => { setCoverTouched(true); setCover({ kind: 'none' }); }}>
-                  <Icon name="x" className="text-dim" />
-                </CoverOption>
-                {coversAvailable.map((u) => (
-                  <CoverOption key={u.id} selected={cover.kind === 'upload' && cover.id === u.id} label={`Из «${stripExt(u.orig_name)}»`} onClick={() => { setCoverTouched(true); setCover({ kind: 'upload', id: u.id }); }}>
-                    <img src={uploadCoverUrl(u.id)} alt="" className="h-full w-full object-cover" />
-                  </CoverOption>
-                ))}
-                {cover.kind === 'file' && (
-                  <CoverOption selected label="Своя картинка" onClick={() => coverRef.current?.click()}>
-                    <img src={cover.url} alt="" className="h-full w-full object-cover" />
-                  </CoverOption>
-                )}
-                <CoverOption selected={false} label="Выбрать картинку" onClick={() => coverRef.current?.click()}>
-                  <Icon name="image" className="text-muted" />
-                </CoverOption>
-                <input
-                  ref={coverRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    e.target.value = '';
-                    if (f) {
-                      setCoverTouched(true);
-                      setCover({ kind: 'file', file: f, url: URL.createObjectURL(f) });
-                    }
-                  }}
-                />
+          <div className="mx-4 mt-3 overflow-hidden rounded-2xl bg-surface lg:mx-6" role="table" aria-label="Файлы">
+            {desktop && (
+              <div role="row" className="grid h-9 items-center gap-3 border-b border-line/60 pl-1 pr-2 text-xs text-dim" style={GRID}>
+                <Checkbox checked={allOn} onChange={(v) => setRows((prev) => ({ ...prev, ...Object.fromEntries(shown.map((u) => [u.id, { ...prev[u.id], include: v }])) }))} label="Выбрать все показанные" />
+                <span />
+                <span>В файле</span>
+                <span />
+                <span>Станет в библиотеке</span>
+                <span>Файл</span>
+                <span />
               </div>
-            </>
-          )}
+            )}
+            {shown.length === 0 && <Empty icon="search" title="Под эту метку ничего не подходит" />}
+            {shown.map((u) => (
+              <FileRow
+                key={u.id}
+                u={u}
+                r={rows[u.id] ?? rowFromUpload(u)}
+                desktop={desktop}
+                open={open === u.id}
+                onOpen={() => setOpen(open === u.id ? null : u.id)}
+                onChange={(patch) => setRow(u.id, patch)}
+                onFind={() => setFinding(u)}
+                onAgain={() => void rematch(u)}
+                onRemove={() => void removeUpload(u)}
+              />
+            ))}
+          </div>
         </>
       )}
 
-      <AlbumPicker
-        open={albumPicker}
-        onClose={() => setAlbumPicker(false)}
-        title="Выберите альбом"
-        allowCreate={false}
-        onPick={(a) => {
-          setExisting(a);
-          setAlbumPicker(false);
-        }}
-      />
       {plPicker && (
         <PlaylistsPick
           title={`${tracksWord(included.length)} — в плейлисты`}
@@ -736,14 +502,14 @@ export function UploadPage() {
           }}
         />
       )}
-      {bulk && (
-        <BulkEdit
-          count={included.length}
-          withAlbum={mode === 'tags'}
-          onClose={() => setBulk(false)}
-          onApply={(patch) => {
-            setRows((prev) => Object.fromEntries(Object.entries(prev).map(([id, r]) => [id, r.include ? { ...r, ...patch } : r])));
-            setBulk(false);
+      {finding && (
+        <FindRecord
+          u={finding}
+          onClose={() => setFinding(null)}
+          onPick={(ref) => {
+            const u = finding;
+            setFinding(null);
+            void rematch(u, ref);
           }}
         />
       )}
@@ -751,58 +517,175 @@ export function UploadPage() {
   );
 }
 
-/** One value for every checked file: only the fields that were filled in are changed. */
-function BulkEdit({ count, withAlbum, onClose, onApply }: { count: number; withAlbum: boolean; onClose: () => void; onApply: (patch: Partial<RowState>) => void }) {
-  const [artist, setArtist] = useState('');
-  const [album, setAlbum] = useState('');
-  const [albumArtist, setAlbumArtist] = useState('');
-  const [year, setYear] = useState('');
-  const patch: Partial<RowState> = {
-    ...(artist.trim() ? { artist: artist.trim() } : {}),
-    ...(withAlbum && album.trim() ? { album: album.trim() } : {}),
-    ...(withAlbum && albumArtist.trim() ? { albumArtist: albumArtist.trim() } : {}),
-    ...(withAlbum && year ? { year } : {}),
-  };
-  return (
-    <Sheet
-      open
-      onClose={onClose}
-      title={`Изменить ${tracksWord(count)}`}
-      footer={
-        <Button variant="primary" block disabled={!Object.keys(patch).length} onClick={() => onApply(patch)}>
-          Применить
-        </Button>
-      }
-    >
-      <div className="space-y-3">
-        <p className="text-sm text-muted">Заполните только то, что нужно поменять у всех отмеченных файлов.</p>
-        <Field label="Исполнитель">
-          <input className="input" value={artist} onChange={(e) => setArtist(e.target.value)} />
-        </Field>
-        {withAlbum && (
-          <>
-            <Field label="Альбом">
-              <input className="input" value={album} onChange={(e) => setAlbum(e.target.value)} />
-            </Field>
-            <Field label="Исполнитель альбома">
-              <input className="input" value={albumArtist} onChange={(e) => setAlbumArtist(e.target.value)} placeholder="Если отличается от исполнителя трека" />
-            </Field>
-            <Field label="Год">
-              <input className="input" inputMode="numeric" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))} />
-            </Field>
-          </>
-        )}
+const GRID = { gridTemplateColumns: '2.75rem 2.5rem minmax(0,1fr) 1rem minmax(0,1fr) 8.5rem 2.5rem' };
+
+/** A file of the list: what it says of itself, what it becomes in the library, and what the file is. Open, it is
+ * put right: the record of the catalog taken or left, another one picked, or the file's own names written. */
+function FileRow({ u, r, desktop, open, onOpen, onChange, onFind, onAgain, onRemove }: { u: UploadOut; r: RowState; desktop: boolean; open: boolean; onOpen: () => void; onChange: (patch: Partial<RowState>) => void; onFind: () => void; onAgain: () => void; onRemove: () => void }) {
+  const m = u.match;
+  const has = !!m?.ref;
+  const by = r.catalog && has;
+  const own = `${u.artist || 'исполнитель не указан'} · ${u.single ? 'без альбома' : `«${str(u.tags.album)}»`}`;
+  const cover = by && m?.cover_url ? imageUrl(m.cover_url) : u.tags.has_cover ? uploadCoverUrl(u.id) : null;
+  const bad = !by && (!r.title.trim() || !r.artist.trim());
+  const becomes = by ? (
+    <>
+      <span className="block truncate text-[15px]">{m?.title}</span>
+      <span className="block truncate text-[13px] text-muted">{[(m?.artists?.length ? m.artists : [m?.artist]).filter(Boolean).join(' · '), kindWord(m?.record_type, m?.album), m?.year].filter(Boolean).join(' · ')}</span>
+    </>
+  ) : (
+    <>
+      <span className={cx('block truncate text-[15px]', bad && 'text-danger')}>{r.title || 'нет названия'}</span>
+      <span className="block truncate text-[13px] text-muted">{[r.artist || 'нет исполнителя', r.album.trim() ? `«${r.album.trim()}»` : 'сингл', r.year].filter(Boolean).join(' · ')}</span>
+    </>
+  );
+  // what the catalog said, under the row: a doubt with its reason, or that there is nothing — the names are the file's
+  const note =
+    m?.state === 'doubt' ? (
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-warn">
+        <span className="min-w-0 truncate">
+          В каталоге похожая: «{m.title}» — {m.artist}, {fmtDuration(m.duration_s)} · {m.why}
+        </span>
+        <button type="button" aria-pressed={by} onClick={() => onChange({ catalog: true })} className={cx('rounded-full px-2 py-0.5 transition', by ? 'bg-warn/20 font-semibold' : 'bg-fg/5 text-muted hover:text-fg')}>
+          это она
+        </button>
+        <button type="button" aria-pressed={!by} onClick={() => onChange({ catalog: false })} className={cx('rounded-full px-2 py-0.5 transition', !by ? 'bg-warn/20 font-semibold' : 'bg-fg/5 text-muted hover:text-fg')}>
+          нет, оставить мои теги
+        </button>
       </div>
-    </Sheet>
+    ) : !has ? (
+      <div className="text-[11px] text-dim">Не найдено в каталоге — теги и обложка остаются из файла{m?.why ? ` (${m.why})` : ''}</div>
+    ) : !by ? (
+      <div className="text-[11px] text-dim">Данные каталога отключены — теги и обложка остаются из файла</div>
+    ) : null;
+  const file = (
+    <span className={cx('inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px]', u.weak ? 'bg-warn/15 text-warn' : 'bg-fg/5 text-muted')} title={u.weak ? 'Низкое качество: такой файл слышно' : undefined}>
+      {fileWords(u.codec, u.bitrate_kbps) || '—'}
+      {u.weak ? ' · слабый' : ''}
+    </span>
+  );
+  const picture = <Cover src={cover} size={40} alt="" />;
+  const notes = (note || u.twin) && (
+    <div className="space-y-1">
+      {note}
+      {u.twin && <TwinNote u={u} r={r} onChange={onChange} />}
+    </div>
+  );
+  return (
+    <div role="row" className={cx('border-b border-line/60 last:border-0', !r.include && 'opacity-60')}>
+      {desktop ? (
+        <>
+          <div className="grid min-h-14 items-center gap-3 py-1.5 pl-1 pr-2" style={GRID}>
+            <Checkbox checked={r.include} onChange={(v) => onChange({ include: v })} label={`Переносить «${u.title}»`} />
+            {picture}
+            <span className="min-w-0" title={u.orig_name}>
+              <span className="block truncate text-[15px]">{u.title}</span>
+              <span className="block truncate text-[13px] text-muted">{own}</span>
+            </span>
+            <Icon name="chevron" size={14} className="text-dim" />
+            <span className="min-w-0">{becomes}</span>
+            <span>{file}</span>
+            <IconButton icon={open ? 'down' : 'edit'} size={17} label={open ? 'Свернуть' : 'Изменить'} aria-expanded={open} onClick={onOpen} className="text-dim hover:text-fg" />
+          </div>
+          {notes && <div className="pb-2 pl-[6.75rem] pr-4">{notes}</div>}
+        </>
+      ) : (
+        <div className="flex items-start gap-3 py-2 pl-1 pr-1">
+          <Checkbox checked={r.include} onChange={(v) => onChange({ include: v })} label={`Переносить «${u.title}»`} />
+          {picture}
+          <div className="min-w-0 flex-1 space-y-1">
+            {becomes}
+            <div className="truncate text-[11px] text-dim">в файле: {u.title} · {own}</div>
+            <div>{file}</div>
+            {notes}
+          </div>
+          <IconButton icon={open ? 'down' : 'edit'} size={17} label={open ? 'Свернуть' : 'Изменить'} aria-expanded={open} onClick={onOpen} className="text-dim" />
+        </div>
+      )}
+      {open && (
+        <div className="space-y-3 border-t border-line/60 bg-fg/[0.03] px-4 py-3 md:pl-[6.75rem]">
+          {by ? (
+            <p className="text-sm text-muted">
+              Название, исполнители, альбом, год и обложка берутся из каталога{m?.by_hand ? ' — запись выбрана вручную' : ''}.
+            </p>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-[2fr_2fr_2fr_5rem]">
+              <Field label="Название">
+                <input className="input" value={r.title} onChange={(e) => onChange({ title: e.target.value })} />
+              </Field>
+              <Field label="Исполнители (через запятую)">
+                <input className="input" value={r.artist} onChange={(e) => onChange({ artist: e.target.value })} />
+              </Field>
+              <Field label="Альбом">
+                <input className="input" value={r.album} placeholder="Пусто — сингл" onChange={(e) => onChange({ album: e.target.value })} />
+              </Field>
+              <Field label="Год">
+                <input className="input" inputMode="numeric" value={r.year} onChange={(e) => onChange({ year: e.target.value.replace(/\D/g, '').slice(0, 4) })} />
+              </Field>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {has && (
+              <Button small onClick={() => onChange({ catalog: !by })}>
+                {by ? 'Не из каталога — оставить мои теги' : 'Взять данные каталога'}
+              </Button>
+            )}
+            <Button small icon="search" onClick={onFind}>
+              {has ? 'Другая запись каталога…' : 'Найти в каталоге вручную'}
+            </Button>
+            {!m?.by_hand && (
+              <Button small icon="refresh" onClick={onAgain}>
+                Сверить заново
+              </Button>
+            )}
+            <Button small icon="trash" onClick={onRemove}>
+              Убрать файл
+            </Button>
+          </div>
+          <p className="truncate text-xs text-dim" title={u.orig_name}>
+            {u.orig_name} · {fmtSize(u.size)} · {fmtDuration(u.duration_s)}
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
-function CoverOption({ selected, label, onClick, children }: { selected: boolean; label: string; onClick: () => void; children: ReactNode }) {
+/** The record of the catalog a file is, picked by hand: the catalog is searched by words, a record is taken by a tap. */
+function FindRecord({ u, onClose, onPick }: { u: UploadOut; onClose: () => void; onPick: (ref: string) => void }) {
+  const [q, setQ] = useState(`${u.artists?.[0] ?? u.artist} ${u.title}`.trim());
+  const dq = useDebounced(q.trim(), 350);
+  const res = useAsync((s) => (dq.length > 1 ? api.searchTracks(dq, 0, s).then((r) => r.tracks) : Promise.resolve([] as TrackOut[])), [dq]);
+  const found = (res.data ?? []).filter((t) => t.ref.startsWith('dz:'));
   return (
-    <button type="button" onClick={onClick} aria-pressed={selected} className="flex w-24 shrink-0 flex-col items-center gap-1.5 text-center">
-      <span className={cx('flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg bg-raised ring-2', selected ? 'ring-accent' : 'ring-transparent')}>{children}</span>
-      <span className="line-clamp-2 text-xs leading-tight text-muted">{label}</span>
-    </button>
+    <Sheet open onClose={onClose} title="Какая это запись">
+      <p className="pb-3 text-xs text-muted">
+        Файл: {u.title} — {u.artist || 'исполнитель не указан'} · {fmtDuration(u.duration_s)}
+      </p>
+      <input className="input" type="search" value={q} autoFocus placeholder="Исполнитель и название" aria-label="Поиск по каталогу" onChange={(e) => setQ(e.target.value)} />
+      <div className="pt-3">
+        {res.loading ? (
+          <div className="flex justify-center py-6"><Spinner /></div>
+        ) : !found.length ? (
+          <p className="py-6 text-center text-sm text-muted">{dq.length > 1 ? 'Каталог ничего не нашёл — попробуйте другие слова.' : 'Введите исполнителя и название.'}</p>
+        ) : (
+          <ul>
+            {found.map((t) => (
+              <li key={t.ref}>
+                <button type="button" onClick={() => onPick(t.ref)} className="flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left hover:bg-fg/10">
+                  <Cover src={t.cover_small_url || t.cover_url} size={40} alt="" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[15px]">{t.title}</span>
+                    <span className="block truncate text-[13px] text-muted">{[t.artists?.length ? t.artists.join(', ') : t.artist, t.album_title].filter(Boolean).join(' · ')}</span>
+                  </span>
+                  <span className="shrink-0 text-xs tabular-nums text-dim">{fmtDuration(t.duration_s)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Sheet>
   );
 }
 
@@ -864,155 +747,5 @@ export function AfterImport({ count, like, onLike, playlists, onPlaylists, onPic
         ))}
       </div>
     </div>
-  );
-}
-
-interface ViewGroup {
-  key: string;
-  title: string;
-  albumArtist: string;
-  uploads: UploadOut[];
-}
-
-/** «По альбомам»: the files under the album their tags name — its cover, artist and length once, the tracks below
- * (a group folds). The tick of an album is the tick of all its files; ✎ changes the album of them all. Files without
- * an album are one group at the end: each becomes a single. */
-function AlbumsView({ uploads, rows, known, setRow, patchRows, onRemove }: { uploads: UploadOut[]; rows: Record<number, RowState>; known: Record<string, LibAlbumOut | null>; setRow: (id: number, patch: Partial<RowState>) => void; patchRows: (ids: number[], patch: Partial<RowState>) => void; onRemove: (u: UploadOut) => void }) {
-  const [closed, setClosed] = useState<Record<string, boolean>>({});
-  const [editing, setEditing] = useState<ViewGroup | null>(null);
-  const groups = useMemo(() => {
-    const map = new Map<string, ViewGroup>();
-    const loose: UploadOut[] = [];
-    for (const u of uploads) {
-      const r = rows[u.id];
-      if (!r) continue;
-      const title = r.album.trim();
-      if (!title) {
-        loose.push(u);
-        continue;
-      }
-      const by = (r.albumArtist || r.artist).trim();
-      const key = `${title.toLowerCase()}|${by.toLowerCase()}`;
-      const g = map.get(key) ?? { key, title, albumArtist: by, uploads: [] };
-      g.uploads.push(u);
-      map.set(key, g);
-    }
-    return [...map.values(), ...(loose.length ? [{ key: 'none', title: 'Без альбома', albumArtist: '', uploads: loose }] : [])];
-  }, [uploads, rows]);
-  const grid = 'grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-x-1 md:grid-cols-[2.75rem_3.5rem_minmax(0,3fr)_minmax(0,2fr)_3.5rem_2.75rem]';
-
-  return (
-    <div className="mx-4 mt-3 space-y-2" aria-label="Файлы по альбомам">
-      {groups.map((g) => {
-        const none = g.key === 'none';
-        const ids = g.uploads.map((u) => u.id);
-        const on = g.uploads.filter((u) => rows[u.id].include).length;
-        const length = g.uploads.reduce((n, u) => n + (u.tags.duration_s ?? 0), 0);
-        const withCover = g.uploads.find((u) => u.tags.has_cover);
-        const lib = none ? undefined : known[g.key];
-        const open = !closed[g.key];
-        return (
-          <section key={g.key} className="overflow-hidden rounded-2xl bg-surface">
-            <div className={cx('flex items-center gap-2 py-2 pr-2', !on && 'opacity-50')}>
-              <Checkbox checked={on === g.uploads.length} onChange={(v) => patchRows(ids, { include: v })} label={`Импортировать все файлы: ${g.title}`} />
-              {withCover ? (
-                <img src={uploadCoverUrl(withCover.id)} alt="" loading="lazy" className="h-12 w-12 shrink-0 rounded-md object-cover" />
-              ) : (
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-raised text-dim">
-                  <Icon name={none ? 'note' : 'disc'} size={22} />
-                </span>
-              )}
-              <button type="button" onClick={() => setClosed((c) => ({ ...c, [g.key]: open }))} aria-expanded={open} className="min-w-0 flex-1 text-left">
-                <span className="block truncate font-semibold">{g.title}</span>
-                <span className="block truncate text-xs text-muted">
-                  {none
-                    ? `${tracksWord(g.uploads.length)} ${plural(g.uploads.length, ['станет синглом', 'станут синглами', 'станут синглами'])}`
-                    : [g.albumArtist, tracksWord(g.uploads.length), length ? fmtDuration(length) : null].filter(Boolean).join(' · ')}
-                </span>
-              </button>
-              {lib ? (
-                <span className="shrink-0 rounded-full bg-info/15 px-2 py-0.5 text-[11px] text-info" title="Такой альбом уже есть в библиотеке — треки добавятся в него">уже есть в библиотеке</span>
-              ) : lib === null ? (
-                <span className="shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] text-accent">новый альбом</span>
-              ) : null}
-              {!none && <IconButton icon="edit" size={18} label={`Изменить альбом ${g.title}`} className="text-muted hover:text-fg" onClick={() => setEditing(g)} />}
-              <IconButton icon={open ? 'down' : 'chevron'} size={18} label={open ? 'Свернуть' : 'Развернуть'} className="text-dim" onClick={() => setClosed((c) => ({ ...c, [g.key]: open }))} />
-            </div>
-            {open &&
-              g.uploads.map((u) => {
-                const r = rows[u.id];
-                const bad = (v: string) => r.include && !v.trim() && 'ring-1 ring-danger/70';
-                return (
-                  <div key={u.id} role="row" className={cx(grid, 'border-t border-line/60 py-1 pl-4 pr-1 md:py-0', !r.include && 'opacity-50')}>
-                    <Checkbox checked={r.include} onChange={(v) => setRow(u.id, { include: v })} label={`Импортировать ${u.orig_name}`} />
-                    <input className={cx(cell, 'hidden text-center md:block')} inputMode="numeric" value={r.trackNo} placeholder="—" aria-label="Номер трека" onChange={(e) => setRow(u.id, { trackNo: e.target.value.replace(/\D/g, '') })} />
-                    <div className="min-w-0">
-                      <input className={cx(cell, 'font-medium', bad(r.title))} value={r.title} placeholder="Название" aria-label="Название" onChange={(e) => setRow(u.id, { title: e.target.value })} />
-                      <div className="truncate px-2 pb-1 text-[11px] text-dim" title={u.orig_name}>
-                        {u.orig_name} · {fmtSize(u.size)}
-                        {u.error ? <span className="text-danger"> · {u.error}</span> : null}
-                      </div>
-                      {u.twin && <TwinNote u={u} r={r} onChange={(patch) => setRow(u.id, patch)} />}
-                    </div>
-                    <IconButton icon="trash" label={`Удалить ${u.orig_name}`} size={18} className="text-dim md:order-last" onClick={() => onRemove(u)} />
-                    <input className={cx(cell, 'col-start-2 md:col-start-auto', bad(r.artist))} value={r.artist} placeholder="Исполнитель" aria-label="Исполнитель" onChange={(e) => setRow(u.id, { artist: e.target.value })} />
-                    <span className="hidden px-2 text-right text-xs tabular-nums text-dim md:block">{u.tags.duration_s ? fmtDuration(u.tags.duration_s) : ''}</span>
-                  </div>
-                );
-              })}
-          </section>
-        );
-      })}
-      {editing && (
-        <AlbumEdit
-          group={editing}
-          first={rows[editing.uploads[0].id]}
-          onClose={() => setEditing(null)}
-          onApply={(patch) => {
-            patchRows(editing.uploads.map((u) => u.id), patch);
-            setEditing(null);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-/** ✎ of an album of «По альбомам»: its name, artist, year and genre, for all its files at once. */
-function AlbumEdit({ group, first, onClose, onApply }: { group: ViewGroup; first: RowState; onClose: () => void; onApply: (patch: Partial<RowState>) => void }) {
-  const [album, setAlbum] = useState(group.title);
-  const [albumArtist, setAlbumArtist] = useState(group.albumArtist);
-  const [year, setYear] = useState(first.year);
-  const [genre, setGenre] = useState(first.genre);
-  return (
-    <Sheet
-      open
-      onClose={onClose}
-      title={`Альбом — ${tracksWord(group.uploads.length)}`}
-      footer={
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Отмена</Button>
-          <Button variant="primary" disabled={!album.trim() || !albumArtist.trim()} onClick={() => onApply({ album: album.trim(), albumArtist: albumArtist.trim(), year, genre: genre.trim() })}>
-            Применить
-          </Button>
-        </div>
-      }
-    >
-      <div className="space-y-3">
-        <Field label="Название альбома">
-          <input className="input" value={album} onChange={(e) => setAlbum(e.target.value)} autoFocus />
-        </Field>
-        <Field label="Исполнитель альбома">
-          <input className="input" value={albumArtist} onChange={(e) => setAlbumArtist(e.target.value)} />
-        </Field>
-        <Field label="Год">
-          <input className="input" inputMode="numeric" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))} />
-        </Field>
-        <Field label="Жанр">
-          <input className="input" value={genre} onChange={(e) => setGenre(e.target.value)} />
-        </Field>
-        <p className="text-xs text-dim">Если назвать альбом так же, как другой из этой загрузки или из библиотеки, файлы объединятся с ним.</p>
-      </div>
-    </Sheet>
   );
 }

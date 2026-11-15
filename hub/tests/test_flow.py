@@ -438,24 +438,23 @@ async def test_upload_commit_and_album_edit(env, tmp_path):
     r = await c.post("/api/uploads", files=files)
     assert r.status_code == 200, r.text
     ups = r.json()
-    assert [u["tags"]["title"] for u in ups] == ["song0", "song1", "song2"]
+    assert [u["title"] for u in ups] == ["song0", "song1", "song2"]  # a file with no tags: named by its name
+    assert all(u["match"]["state"] == "none" and u["single"] for u in ups)  # no artist: nothing to look for
     payload = {
-        "album": {"mode": "new", "title": "Мой альбом", "album_artist": "Я", "year": 2026},
-        "tracks": [{"upload_id": u["id"], "title": f"Трек {i + 1}", "artist": "Я", "track_no": i + 1}
+        "tracks": [{"upload_id": u["id"], "title": f"Трек {i + 1}", "artist": "Я", "album": "Мой альбом", "year": 2026, "track_no": i + 1}
                    for i, u in enumerate(ups)],
         "keep_in": "Загружено  сегодня",
     }
-    r = await c.post("/api/uploads/commit", data={"payload": json.dumps(payload)},
-                     files={"cover": ("c.jpg", jpeg_bytes(), "image/jpeg")})
+    r = await c.post("/api/uploads/commit", json=payload)
     assert r.status_code == 200, r.text
-    album_id = r.json()["album_id"]
+    (album_id,) = r.json()["album_ids"]
     assert r.json()["imported"] == 3
     # what was uploaded is kept together: a playlist of that name, made by the import
     kept = [p for p in (await c.get("/api/playlists")).json() if p["name"] == "Загружено сегодня"]
     assert len(kept) == 1 and kept[0]["song_count"] + kept[0]["pending_count"] == 3
     album_dir = env["music"] / "library" / "Я" / "2026 - Мой альбом"
     assert sorted(p.name for p in album_dir.iterdir()) == [
-        "1-01 - Трек 1.mp3", "1-02 - Трек 2.mp3", "1-03 - Трек 3.mp3", "cover.jpg"]
+        "1-01 - Трек 1.mp3", "1-02 - Трек 2.mp3", "1-03 - Трек 3.mp3"]
 
     r = await c.patch(f"/api/library/albums/{album_id}", json={"title": "Переименован"})
     assert r.status_code == 200, r.text

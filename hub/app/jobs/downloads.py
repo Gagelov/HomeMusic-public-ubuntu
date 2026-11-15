@@ -30,6 +30,7 @@ from app.jobs.queue import PermanentError, enqueue, handler, notify, on_final_fa
 from app.library import probe
 from app.library.importer import ImportSpec, cleanup_dir, import_file, staging_dir_for
 from app.library.navidrome import admin_client
+from app.library import upgrade
 from app.library.owned import find_owned, quiet
 from app.library.tracks import current_file
 from app.matching.select import (
@@ -109,7 +110,8 @@ def item_ref(item: DownloadItem) -> str | None:
 
 
 LOG_MAX = 120  # steps a download keeps (a retried one starts no new journal: the old steps say why)
-ORIGINS = {"import": " из импорта", "mix": " из микса", "wave": " из волны", "assistant": " от ассистента"}
+ORIGINS = {"import": " из импорта", "mix": " из микса", "wave": " из волны", "assistant": " от ассистента",
+           "upgrade": " — поиск лучшего файла"}
 
 
 async def step(item_id: int, kind: str, text: str, cand: Candidate | None = None) -> None:
@@ -431,6 +433,10 @@ async def handle_download_item(job: Job) -> None:
     finally:
         cleanup_dir(stage)
 
+    if upgrade.of_meta(meta):  # nothing better than the file there is: it stays, and nobody is asked anything
+        await update_item(item_id, status="cancelled", error=None)
+        await step(item_id, "info", "Лучше файла не нашлось — остаётся тот, что есть" + (f" ({last_reason})" if last_reason else ""))
+        return
     if chosen:
         verdict = f"Файл не подошёл ({last_reason})"
     elif not all_cands:
@@ -491,6 +497,7 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
     last_reason = ""
     # a file that says more than it sounds like (made of a poorer one) waits: another may be the real thing
     spare: tuple[Candidate, Path, Any] | None = None
+    upgrade_of = upgrade.of_meta(meta)
     for cand in cands:
         provider = svc.providers.get(cand.provider)
         if provider is None:
@@ -522,6 +529,11 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
             path.unlink(missing_ok=True)
             await step(item_id, "bad", f"Не подошёл: {check.reason}", cand)
             continue
+        if check.blown_from_kbps and upgrade_of:  # made of a poorer file: no better than what there is
+            last_reason = f"{cand.provider}: по звуку около {check.blown_from_kbps} кбит/с"
+            path.unlink(missing_ok=True)
+            await step(item_id, "bad", f"Не подошёл на замену: по звуку около {check.blown_from_kbps} кбит/с", cand)
+            continue
         if check.blown_from_kbps:
             said = check.info.bitrate_kbps if check.info else cand.bitrate_kbps
             await step(item_id, "warn", f"Отложен: заявлено {said} кбит/с, а по звуку около {check.blown_from_kbps}", cand)
@@ -530,6 +542,15 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
             else:
                 path.unlink(missing_ok=True)
             continue
+        if upgrade_of:  # a better file in the place of a weak one: the same recording, and better (library/upgrade.py)
+            async with session_scope() as s:
+                fit, why = await upgrade.fits(s, upgrade_of, path, check.info.codec if check.info else None,
+                                              check.info.bitrate_kbps if check.info else cand.bitrate_kbps)
+            if not fit:
+                last_reason = f"{cand.provider}: {why}"
+                path.unlink(missing_ok=True)
+                await step(item_id, "bad", f"Не подошёл на замену: {why}", cand)
+                continue
         if spare is not None:
             spare[1].unlink(missing_ok=True)
         bitrate = f", {cand.bitrate_kbps} кбит/с" if cand.bitrate_kbps else ""
@@ -584,9 +605,18 @@ async def import_downloaded(item_id: int, user_id: int, q: TrackQuery, meta: dic
         force=force,
     )
     await update_item(item_id, status="importing")
-    async with session_scope() as s:
-        track = await import_file(s, path, spec)
-        track_id = track.id
+    upgrade_of = upgrade.of_meta(meta)
+    shelved: list = []
+    try:
+        async with session_scope() as s:
+            if upgrade_of:  # the new file comes in the old one's place, under the same track
+                spec.track_id, spec.force = upgrade_of, False
+                shelved = await upgrade.shelve(s, upgrade_of)
+            track = await import_file(s, path, spec)
+            track_id = track.id
+    except Exception:
+        await upgrade.unshelve(shelved)  # the new file did not come: the old one is back where it was
+        raise
     await update_item(item_id, track_id=track_id, warnings=spec.warnings, error=None)
     await step(item_id, "ok", "Теги и обложка записаны, файл в библиотеке"
                + (f". Замечания: {'; '.join(str(w) for w in spec.warnings)}" if spec.warnings else ""))

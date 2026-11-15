@@ -581,6 +581,16 @@ export interface UploadOut {
   bitrate_kbps?: number | null;
   /** the library has this recording already */
   twin?: UploadTwin | null;
+  /** what song of the catalog the file is */
+  match?: UploadMatch | null;
+  /** the file is heard to be poor */
+  weak?: boolean;
+  /** the file's own names: its tags and, where they are empty, its name */
+  title: string;
+  artist: string;
+  /** its «album» is no album: nothing, «Single», the track's own name */
+  single?: boolean;
+  duration_s?: number | null;
 }
 
 /** The library's track an uploaded file is of already. */
@@ -600,16 +610,35 @@ export interface UploadTwin {
   better: boolean;
 }
 
+/** A file to bring into the library. `catalog`: as the song of the catalog it was told to be (`UploadOut.match`) —
+ * the fields below are not read then. Else by them: `album` empty (or the track's own name) makes a single. */
 export interface UploadTrackIn {
   upload_id: number;
-  title: string;
-  artist: string;
-  track_no?: number | null;
-  disc_no?: number | null;
-  genre?: string | null;
-  explicit?: boolean | null;
+  catalog: boolean;
+  title?: string;
+  artist?: string;
+  album?: string | null;
+  year?: number | null;
   /** the library's track whose file this one takes the place of */
   replace_track_id?: number | null;
+}
+
+/** The song of the catalog an uploaded file was told to be: `found` — it is that song; `doubt` — a record is like
+ * the file but not surely it (`why`), used only when the listener says so; `none` — the catalog has nothing like it. */
+export interface UploadMatch {
+  state: 'found' | 'doubt' | 'none';
+  why?: string | null;
+  by_hand?: boolean;
+  ref?: string | null;
+  title?: string | null;
+  artist?: string | null;
+  artists?: string[];
+  album?: string | null;
+  album_artist?: string | null;
+  record_type?: string | null;
+  year?: number | null;
+  duration_s?: number | null;
+  cover_url?: string | null;
 }
 
 /** Albums that are one album in pieces («Мои файлы»): `target_id` — the one the rest are joined into. */
@@ -619,21 +648,8 @@ export interface SplitAlbums {
   albums: { id: number; title: string; album_artist: string; year?: number | null; track_count: number; has_cover: boolean }[];
 }
 
-export interface UploadAlbumIn {
-  mode: 'existing' | 'new';
-  album_id?: number | null;
-  title?: string | null;
-  album_artist?: string | null;
-  year?: number | null;
-  genre?: string | null;
-  release_type?: ReleaseType | null;
-}
-
 export interface UploadCommitIn {
-  album: UploadAlbumIn;
   tracks: UploadTrackIn[];
-  cover_from_upload_id?: number | null;
-  playlist_id?: string | null;
   /** the playlists the imported tracks go into as well */
   playlist_ids?: string[];
   /** the imported tracks go into «Любимое» too */
@@ -642,11 +658,15 @@ export interface UploadCommitIn {
   tag_ids?: number[];
   /** the playlist that keeps what was uploaded together: the user's playlist of this name, made when there is none */
   keep_in?: string | null;
+  /** the weak files among them are looked for anew: the same recording in a better file takes the place of each */
+  upgrade?: boolean;
 }
 
 export interface UploadCommitOut {
-  album_id: number;
+  album_ids: number[];
   imported: number;
+  /** how many weak files a better one is being looked for */
+  upgrading: number;
 }
 
 // --- playlists --------------------------------------------------------------------------------

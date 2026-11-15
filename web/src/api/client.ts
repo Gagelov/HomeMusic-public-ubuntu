@@ -420,12 +420,9 @@ export const api = {
     return uploadWithProgress<UploadOut[]>('/api/uploads', form, onProgress, signal);
   },
   deleteUpload: (id: number) => request<OkOut>('DELETE', `/api/uploads/${id}`),
-  commitUploads: (payload: UploadCommitIn, cover?: File | null) => {
-    const form = new FormData();
-    form.append('payload', JSON.stringify(payload));
-    if (cover) form.append('cover', cover, cover.name);
-    return request<UploadCommitOut>('POST', '/api/uploads/commit', { form });
-  },
+  commitUploads: (payload: UploadCommitIn) => request<UploadCommitOut>('POST', '/api/uploads/commit', { json: payload }),
+  /** Which record of the catalog an uploaded file is: `ref` — this one, picked by hand; none — look for it again. */
+  matchUpload: (id: number, ref?: string | null) => request<UploadOut>('POST', `/api/uploads/${id}/match`, { json: { ref: ref ?? null } }),
 
   // playlists
   playlists: (signal?: AbortSignal) => request<PlaylistOut[]>('GET', '/api/playlists', { signal }),

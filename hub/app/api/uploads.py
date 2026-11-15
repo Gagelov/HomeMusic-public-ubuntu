@@ -9,25 +9,24 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
-from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas import UploadCommitIn, UploadCommitOut, UploadOut, UploadTwin
+from app.api.schemas import UploadCommitIn, UploadCommitOut, UploadMatch, UploadMatchIn, UploadOut, UploadTwin
 from app.auth import current_user
 from app.config import get_settings
 from app.db import get_session
 from app.events import bus
 from app.jobs.downloads import enqueue_scan
 from app.jobs.queue import notify
-from app.library import access, acoustic, probe, tagger
-from app.library.credits import split_artists
+from app.library import acoustic, probe, quality, recognize, tagger
+from app.library.credits import main_artist, split_artists
 from app.library.owned import find_owned
 from app.library.tracks import current_file
 from app.library.importer import ImportSpec, import_file
-from app.models import Album, Track, Upload, User
+from app.models import Track, Upload, User
 
 log = logging.getLogger(__name__)
 
@@ -36,15 +35,20 @@ router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 CHUNK = 1024 * 1024
 
 
-LOSSLESS = {"flac", "alac", "wav", "pcm_s16le", "ape", "wavpack"}
-BETTER_BY_KBPS = 48  # a lossy file is the better one when its bitrate is higher by at least this
+_better = quality.better
 
 
-def _better(codec: str | None, kbps: int | None, than_codec: str | None, than_kbps: int | None) -> bool:
-    mine, theirs = (codec or "").lower() in LOSSLESS, (than_codec or "").lower() in LOSSLESS
-    if mine != theirs:
-        return mine
-    return not mine and bool(kbps and than_kbps and kbps >= than_kbps + BETTER_BY_KBPS)
+def _match(tags: dict) -> UploadMatch | None:
+    """What the file was told to be (`_match` of its tags), as the form shows it."""
+    m = tags.get("_match")
+    if not m:
+        return None
+    meta = m.get("meta") or {}
+    return UploadMatch(state=m["state"], why=m.get("why"), by_hand=bool(m.get("by_hand")), ref=meta.get("track_ref"),
+                       title=meta.get("title"), artist=meta.get("artist"), artists=meta.get("artists") or [],
+                       album=meta.get("album"), album_artist=meta.get("album_artist"), record_type=meta.get("record_type"),
+                       year=meta.get("year") or (int(str(meta["release_date"])[:4]) if meta.get("release_date") else None),
+                       duration_s=meta.get("duration_s"), cover_url=meta.get("cover_url"))
 
 
 async def _find_twin(s: AsyncSession, u: Upload) -> dict | None:
@@ -95,10 +99,14 @@ async def _chroma(s: AsyncSession, u: Upload) -> bytes | None:
 
 async def upload_out(s: AsyncSession, u: Upload) -> UploadOut:
     twin = await _twin(s, u) if u.status == "uploaded" else None
-    tags = {k: v for k, v in (u.probed_tags_json or {}).items() if not k.startswith("_")}
+    kept = u.probed_tags_json or {}
+    tags = {k: v for k, v in kept.items() if not k.startswith("_")}
+    artist, title = recognize.names_of(tags, u.orig_name)
     return UploadOut(id=u.id, orig_name=u.orig_name, size=u.size, status=u.status, tags=tags,
-                     error=u.error, created_at=u.created_at, artists=split_artists(str(tags.get("artist") or "")),
-                     codec=tags.get("codec"), bitrate_kbps=tags.get("bitrate_kbps"), twin=twin)
+                     error=u.error, created_at=u.created_at, artists=split_artists(artist),
+                     codec=tags.get("codec"), bitrate_kbps=tags.get("bitrate_kbps"), twin=twin, match=_match(kept),
+                     weak=quality.weak(tags.get("codec"), tags.get("bitrate_kbps")), title=title, artist=artist,
+                     single=recognize.single_album(tags.get("album"), title), duration_s=u.duration_s)
 
 
 def _upload_dir(user_id: int) -> Path:
@@ -146,8 +154,6 @@ async def upload(files: list[UploadFile] = File(...), user: User = Depends(curre
         except Exception as e:
             dest.unlink(missing_ok=True)
             raise HTTPException(400, f"Не удалось прочитать файл {name}: {e}") from e
-        if not tags.get("title"):
-            tags["title"] = name.rsplit(".", 1)[0]
         # what the file is — its codec, its bitrate, its length — and the picture of its sound: by them it is told
         # to be a recording the library has, and whether it is the better file of the two
         try:
@@ -157,10 +163,12 @@ async def upload(files: list[UploadFile] = File(...), user: User = Depends(curre
             log.info("upload %s not probed: %r", name, e)
             info = None
         sound = await acoustic.of_file(dest)
+        duration = (info.duration_s if info else None) or (sound[1] if sound else None)
+        tags["_match"] = await recognize.of_file(tags, name, duration)
         u = Upload(user_id=user.id, staging_path=rel.as_posix(), orig_name=name, size=size,
                    probed_tags_json=json.loads(json.dumps(tags, default=str)),
                    chroma=sound[0] if sound else None,
-                   duration_s=(info.duration_s if info else None) or (sound[1] if sound else None))
+                   duration_s=duration)
         s.add(u)
         await s.flush()
         out.append(await upload_out(s, u))
@@ -173,7 +181,7 @@ async def list_uploads(status: str | None = "uploaded", user: User = Depends(cur
     stmt = select(Upload).where(Upload.user_id == user.id)
     if status:
         stmt = stmt.where(Upload.status == status)
-    rows = list((await s.execute(stmt.order_by(Upload.id.desc()).limit(200))).scalars())
+    rows = list((await s.execute(stmt.order_by(Upload.id).limit(5000))).scalars())
     return [await upload_out(s, u) for u in rows]
 
 
@@ -194,6 +202,23 @@ async def cover(upload_id: int, user: User = Depends(current_user), s: AsyncSess
     return Response(data, media_type="image/jpeg")
 
 
+@router.post("/{upload_id}/match", response_model=UploadOut)
+async def match(upload_id: int, body: UploadMatchIn, user: User = Depends(current_user),
+                s: AsyncSession = Depends(get_session, scope="function")):
+    """Which record of the catalog the file is: the one picked by hand (`ref`), or looked for again."""
+    u = await _own(s, user, upload_id)
+    tags = dict(u.probed_tags_json or {})
+    try:
+        tags["_match"] = await recognize.of_ref(body.ref) if body.ref else await recognize.of_file(tags, u.orig_name, u.duration_s)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:
+        raise HTTPException(502, f"Каталог не ответил: {e}") from e
+    u.probed_tags_json = json.loads(json.dumps(tags, default=str))
+    await s.flush()
+    return await upload_out(s, u)
+
+
 @router.delete("/{upload_id}")
 async def remove(upload_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
     u = await _own(s, user, upload_id)
@@ -202,35 +227,52 @@ async def remove(upload_id: int, user: User = Depends(current_user), s: AsyncSes
     return {"ok": True}
 
 
+def _own_spec(u: Upload, tr, tags: dict) -> ImportSpec:
+    """The file under its own names, as the form has them: an «album» that is no album makes a single."""
+    title = tr.title.strip() or recognize.names_of(tags, u.orig_name)[1]
+    line = tr.artist.strip() or recognize.names_of(tags, u.orig_name)[0] or "Неизвестный исполнитель"
+    single = recognize.single_album(tr.album, title)
+    return ImportSpec(
+        artist=line, artists=split_artists(line), title=title,
+        album=title if single else " ".join((tr.album or "").split()),
+        album_artist=(tr.album_artist or "").strip() or main_artist(line),
+        year=tr.year, release_type="single" if single else (tags.get("release_type") or "album"),
+        track_no=1 if single else (tr.track_no or tags.get("track_no")), disc_no=1 if single else (tags.get("disc_no") or 1),
+        genre=tags.get("genre"), isrc=tags.get("isrc"), explicit=tags.get("explicit"),
+    )
+
+
+async def _catalog_spec(meta: dict) -> ImportSpec:
+    """The file as the song of the catalog it is: what a download of that song would be filed as."""
+    from app.jobs.downloads import _parse_date, fetch_cover
+
+    released = _parse_date(meta.get("release_date"))
+    single = not meta.get("album")
+    ref = str(meta.get("track_ref") or "")
+    return ImportSpec(
+        artist=meta.get("artist") or "", title=meta.get("title") or "", artists=meta.get("artists") or [],
+        album=meta.get("album") or meta.get("title"), album_artist=meta.get("album_artist") or meta.get("artist"),
+        year=meta.get("year") or (released.year if released else None), release_date=released,
+        release_type={"compile": "compilation"}.get(meta.get("record_type", ""), meta.get("record_type"))
+        or ("single" if single else "album"),
+        track_no=meta.get("track_no") or (1 if single else None), track_total=meta.get("track_total"),
+        disc_no=meta.get("disc_no") or 1, genre=meta.get("genre"), isrc=meta.get("isrc"), explicit=meta.get("explicit"),
+        deezer_track_id=meta.get("deezer_track_id"), ref=ref or None, deezer_album_id=meta.get("deezer_album_id"),
+        upc=meta.get("upc"), cover=await fetch_cover(meta.get("cover_url")),
+    )
+
+
 @router.post("/commit", response_model=UploadCommitOut)
-async def commit(payload: str = Form(...), cover: UploadFile | None = File(None), user: User = Depends(current_user),
+async def commit(body: UploadCommitIn, user: User = Depends(current_user),
                  s: AsyncSession = Depends(get_session, scope="function")):
-    try:
-        body = UploadCommitIn.model_validate_json(payload)
-    except ValidationError as e:
-        raise HTTPException(422, f"Неверные данные формы: {e.errors()[:3]}") from e
+    """Bring the files into the library, each as what it is: the song of the catalog it was told to be, or under
+    its own names. The album is the song's own (found or made by its name and artist), not the form's."""
     if not body.tracks:
         raise HTTPException(400, "Не выбраны файлы")
-
-    if body.album.mode == "existing":
-        album = await access.need_album(s, user, body.album.album_id or 0)  # one of the listener's own files
-    else:
-        if not body.album.title or not body.album.album_artist:
-            raise HTTPException(400, "Укажите название и исполнителя альбома")
-        album = Album(uid=str(uuid.uuid4()), title=body.album.title.strip(),
-                      album_artist=body.album.album_artist.strip(), year=body.album.year, genre=body.album.genre,
-                      release_type=body.album.release_type or "album", created_by=user.id)
-        s.add(album)
-        await s.flush()
-
-    cover_bytes: bytes | None = await cover.read() if cover is not None else None
-    if not cover_bytes and body.cover_from_upload_id:
-        cu = await _own(s, user, body.cover_from_upload_id)
-        cover_bytes = await asyncio.to_thread(tagger.read_cover, _abs(cu))
-
     imported = 0
     track_ids: list[int] = []
-    for i, tr in enumerate(body.tracks):
+    album_ids: list[int] = []
+    for tr in body.tracks:
         u = await _own(s, user, tr.upload_id)
         if u.status != "uploaded":
             continue
@@ -238,33 +280,23 @@ async def commit(payload: str = Form(...), cover: UploadFile | None = File(None)
         if not src.is_file():
             u.status, u.error = "failed", "файл пропал из staging"
             continue
+        tags = u.probed_tags_json or {}
+        meta = (tags.get("_match") or {}).get("meta") if tr.catalog else None
         try:
             info = await probe.probe(src)
         except Exception as e:
             log.warning("probe failed for upload %s: %r", u.id, e)
             info = None
+        spec = await _catalog_spec(meta) if meta else _own_spec(u, tr, tags)
+        if spec.cover is None:  # the catalog has no picture, or the file is filed under its own names: the file's
+            spec.cover = await asyncio.to_thread(tagger.read_cover, src)
         # the file of a track the library has (the upload is the better one): it becomes that track's file
         replaced = await s.get(Track, tr.replace_track_id) if tr.replace_track_id else None
-        line = tr.artist.strip() or album.album_artist
-        spec = ImportSpec(
-            artist=line,
-            artists=split_artists(line),
-            track_id=replaced.id if replaced is not None else None,
-            chroma=await _chroma(s, u),
-            title=tr.title.strip() or u.orig_name,
-            album_id=album.id,
-            track_no=tr.track_no or (i + 1),
-            disc_no=tr.disc_no or 1,
-            genre=tr.genre or album.genre,
-            explicit=tr.explicit,
-            cover=cover_bytes if i == 0 or cover_bytes else None,
-            source="upload",
-            source_url=u.orig_name,
-            duration_s=round(info.duration_s) if info and info.duration_s else None,
-            bitrate_kbps=info.bitrate_kbps if info else None,
-            codec=info.codec if info else None,
-            added_by=user.id,
-        )
+        spec.track_id = replaced.id if replaced is not None else None
+        spec.chroma = await _chroma(s, u)
+        spec.source, spec.source_url, spec.added_by = "upload", u.orig_name, user.id
+        spec.duration_s = round(info.duration_s) if info and info.duration_s else None
+        spec.bitrate_kbps, spec.codec = (info.bitrate_kbps, info.codec) if info else (None, None)
         try:
             track = await import_file(s, src, spec)
         except Exception as e:
@@ -274,12 +306,14 @@ async def commit(payload: str = Form(...), cover: UploadFile | None = File(None)
         u.status, u.track_id = "imported", track.id
         imported += 1
         track_ids.append(track.id)
+        if track.album_id and track.album_id not in album_ids:
+            album_ids.append(track.album_id)
     await enqueue_scan(s)
     if body.tag_ids and track_ids:
         from app import tags
 
         await tags.assign_tracks(s, user.id, track_ids, body.tag_ids)
-    playlist_ids = list(dict.fromkeys([*([body.playlist_id] if body.playlist_id else []), *body.playlist_ids]))
+    playlist_ids = list(dict.fromkeys(body.playlist_ids))
     if (playlist_ids or body.keep_in) and track_ids:  # the playlists are the Hub's: the tracks are in them at once
         from app import playlists
         from app.playlists_mirror import enqueue_mirror
@@ -298,10 +332,15 @@ async def commit(payload: str = Form(...), cover: UploadFile | None = File(None)
         await command(s, user, [FavoriteTarget(track_id=t) for t in track_ids], liked=True, client="hub",
                       context="upload")
         await project_liked(s, user.id)
+    upgrading = 0
+    if body.upgrade and track_ids:
+        from app.library import upgrade
+
+        upgrading = await upgrade.enqueue(s, user.id, track_ids)
     await s.commit()
     notify()
-    bus.publish(user.id, "library", {"kind": "imported", "album_id": album.id})
-    return UploadCommitOut(album_id=album.id, imported=imported)
+    bus.publish(user.id, "library", {"kind": "imported", "album_id": album_ids[0] if album_ids else None})
+    return UploadCommitOut(album_ids=album_ids, imported=imported, upgrading=upgrading)
 
 
 def purge_stale_uploads(days: int = 7) -> int:

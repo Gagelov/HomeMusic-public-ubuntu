@@ -22,9 +22,10 @@ ACTIVE_STATUSES = ("queued", "searching", "downloading", "tagging", "importing")
 
 def quiet(query_json: dict[str, Any] | None) -> bool:
     """A download nobody asked for explicitly: queued by an import (`app.imports`), for a «Микс дня» (`app.mixes`)
-    or a track of «Моя волна» played to its end (`app.mixes.wave`). Clients don't show it as a download."""
+    or a track of «Моя волна» played to its end (`app.mixes.wave`), or a better file looked for in the place of a
+    weak one (`app.library.upgrade`). Clients don't show it as a download."""
     qj = query_json or {}
-    return bool(qj.get("import") or qj.get("mix") or qj.get("wave")) and not qj.get("requested")
+    return bool(qj.get("import") or qj.get("mix") or qj.get("wave") or qj.get("upgrade")) and not qj.get("requested")
 
 
 # the remark of a file made of a poorer one (`jobs.downloads.try_candidates`)

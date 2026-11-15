@@ -125,3 +125,56 @@ async def test_the_files_as_a_list_and_the_doubles(env):
     assert all(r["mine"] and r["no_album"] and not r["kept"] and r["added_at"] and r["file"]["codec"] == "mp3" for r in rows)
     ids = {r["title"]: r["library_track_id"] for r in rows}
     assert (await c.get("/api/library/files/doubles")).json() == [sorted([ids["Трек 1"], ids["Трек 2"]])]
+
+
+def test_which_file_is_the_better_and_which_is_weak():
+    from app.library import quality
+
+    assert quality.better("flac", None, "mp3", 320) and not quality.better("mp3", 320, "flac", None)
+    assert quality.better("mp3", 320, "mp3", 128) and not quality.better("mp3", 192, "mp3", 160)
+    assert quality.better("opus", 130, "mp3", 128)  # Opus at 130 is heard as an MP3 at about 200
+    assert not quality.better("opus", 130, "mp3", 320) and not quality.better("mp3", None, "mp3", 128)
+    assert quality.weak("mp3", 128) and quality.weak("opus", 96) and not quality.weak("opus", 130)
+    assert not quality.weak("mp3", 192) and not quality.weak("flac", None) and not quality.weak("mp3", None)
+
+
+def test_the_names_of_a_file_and_an_album_that_is_none():
+    from app.library.recognize import names_of, single_album
+
+    assert names_of({"artist": "Кино", "title": "Пачка сигарет"}, "01.mp3") == ("Кино", "Пачка сигарет")
+    assert names_of({}, "2kizz, WENARO - Утром.mp3") == ("2kizz, WENARO", "Утром")
+    assert names_of({"title": "Утром"}, "07. 2kizz – Утром.mp3") == ("2kizz", "Утром")
+    assert names_of({}, "song0.mp3") == ("", "song0")
+    assert single_album(None, "X") and single_album("Single", "X") and single_album("x", "X") and single_album("X - Single", "X")
+    assert not single_album("Sport", "Low Battery")
+
+
+async def test_a_better_file_takes_the_place_of_a_weak_one(env, tmp_path):
+    """Only the same recording, and only a better file; the track stays the track."""
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.library import acoustic, upgrade
+    from app.models import DownloadItem, Track, User
+
+    rnd = random.Random(5)
+    sound = [rnd.getrandbits(32) for _ in range(600)]
+    async with session_scope() as s:
+        uid = (await s.execute(select(User.id))).scalar_one()
+        s.add(filed_track(uid="w-1", path="w/1.mp3", artist="Кто", title="Слабый", fingerprint="w1", ref="dz:101",
+                          duration_s=200, codec="mp3", bitrate_kbps=128, chroma=acoustic.pack(sound), created_by=uid))
+        s.add(filed_track(uid="w-2", path="w/2.mp3", artist="Кто", title="Хороший", fingerprint="w2", ref="dz:102",
+                          duration_s=200, codec="mp3", bitrate_kbps=320, chroma=acoustic.pack(sound), created_by=uid))
+        s.add(filed_track(uid="w-3", path="w/3.mp3", artist="Кто", title="Не из каталога", fingerprint="w3",
+                          duration_s=200, codec="mp3", bitrate_kbps=128, created_by=uid))
+        await s.flush()
+        ids = list((await s.execute(select(Track.id).where(Track.fingerprint.in_(["w1", "w2", "w3"])).order_by(Track.fingerprint))).scalars())
+        # only the weak one the catalog knows is looked for — and once
+        assert await upgrade.enqueue(s, uid, ids) == 1 and await upgrade.enqueue(s, uid, ids) == 0
+        item = (await s.execute(select(DownloadItem))).scalars().one()
+        assert item.force and item.query_json["upgrade"] == ids[0] and item.query_json["meta"]["upgrade_of"] == ids[0]
+        from app.library.owned import quiet
+
+        assert quiet(item.query_json)
+        # a file no better stays out, whatever it sounds like
+        assert (await upgrade.fits(s, ids[0], tmp_path / "x.mp3", "mp3", 160))[0] is False
