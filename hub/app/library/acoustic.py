@@ -118,7 +118,7 @@ async def of_whole(path: Path) -> tuple[list[int], float] | None:
 # 0.75, at the edge of what is seen); two honest encodings of one master never fell under 0.8 anywhere but at the
 # very ends, where fades and silence differ by themselves.
 PARTS_WINDOW = 6  # frames (≈ 0.75 s) the agreement is averaged over
-PARTS_DROP = 0.2  # how far under the pair's own average a place must fall
+PARTS_DROP = 0.15  # how far under the pair's own average a place must fall (0.15: nothing false in fifteen clean pairs)
 PARTS_EDGE = 20  # frames at each end that are not looked at
 PARTS_MIN_ALIKE = 0.85  # two files less alike than this are not one recording: nothing to lay side by side
 
