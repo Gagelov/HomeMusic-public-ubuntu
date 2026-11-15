@@ -75,7 +75,8 @@ export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[
               </span>
             </>
           );
-          const box = cx('flex min-w-0 max-w-full items-center border', move, open ? 'mb-2 mr-2 gap-2.5 rounded-xl border-fg/25 bg-bg/60 py-1.5 pl-1.5 pr-3 hover:border-fg' : '-ml-1.5 gap-0 rounded-[1rem] border-transparent');
+          // laid out, a place is its picture and its words — nothing under them: the head stays light
+          const box = cx('flex min-w-0 max-w-full items-center', move, open ? 'mb-1 mr-5 gap-2.5 py-1 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)] hover:opacity-80' : '-ml-1.5 gap-0');
           const key = `${s.service}:${s.ref ?? i}`;
           return s.url ? (
             // folded, a tap lays the places out; laid out, it opens the artist's page there
@@ -90,8 +91,8 @@ export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[
         })}
         {/* laid out, the plates say it all: the line is not repeated — only the way to fold them back */}
         {open && (
-          <button type="button" onClick={toggle} aria-expanded aria-label="Свернуть" title="Свернуть" className="mb-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-fg/25 bg-bg/60 text-muted transition hover:border-fg hover:text-fg">
-            <Icon name="chevron" size={14} className="-rotate-90" />
+          <button type="button" onClick={toggle} aria-expanded aria-label="Свернуть" title="Свернуть" className="mb-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-fg/70 transition hover:text-fg">
+            <Icon name="x" size={16} />
           </button>
         )}
       </div>
