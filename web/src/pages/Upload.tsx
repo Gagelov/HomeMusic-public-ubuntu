@@ -441,8 +441,10 @@ export function UploadPage() {
       if (keys.has(u.id)) continue;
       const r = row(u);
       const a = r.album.trim();
-      if (!a || same(a, r.title)) {
-        keys.set(u.id, `s|${u.id}`); // a single: an «album» of its own
+      // a single: an «album» of its own. So is a file filed by a record of the catalog that stands on no album —
+      // whatever album its own tags name: the record is what it goes in by
+      if (!a || same(a, r.title) || usesCatalog(u, r)) {
+        keys.set(u.id, `s|${u.id}`);
         continue;
       }
       const by = str(u.tags.album_artist) || u.artists?.[0] || r.artist;

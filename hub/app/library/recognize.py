@@ -84,6 +84,8 @@ async def _released_by(line: str) -> list[Any]:
                     whole = await svc.deezer.get_album(album.id)
                 except Exception:
                     return []
+            for t in whole.tracks or []:
+                _kinds[t.ref] = whole.record_type
             return [t.model_copy(update={"album_title": t.album_title or whole.title, "album_ref": t.album_ref or whole.ref,
                                          "album_artist": t.album_artist or whole.artist}) for t in (whole.tracks or [])]
 
@@ -132,6 +134,16 @@ def _weigh(found: list[Any], artist: str, raw_title: str, album: str | None, dur
 
     rivals = [scored[0], *[(t, sc) for t, sc in scored[1:] if not same_song(t)]]
     return scored, classify_scores([sc.total for _, sc in rivals], cfg)
+
+
+_kinds: dict[str, str] = {}  # a track's ref -> the kind of the release it stands on (as `_released_by` read it)
+_RANKS = {"album": 0, "ep": 1, "compile": 2, "single": 3}
+
+
+def _release_rank(t: Any) -> int:
+    """How much a release is a song's home: an album before an EP, an EP before a single."""
+    kind = _kinds.get(t.ref) or ("single" if _same_name(t.album_title, t.title) else "album")
+    return _RANKS.get(kind, 1)
 
 
 def _same_name(a: str | None, b: str | None) -> bool:
@@ -236,16 +248,23 @@ async def of_file(tags: dict[str, Any], file_name: str, duration_s: float | None
     if verdict == "not_found":
         return {"state": "none", "why": "каталог не ответил" if failed and not found else None, "meta": None}
     top = _of_album(scored, album)
-    if album and not _same_name(top.album_title, album):
-        # the file names an album, and the record found stands on another release (the search gives the single):
-        # the same song is looked for on the file's album among the artist's releases
+    if not _same_name(top.album_title, album):
+        # The record found stands on a release the file does not name — the search gives a song's single before its
+        # album. The song's other releases are gone through, among everything the artist put out: the one the file
+        # names is the file's; where it names none of them (no album in its tags, or one the catalog does not
+        # know), an album is taken over a single — a song belongs with the album it came out on.
         more = [t for t in await _released_by(artist) if t.ref not in seen]
+        again, verdict_again = scored, verdict
         if more:
             found.extend(more)
+            seen.update(t.ref for t in more)
             again, verdict_again = _weigh(found, artist, raw_title, album, duration, version, cfg)
-            there = _of_album(again, album) if again else top
-            if _same_name(there.album_title, album) and _words(there.title).casefold() == _words(top.title).casefold():
-                scored, verdict, top = again, verdict_again if verdict_again != "not_found" else verdict, there
+        twins = [t for t, _ in again if _words(t.title).casefold() == _words(top.title).casefold()
+                 and bool(t.duration_s and top.duration_s and abs(t.duration_s - top.duration_s) <= SAME_LENGTH_S)]
+        named = next((t for t in twins if _same_name(t.album_title, album)), None)
+        best = named or min(twins, key=_release_rank, default=top)
+        if best is not top and (named is not None or _release_rank(best) < _release_rank(top)):
+            scored, verdict, top = again, verdict_again if verdict_again != "not_found" else verdict, best
     why: str | None = None
     close = bool(duration and top.duration_s and abs(duration - top.duration_s) <= SAME_LENGTH_S)
     # a name that only goes on in the catalog — «(prod. by …)», «(feat. …)» — over the same length is the same song
