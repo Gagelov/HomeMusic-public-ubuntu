@@ -125,7 +125,7 @@ export function ArtistPage({ refId }: { refId: string }) {
   };
   // the artist's pages in Deezer: one for each record it keeps of them
   const deezer = (d.profiles?.length ? d.profiles : [artist.ref]).filter((r) => r.startsWith('dz:')).map((r) => `https://www.deezer.com/artist/${r.slice(3)}`);
-  const item = (icon: IconName, label: string, run: () => void, danger = false) => (
+  const item = (icon: IconName, label: ReactNode, run: () => void, danger = false) => (
     <button type="button" onClick={run} className={cx('flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5', danger && 'text-danger')}>
       <Icon name={icon} size={21} className={danger ? undefined : 'text-muted'} />
       {label}
@@ -217,7 +217,7 @@ export function ArtistPage({ refId }: { refId: string }) {
             void startWave({ artist_ref: artist.ref }, 'artist_page');
           })}
           {item('download', 'Скачать всё', () => void downloadAll())}
-          {names.card && item('edit', artistHint(names.card) ? 'Имя и написания · есть похожий' : 'Имя и написания', () => {
+          {names.card && item('edit', <span className="flex items-center gap-2">Имя и написания{artistHint(names.card) && <><span aria-hidden="true" className="h-2 w-2 rounded-full bg-info" /><span className="text-[13px] text-info">есть похожий исполнитель</span></>}</span>, () => {
             setMenu(false);
             setNaming('names');
           })}

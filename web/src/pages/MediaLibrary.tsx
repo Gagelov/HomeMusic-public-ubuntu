@@ -550,7 +550,7 @@ export function NdArtistPage({ id }: { id: string }) {
       </div>
       <Sheet open={naming === 'menu'} onClose={() => setNaming(null)} title={artist.name}>
         <div className="-mx-1">
-          {([['names', 'edit', artistHint(names.card) ? 'Имя и написания · есть похожий' : 'Имя и написания'], ['projects', 'user', 'Другие проекты…']] as const).map(([which, icon, label]) => (
+          {([['names', 'edit', <span className="flex items-center gap-2">Имя и написания{artistHint(names.card) && <><span aria-hidden="true" className="h-2 w-2 rounded-full bg-info" /><span className="text-[13px] text-info">есть похожий исполнитель</span></>}</span>], ['projects', 'user', 'Другие проекты…']] as const).map(([which, icon, label]) => (
             <button key={which} type="button" onClick={() => setNaming(which)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5">
               <Icon name={icon} size={21} className="text-muted" />
               {label}
