@@ -588,6 +588,7 @@ class UploadMatch(BaseModel):
     artists: list[str] = []
     album: str | None = None
     album_artist: str | None = None
+    album_artists: list[str] = []  # everyone the release is credited to (the main one first)
     record_type: str | None = None  # album / single / ep / compile
     year: int | None = None
     duration_s: int | None = None

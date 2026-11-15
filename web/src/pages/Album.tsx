@@ -146,13 +146,19 @@ export function AlbumPage({ refId }: { refId: string }) {
         sub={
           <span className="flex flex-wrap items-center gap-x-1.5">
             {album.explicit && <ExplicitBadge />}
-            {album.artist_ref ? (
-              <Link to={`/artist/${enc(album.artist_ref)}`} className="font-semibold text-fg hover:underline">
-                {album.artist}
-              </Link>
-            ) : (
-              <span className="font-semibold text-fg">{album.artist}</span>
-            )}
+            {/* everyone the release is credited to, each with their page */}
+            {(album.artists?.length ? album.artists.map((name, i) => ({ name, ref: album.artist_refs?.[i] ?? null })) : [{ name: album.artist, ref: album.artist_ref ?? null }]).map((a, i) => (
+              <span key={`${a.name}:${i}`} className="font-semibold text-fg">
+                {i > 0 && <span className="pr-1.5 font-normal text-muted">,</span>}
+                {a.ref ? (
+                  <Link to={`/artist/${enc(a.ref)}`} className="hover:underline">
+                    {a.name}
+                  </Link>
+                ) : (
+                  a.name
+                )}
+              </span>
+            ))}
             {facts.length > 0 && <span>· {facts.join(' · ')}</span>}
           </span>
         }

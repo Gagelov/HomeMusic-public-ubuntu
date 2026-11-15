@@ -45,11 +45,12 @@ async def get_artist_page(ref: str) -> ArtistPage:
     raise HTTPException(404, "Исполнитель не найден")
 
 
-async def get_album(ref: str) -> CatalogAlbum:
+async def get_album(ref: str, *, credited: bool = False) -> CatalogAlbum:
+    """`credited`: with everyone credited on each track (an album's own page; costs a request a track, once)."""
     src, id_ = _split(ref)
     try:
         if src == "dz" and svc.deezer:
-            return await svc.deezer.get_album(id_)
+            return await (svc.deezer.get_album_credited(id_) if credited else svc.deezer.get_album(id_))
         if src == "hm" and svc.hitmoz_catalog:
             return await svc.hitmoz_catalog.get_album(id_)
     except Exception as e:
@@ -166,5 +167,5 @@ async def discography(ref: str, user: User = Depends(current_user),
 
 @router.get("/album/{ref}", response_model=AlbumOut)
 async def album(ref: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
-    a = await get_album(ref)
+    a = await get_album(ref, credited=True)
     return (await annotate_albums(s, [a], user.id))[0]

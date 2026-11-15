@@ -190,6 +190,7 @@ def meta_from_catalog(t: CatalogTrack, album: CatalogAlbum | None = None) -> dic
         m.update(
             album=album.title,
             album_artist=album.artist,
+            album_artists=album.artists or None,
             record_type=album.record_type,
             release_date=album.release_date.isoformat() if album.release_date else m.get("release_date"),
             year=album.year,

@@ -70,6 +70,10 @@ class CatalogAlbum(BaseModel):
     title: str
     artist: str
     artist_ref: str | None = None
+    # everyone the release is credited to, the main one first, and their refs — said only by the release's own
+    # record (`get_album`), not by a list of releases
+    artists: list[str] = []
+    artist_refs: list[str | None] = []
     record_type: RecordType = "album"
     release_date: date | None = None
     year: int | None = None

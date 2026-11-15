@@ -100,6 +100,7 @@ def map_album(d: dict[str, Any], artist: dict[str, Any] | None = None) -> Catalo
     rd = _parse_date(d.get("release_date"))
     rt = d.get("record_type")
     genres = (d.get("genres") or {}).get("data") or []
+    _, names, refs = _artist_names({**d, "artist": art}) if d.get("contributors") else ("", [], [])
     return CatalogAlbum(
         ref=make_ref("dz", d["id"]),
         source="dz",
@@ -107,6 +108,8 @@ def map_album(d: dict[str, Any], artist: dict[str, Any] | None = None) -> Catalo
         title=d.get("title") or "",
         artist=art.get("name") or "",
         artist_ref=make_ref("dz", art["id"]) if art.get("id") else None,
+        artists=names,
+        artist_refs=refs,
         record_type=rt if rt in RECORD_TYPES else "album",
         release_date=rd,
         year=rd.year if rd else None,
@@ -419,7 +422,28 @@ class DeezerClient:
             tracks.sort(key=lambda t: (t.disc_no or 1, t.track_no or 0))
             return album.model_copy(update={"tracks": tracks, "nb_tracks": album.nb_tracks or len(tracks)})
 
-        return await self._cached_model(f"dz:album:{id_}", self.cfg.ttl_album_s, CatalogAlbum, produce)
+        # the key says what an album's record holds: «3» — with everyone the release is credited to
+        return await self._cached_model(f"dz:album3:{id_}", self.cfg.ttl_album_s, CatalogAlbum, produce)
+
+    async def get_album_credited(self, id_: str | int) -> CatalogAlbum:
+        """The album with everyone credited on each of its tracks. The catalog's list of an album's tracks names
+        only the main artist of each; who else is on a track is said by the track's own record — so each is asked
+        for (and kept: `get_track`), a few at once. An album's page shows this; a list of many releases does not
+        ask for it. A track whose record does not come keeps its main artist."""
+        album = await self.get_album(id_)
+        gate = asyncio.Semaphore(4)
+
+        async def credited(t: CatalogTrack) -> CatalogTrack:
+            async with gate:
+                try:
+                    whole = await self.get_track(t.id)
+                except Exception as e:
+                    log.info("deezer: credits of %s not read: %r", t.ref, e)
+                    return t
+            return t.model_copy(update={"artists": whole.artists or t.artists, "artist_refs": whole.artist_refs or t.artist_refs})
+
+        tracks = list(await asyncio.gather(*(credited(t) for t in album.tracks or [])))
+        return album.model_copy(update={"tracks": tracks})
 
     async def get_track(self, id_: str | int) -> CatalogTrack:
         async def produce() -> CatalogTrack:

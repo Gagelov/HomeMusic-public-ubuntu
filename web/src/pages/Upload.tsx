@@ -411,7 +411,8 @@ export function UploadPage() {
       const m = g.release?.match;
       const own = g.files.filter((u) => !u.single);
       g.titles = byCount([m ? catAlbum(g.release!) : null, ...own.map((u) => str(u.tags.album))]);
-      g.artists = byCount([m?.album_artist ?? null, ...own.map((u) => str(u.tags.album_artist) || u.artists?.[0])]);
+      // the release's main artist, everyone it is credited to as one line («Medoi The Maid, Lieath»), and what the files say
+      g.artists = byCount([m?.album_artist ?? null, (m?.album_artists?.length ?? 0) > 1 ? m!.album_artists!.join(', ') : null, ...own.map((u) => str(u.tags.album_artist) || u.artists?.[0])]);
       g.years = byCount([m?.year ? String(m.year) : null, ...own.map((u) => str(u.tags.year).slice(0, 4))]);
       g.title = (m ? catAlbum(g.release!) : null) ?? g.titles[0] ?? '';
       g.artist = m?.album_artist ?? g.artists[0] ?? '';

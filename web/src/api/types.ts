@@ -174,6 +174,9 @@ export interface CatalogAlbum {
   title: string;
   artist: string;
   artist_ref?: string | null;
+  /** everyone the release is credited to, the main one first, and their refs (an album's own page only) */
+  artists?: string[];
+  artist_refs?: (string | null)[];
   record_type: RecordType;
   release_date?: ISODate | null;
   year?: number | null;
@@ -663,6 +666,8 @@ export interface UploadMatch {
   artists?: string[];
   album?: string | null;
   album_artist?: string | null;
+  /** everyone the release is credited to (the main one first) */
+  album_artists?: string[];
   record_type?: string | null;
   year?: number | null;
   duration_s?: number | null;
