@@ -172,6 +172,14 @@ def is_original(source_date: date | None, explicit: bool | None) -> bool:
 async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
     """Tag `src` (a file in staging/), move it into the library and make its track and file rows (caller
     commits)."""
+    from app.library import artists
+
+    # the library is written in the artists' names: a spelling that is somebody's is filed under their name
+    spec.artist = await artists.line(s, spec.artist)
+    if spec.artists:
+        spec.artists = await artists.names(s, spec.artists)
+    if spec.album_artist:
+        spec.album_artist = await artists.line(s, spec.album_artist)
     async with library_lock:
         album = await get_or_create_album(s, spec)
         cover = tagger.prepare_cover(spec.cover) if spec.cover else None

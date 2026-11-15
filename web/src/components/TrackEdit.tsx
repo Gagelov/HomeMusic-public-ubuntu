@@ -4,6 +4,7 @@ import type { TrackEditEntry, TrackEditOut } from '../api/types';
 import { fmtAdded } from '../lib/format';
 import { EDITED_EVENT, closeTrackEdit, useTrackEdit, type EditedTrack } from '../lib/trackEdit';
 import { attempt, toast } from '../lib/ui';
+import { Icon } from './Icon';
 import { Button, Cover, ErrorState, Field, Sheet, Spinner } from './ui';
 
 /** «Переименовать» of a track's menu: its name and artists, and its cover — for everyone on the server, so it says
@@ -24,6 +25,7 @@ function Window({ track }: { track: EditedTrack }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [changed, setChanged] = useState(false);
   const [history, setHistory] = useState<TrackEditEntry[] | null>(null);
+  const [another, setAnother] = useState('');
   const ownFile = useRef<HTMLInputElement>(null);
   const albumFile = useRef<HTMLInputElement>(null);
 
@@ -54,6 +56,13 @@ function Window({ track }: { track: EditedTrack }) {
     toast('Название изменено у всех', 'success');
     window.dispatchEvent(new Event(EDITED_EVENT));
     closeTrackEdit();
+  };
+  /** One more name the track is known by — or one less: the search reads them. */
+  const otherName = async (what: () => Promise<TrackEditOut>) => {
+    const r = await attempt(what);
+    if (!r) return false;
+    setInfo(r);
+    return true;
   };
   const cover = async (kind: 'own' | 'album', file: File | undefined) => {
     if (!info || !file) return;
@@ -120,6 +129,33 @@ function Window({ track }: { track: EditedTrack }) {
               </button>
             </p>
           )}
+          <div>
+            <p className="pb-1.5 text-[13px] text-muted">Другие названия — по ним трек тоже находится</p>
+            {(info.names?.length ?? 0) > 0 && (
+              <div className="flex flex-wrap gap-1.5 pb-2">
+                {(info.names ?? []).map((n) => (
+                  <span key={`${n.id}:${n.name}`} className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-sm">
+                    <span className="truncate">{n.name}</span>
+                    <span className="text-[11px] text-dim">{{ renamed: 'прежнее', file: 'из файла', manual: 'вручную', catalog: 'каталог' }[n.source] ?? n.source}</span>
+                    <button type="button" className="flex h-5 w-5 items-center justify-center rounded-full text-dim hover:bg-fg/10 hover:text-fg" aria-label={`Сделать основным: ${n.name}`} title="Сделать основным названием" onClick={() => void save(n.name, artist)}>
+                      <Icon name="chevron" size={12} className="-rotate-90" />
+                    </button>
+                    {n.id != null && (
+                      <button type="button" className="flex h-5 w-5 items-center justify-center rounded-full text-dim hover:bg-fg/10 hover:text-fg" aria-label={`Убрать название: ${n.name}`} title="Убрать" onClick={() => void otherName(() => api.dropTrackName(info.track_id, n.id as number))}>
+                        <Icon name="x" size={12} />
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input className="input min-w-0 flex-1" placeholder="Ещё название" aria-label="Ещё название" value={another} onChange={(e) => setAnother(e.target.value)} maxLength={300} autoComplete="off" onKeyDown={(e) => e.key === 'Enter' && another.trim() && void otherName(() => api.addTrackName(info.track_id, another.trim())).then((ok) => ok && setAnother(''))} />
+              <Button small disabled={!another.trim()} onClick={() => void otherName(() => api.addTrackName(info.track_id, another.trim())).then((ok) => ok && setAnother(''))}>
+                Добавить
+              </Button>
+            </div>
+          </div>
           <p className="text-[13px] text-dim">
             Изменится у всех на этом сервере{info.has_file ? ' и запишется в файл' : ''}.
             {info.last_by && info.last_at ? ` Последним менял ${info.last_by}, ${fmtAdded(info.last_at)}.` : ''}

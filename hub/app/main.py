@@ -20,6 +20,7 @@ log = logging.getLogger("app")
 def _import_handlers() -> None:
     # registering job handlers is a side effect of importing these modules
     import app.imports.core
+    import app.jobs.artists
     import app.jobs.downloads
     import app.mixes.core
     import app.mixes.discover
@@ -53,6 +54,11 @@ async def lifespan(app: FastAPI):
     from app.catalog import namesakes
 
     await namesakes.load()  # what the catalog's client leaves out of an artist's releases
+    from app.db import session_scope
+    from app.library import artists as artist_names
+
+    async with session_scope() as names_s:  # every artist the library names is one the Hub knows
+        await artist_names.seed(names_s)
     _import_handlers()
     pool = WorkerPool(s.cfg.jobs.workers)
     tasks: list[asyncio.Task] = []
@@ -119,6 +125,7 @@ def create_app() -> FastAPI:
         library,
         links,
         listen,
+        artists,
         listenbrainz,
         lyrics,
         medialib,
@@ -142,7 +149,7 @@ def create_app() -> FastAPI:
                   openapi_url="/api/openapi.json", redoc_url=None)
     for r in (auth.router, search.router, catalog.router, downloads.router, listen.router, library.router, medialib.router,
               uploads.router, playlists.router, plays.router, mixes.router, wave.router, smart_shuffle.router, imports.router, events.router, system.router, admin.router,
-              insights.router, telegram.router, lyrics.router, links.router, tags.router, stats.router, releases.router, quality.router, discoveries.router, listenbrainz.router, for_you.router, subsonic.router):
+              artists.router, insights.router, telegram.router, lyrics.router, links.router, tags.router, stats.router, releases.router, quality.router, discoveries.router, listenbrainz.router, for_you.router, subsonic.router):
         app.include_router(r)
     try:
         from app.api import assistant

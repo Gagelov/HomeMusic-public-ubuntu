@@ -279,6 +279,8 @@ export interface LibTrackOut {
   locked: boolean;
   warnings: unknown[];
   path: string;
+  /** a search found it by these — its other names, its artists' other spellings — not by what the row shows */
+  found_by?: string[];
 }
 
 export interface LibAlbumOut {
@@ -1201,6 +1203,36 @@ export interface TrackEditOut {
   album_id?: number | null;
   album_title?: string | null;
   has_file: boolean;
+  /** the other names it is known by — the search reads them (`id` null: the catalog's, which cannot be dropped) */
+  names?: TrackNameOut[];
+}
+
+export interface TrackNameOut {
+  id?: number | null;
+  name: string;
+  source: 'renamed' | 'file' | 'manual' | 'catalog' | string;
+}
+
+/** An artist as the Hub knows them: the one name, the other spellings, the projects linked, and who looks like the
+ * same artist under another spelling. `rewriting`: the library is being written in the name just now. */
+export interface ArtistCardOut {
+  id: number;
+  name: string;
+  names: { id: number; name: string; source: string; main: boolean }[];
+  projects: { id: number; name: string; ref?: string | null; also: string[] }[];
+  suggestions: ArtistPickOut[];
+  rewriting?: boolean;
+}
+
+export interface ArtistPickOut {
+  id: number;
+  name: string;
+}
+
+/** Another artist: one the Hub knows, or a name. */
+export interface ArtistOtherIn {
+  other_id?: number;
+  name?: string;
 }
 
 /** A list the user played from lately («Продолжить» of the home): where it leads and how it is drawn. */

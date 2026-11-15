@@ -1079,3 +1079,69 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class Artist(Base):
+    """An artist as the Hub knows them (app/library/artists.py): the one name the library is written in."""
+
+    __tablename__ = "artists"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ArtistName(Base):
+    """A spelling of an artist — their name among them. `key`: the spelling without the letters' case, one artist's
+    only. `source`: where it came from (catalog / library / manual)."""
+
+    __tablename__ = "artist_names"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(300))
+    key: Mapped[str] = mapped_column(String(300), unique=True)
+    source: Mapped[str] = mapped_column(String(16), default="library")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ArtistRef(Base):
+    """What a catalog calls its own artist ("dz:artist…"), and who that is here."""
+
+    __tablename__ = "artist_refs"
+
+    ref: Mapped[str] = mapped_column(String(64), primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
+
+
+class ArtistLink(Base):
+    """Two artists that are projects of one person: each is named on the other's page. `low_id` < `high_id`."""
+
+    __tablename__ = "artist_links"
+
+    low_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+    high_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+
+
+class ArtistApart(Base):
+    """Two artists a listener said are not one («это другой»): not offered to be joined again."""
+
+    __tablename__ = "artist_apart"
+
+    low_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+    high_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+
+
+class TrackName(Base):
+    """Another name a track is known by — the search reads them. `source`: renamed (the name it had) / file (what
+    its file called it) / manual."""
+
+    __tablename__ = "track_names"
+    __table_args__ = (UniqueConstraint("track_id", "key", name="uq_track_names"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(512))
+    key: Mapped[str] = mapped_column(String(512))
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

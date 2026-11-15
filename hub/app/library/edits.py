@@ -35,7 +35,11 @@ def _journal(s: AsyncSession, user_id: int, kind: str, target_id: int, changes: 
 
 async def update_track(s: AsyncSession, user: User, track: Track, **fields: Any) -> Track:
     """Change the track's fields (the names, the number, the genre…) and write it down."""
+    from app.library import artists
+
     fields = {k: (v.strip() if isinstance(v, str) else v) for k, v in fields.items() if v is not None}
+    if fields.get("artist"):  # written in the artists' names, whatever spelling was typed
+        fields["artist"] = await artists.line(s, fields["artist"], "manual")
     changes = {k: [getattr(track, k), v] for k, v in fields.items() if getattr(track, k) != v}
     if not changes:
         return track
@@ -44,6 +48,8 @@ async def update_track(s: AsyncSession, user: User, track: Track, **fields: Any)
     await editor.update_track(s, track, **{k: v[1] for k, v in changes.items()})
     if any(k in NAMES for k in changes):
         track.renamed_at = utcnow()
+    if "title" in changes:  # the name it had is one it is still found by
+        await artists.renamed(s, track, changes["title"][0])
     _journal(s, user.id, "track", track.id, changes)
     await s.flush()
     return track
@@ -123,4 +129,11 @@ async def info(s: AsyncSession, track: Track) -> dict[str, Any]:
                                            else cat.get("cover_small_url") or cat.get("cover_url")),
         "album_id": album.id if album is not None else None, "album_title": album.title if album is not None else None,
         "has_file": await current_file(s, track.id) is not None,
+        "names": await _other_names(s, track),
     }
+
+
+async def _other_names(s: AsyncSession, track: Track) -> list[dict[str, Any]]:
+    from app.library import artists
+
+    return await artists.titles(s, track)

@@ -172,6 +172,9 @@ async def annotate_tracks(
         if q.get("query"):
             downloading_fps.add(fingerprint(q["query"]["artist"], q["query"]["title"]))
 
+    from app.library import artists
+
+    spelt = await artists.mapping(s, [n for t in tracks for n in (t.artist, *(t.artists or []))])
     out: list[TrackOut] = []
     for t in tracks:
         hit = (t.isrc and by_isrc.get(t.isrc.upper())) or (t.source == "dz" and by_ref.get(t.ref)) or None
@@ -179,6 +182,7 @@ async def annotate_tracks(
         if hit is None:
             hit = next((r for r in by_fp.get(fp, []) if _duration_ok(r.duration_s, t.duration_s)), None)
         o = TrackOut(**t.model_dump())
+        artists.put_right(o, spelt)
         if hit is not None:
             o.library_track_id = hit.id  # the Hub knows the song; whether it has a file is `owned`
             put_right(o, hit)
@@ -226,10 +230,14 @@ async def annotate_albums(
         k = _album_key(artist, title)
         counts_key[k] = max(counts_key.get(k, 0), n)
 
+    from app.library import artists
+
+    spelt = await artists.mapping(s, [n for a in albums for n in (a.artist, *(getattr(a, "artists", None) or []))])
     out: list[AlbumOut] = []
     for a in albums:
         d = a.model_dump(exclude={"tracks"})
         o = AlbumOut(**d)
+        artists.put_right(o, spelt)
         n = counts_dz.get(a.id, 0) if a.source == "dz" else 0
         if not n:
             n = counts_key.get(_album_key(a.artist, a.title), 0)

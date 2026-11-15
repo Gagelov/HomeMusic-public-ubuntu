@@ -77,6 +77,9 @@ import type {
   TasteOnboardingOut,
   CoverInfo,
   FileRowOut,
+  ArtistCardOut,
+  ArtistOtherIn,
+  ArtistPickOut,
   PickOut,
   QualityPeaks,
   QualityOut,
@@ -350,6 +353,18 @@ export const api = {
   /** A track's names and cover as they are, for the window that puts them right; a catalog song the Hub has not
    * met becomes a track by this. */
   trackEdit: (q: { track_id?: number; ref?: string; nd_song_id?: string }) => request<TrackEditOut>('GET', withQuery('/api/library/track-edit', q)),
+  addTrackName: (id: number, name: string) => request<TrackEditOut>('POST', `/api/library/tracks/${id}/names`, { json: { name } }),
+  dropTrackName: (id: number, nameId: number) => request<TrackEditOut>('DELETE', `/api/library/tracks/${id}/names/${nameId}`),
+  /** An artist's name, spellings and projects (the Hub's `app/library/artists.py`): by the catalog's own or by a name. */
+  artistOf: (q: { name?: string; ref?: string }, signal?: AbortSignal) => request<ArtistCardOut | null>('GET', withQuery('/api/artists/of', q), { signal }),
+  artistFind: (q: string, signal?: AbortSignal) => request<ArtistPickOut[]>('GET', withQuery('/api/artists/find', { q }), { signal }),
+  artistAddName: (id: number, name: string) => request<ArtistCardOut>('POST', `/api/artists/${id}/names`, { json: { name } }),
+  artistDropName: (id: number, nameId: number) => request<ArtistCardOut>('DELETE', `/api/artists/${id}/names/${nameId}`),
+  artistMain: (id: number, nameId: number) => request<ArtistCardOut>('POST', `/api/artists/${id}/main`, { json: { name_id: nameId } }),
+  artistMerge: (id: number, other: ArtistOtherIn) => request<ArtistCardOut>('POST', `/api/artists/${id}/merge`, { json: other }),
+  artistAddProject: (id: number, other: ArtistOtherIn) => request<ArtistCardOut>('POST', `/api/artists/${id}/projects`, { json: other }),
+  artistDropProject: (id: number, otherId: number) => request<ArtistCardOut>('DELETE', `/api/artists/${id}/projects/${otherId}`),
+  artistApart: (id: number, other: ArtistOtherIn) => request<ArtistCardOut>('POST', `/api/artists/${id}/apart`, { json: other }),
   setTrackCover: (id: number, file: File) => {
     const form = new FormData();
     form.append('file', file);

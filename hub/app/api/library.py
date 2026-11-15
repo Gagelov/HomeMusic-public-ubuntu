@@ -11,6 +11,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -537,3 +538,36 @@ async def star(body: StarIn, user: User = Depends(current_user), s: AsyncSession
     await s.commit()
     bus.publish(user.id, "library", {"kind": "unstarred" if body.unstar else "starred"})
     return {"ok": True, "event_ids": [e.event_id for e in events]}
+
+
+class TrackNameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=512)
+
+
+@router.post("/api/library/tracks/{track_id}/names", response_model=TrackEditOut)
+async def add_track_name(track_id: int, body: TrackNameIn, user: User = Depends(current_user),
+                         s: AsyncSession = Depends(get_session, scope="function")):
+    """One more name the track is known by («Марафоны» for «Спорт»): the search finds it by that too."""
+    from app.library import artists
+
+    t = await s.get(Track, track_id)
+    if t is None:
+        raise HTTPException(404, "Трек не найден")
+    await artists.add_title(s, t, body.name)
+    out = await edits.info(s, t)
+    await s.commit()
+    return out
+
+
+@router.delete("/api/library/tracks/{track_id}/names/{name_id}", response_model=TrackEditOut)
+async def drop_track_name(track_id: int, name_id: int, user: User = Depends(current_user),
+                          s: AsyncSession = Depends(get_session, scope="function")):
+    from app.library import artists
+
+    t = await s.get(Track, track_id)
+    if t is None:
+        raise HTTPException(404, "Трек не найден")
+    await artists.drop_title(s, t, name_id)
+    out = await edits.info(s, t)
+    await s.commit()
+    return out

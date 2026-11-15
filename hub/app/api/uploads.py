@@ -20,6 +20,7 @@ from app.config import get_settings
 from app.db import get_session
 from app.events import bus
 from app.jobs.downloads import _cover_kept, enqueue_scan, owe_cover
+from app.library import artists
 from app.jobs.queue import notify
 from app.library import acoustic, probe, quality, recognize, tagger
 from app.library.credits import main_artist, split_artists
@@ -435,6 +436,7 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
             continue
         u.status, u.track_id = "imported", track.id
         imported += 1
+        await artists.add_title(s, track, recognize.names_of(tags, u.orig_name)[1], "file")
         weak += quality.weak(spec.codec, spec.bitrate_kbps)
         track_ids.append(track.id)
         if track.album_id and track.album_id not in album_ids:

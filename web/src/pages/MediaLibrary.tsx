@@ -9,6 +9,7 @@ import { ListBar } from '../components/ListBar';
 import { useListSearch, type Found } from '../components/ListSearch';
 import { CoverView, ownCover } from '../components/PlaylistMenu';
 import { SaveSelection, TagFilterChips } from '../components/Tags';
+import { ArtistAlso, useArtistCard } from '../components/ArtistNames';
 import { Button, Cover, Empty, ErrorState, HeroSkeleton, IconButton, PageHeader, SkeletonRows, Spinner, cx } from '../components/ui';
 import { fmtLength, tracksWord } from '../lib/format';
 import { playCount, usePlayCounts } from '../lib/stats';
@@ -490,6 +491,7 @@ export function NdArtistPage({ id }: { id: string }) {
   const followed = useLiked(target);
   const [busy, setBusy] = useState(false);
   const row = useRememberScrollX(`nd-artist:${id}`);
+  const names = useArtistCard(d && !d.catalog_ref ? d.artist.name : null);
   if (res.loading && !d) return (<><PageHeader hero title="Исполнитель" back="/artists" /><HeroSkeleton round buttons /></>);
   if (!d) return (<><PageHeader hero title="Исполнитель" back="/artists" /><ErrorState text={res.error ?? 'Исполнитель не найден'} onRetry={() => res.reload()} /></>);
   if (d.catalog_ref) return <ArtistPage refId={d.catalog_ref} />;
@@ -515,6 +517,7 @@ export function NdArtistPage({ id }: { id: string }) {
         tracks={tracks}
         context="artist"
       />
+      <ArtistAlso card={names.card} onChange={names.set} className="pb-3" />
       <div className="flex flex-wrap items-center gap-2 px-4 pb-3 lg:px-6">
         <button
           type="button"

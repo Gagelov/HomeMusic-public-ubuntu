@@ -453,7 +453,11 @@ function LibraryTrackRow({ t, onPlay }: { t: LibTrackOut; onPlay?: () => void })
       </span>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px]">{t.title}</div>
-        <div className="truncate text-[13px] text-muted">{[t.artist, t.album].filter(Boolean).join(' · ')}</div>
+        <div className="truncate text-[13px] text-muted">
+          {[t.artist, t.album].filter(Boolean).join(' · ')}
+          {/* found by another name of the track, or another spelling of its artist: said, so the row is no riddle */}
+          {(t.found_by?.length ?? 0) > 0 && <span className="text-info"> · также: {(t.found_by ?? []).join(', ')}</span>}
+        </div>
       </div>
       <span className="shrink-0 text-xs tabular-nums text-dim">{fmtDuration(t.duration_s)}</span>
     </>

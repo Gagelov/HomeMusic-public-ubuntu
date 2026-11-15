@@ -4,6 +4,7 @@ import type { AlbumOut, ArtistPageOut, TrackOut } from '../api/types';
 import { ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
+import { ArtistAlso, useArtistCard } from '../components/ArtistNames';
 import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
 import { setDisliked, useDisliked } from '../lib/dislikes';
@@ -72,6 +73,8 @@ export function ArtistPage({ refId }: { refId: string }) {
   const hidden = useDisliked({ artist_ref: refId });
   const likedBy = useLikedBy(artist?.name, refId);
 
+  // the artist as the Hub knows them: the name everyone sees may be another spelling than the catalog's
+  const names = useArtistCard(d?.artist?.name, refId);
   if (res.loading && !d) return (<><PageHeader hero title="Исполнитель" back="/search" /><HeroSkeleton round buttons rows={10} /></>);
   if (!d || !artist) return (<><PageHeader hero title="Исполнитель" back="/search" /><ErrorState text={res.error ?? 'Исполнитель не найден'} onRetry={() => res.reload()} /></>);
 
@@ -122,21 +125,24 @@ export function ArtistPage({ refId }: { refId: string }) {
     </button>
   );
 
+  const shownName = names.card?.name ?? artist.name;
   const facts = [d.lastfm_listeners ? `${d.lastfm_listeners.toLocaleString('ru-RU')} ${plural(d.lastfm_listeners, ['слушатель', 'слушателя', 'слушателей'])} в Last.fm` : null, artist.nb_fans ? `${artist.nb_fans.toLocaleString('ru-RU')} ${plural(artist.nb_fans, ['поклонник', 'поклонника', 'поклонников'])} в Deezer` : null, releases.length ? `${releases.length} ${plural(releases.length, ['релиз', 'релиза', 'релизов'])}` : null].filter(Boolean).join(' · ');
 
   return (
     <div className={hidden ? 'grayscale' : undefined}>
       {/* the wide picture: before everything, so it stays at the top of the window while the page goes over it */}
       {d.banner_url && <BannerPicture src={d.banner_url} />}
-      <ListBar title={artist.name} back="/search" tracks={hidden ? undefined : top} context="artist" />
+      <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" />
       {d.banner_url ? (
-        <Banner name={artist.name} sub={facts} tracks={hidden ? undefined : top} />
+        <Banner name={shownName} sub={facts} tracks={hidden ? undefined : top} />
       ) : (
-        <Hero kicker="Исполнитель" cover={artist.picture_url} round title={artist.name} sub={facts} tracks={hidden ? undefined : top} context="artist" />
+        <Hero kicker="Исполнитель" cover={artist.picture_url} round title={shownName} sub={facts} tracks={hidden ? undefined : top} context="artist" />
       )}
 
       {/* what goes up over the picture has the page's own colour under it */}
       <div className={d.banner_url ? 'relative z-[1] bg-bg' : undefined}>
+      {/* the other spellings and the other projects of who it is */}
+      <ArtistAlso card={names.card} onChange={names.set} className="pb-3" />
       {hidden ? (
         <div className="mx-4 mb-3 rounded-2xl bg-danger/15 px-4 py-3 text-sm text-fg lg:mx-6">
           <p>Вы не слушаете этого исполнителя. Его треков нет в волне, миксах и открытиях, а в плейлистах они пропускаются.</p>

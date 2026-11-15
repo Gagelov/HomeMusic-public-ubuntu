@@ -215,6 +215,8 @@ class LibTrackOut(BaseModel):
     locked: bool
     warnings: list[Any] = []
     path: str
+    # a search found it by these — its other names, its artists' other spellings — not by what the row shows
+    found_by: list[str] = []
 
 
 class TrackSourceOut(BaseModel):
@@ -281,6 +283,12 @@ class TracksMoveIn(BaseModel):
     album_id: int
 
 
+class TrackNameOut(BaseModel):
+    id: int | None = None
+    name: str
+    source: str  # renamed / file / manual / catalog
+
+
 class TrackEditOut(BaseModel):
     """What the window of a track's names shows (app/library/edits.py)."""
 
@@ -298,6 +306,8 @@ class TrackEditOut(BaseModel):
     album_id: int | None = None  # its album of the library, whose cover can be changed too
     album_title: str | None = None
     has_file: bool = False
+    # the other names it is known by (`id` None: the catalog's, which is not kept here and cannot be dropped)
+    names: list[TrackNameOut] = []
 
 
 class TrackPatchIn(BaseModel):
