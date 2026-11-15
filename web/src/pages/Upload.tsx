@@ -9,6 +9,8 @@ import { fmtDuration, fmtSize, plural, toIntOrNull, tracksWord } from '../lib/fo
 import { useAsync, useDebounced } from '../lib/hooks';
 import { imageUrl } from '../lib/img';
 import { listen, useListen, type ListenTrack } from '../lib/listen';
+import { useSearchField } from '../components/ListSearch';
+import { listenTrack } from '../components/catalog';
 import { navigate } from '../lib/router';
 import { openTagsPick, useTags } from '../lib/tags';
 import { attempt, confirmDialog, toast } from '../lib/ui';
@@ -289,6 +291,7 @@ export function UploadPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
   const [only, setOnly] = useState<Only>('all');
+  const sf = useSearchField('Название, исполнитель, альбом или имя файла');
   const [menu, setMenu] = useState<number | null>(null); // the row whose menu is open
   const [editing, setEditing] = useState<number | null>(null); // the file whose names are being written
   const [toAlbum, setToAlbum] = useState<number[] | null>(null); // the files an album is being chosen for
@@ -565,8 +568,11 @@ export function UploadPage() {
     none: uploads.filter(isNone).length,
     twin: uploads.filter((u) => u.twin).length,
   };
+  // the search of the page: by what a file is called here — its own names, the catalog's, its album, the file's name
+  const needle = sf.q.trim().toLocaleLowerCase('ru');
+  const matches = (u: UploadOut) => !needle || [u.title, u.artist, u.orig_name, str(u.tags.album), u.match?.title, u.match?.artist, ...(u.match?.artists ?? []), u.match?.album].filter(Boolean).join(' ').toLocaleLowerCase('ru').includes(needle);
   const passes = (u: UploadOut) =>
-    only === 'fill' ? rowOf(u).include && !valid(u, rowOf(u)) : only === 'doubt' ? unsure(u, rowOf(u)) : only === 'changes' ? changes(u) : only === 'none' ? isNone(u) : only === 'twin' ? !!u.twin : true;
+    matches(u) && (only === 'fill' ? rowOf(u).include && !valid(u, rowOf(u)) : only === 'doubt' ? unsure(u, rowOf(u)) : only === 'changes' ? changes(u) : only === 'none' ? isNone(u) : only === 'twin' ? !!u.twin : true);
   const shown = uploads.filter(passes);
   // the albums, then the singles — each in the order its files came
   /** A file's place in its album: the catalog's where its record is taken, else the file's own (none: not said). */
@@ -758,9 +764,13 @@ export function UploadPage() {
   ];
 
   const importButton = uploads.length > 0 && (
-    <Button variant="primary" small icon="check" busy={!!moving} disabled={!canCommit} onClick={commit}>
-      {moving ? `Переношу ${moving.done} из ${moving.of}` : `Перенести ${tracksWord(ready.length)}`}
-    </Button>
+    <span className="flex min-w-0 items-center gap-1.5">
+      {/* the page's own search, in the browser's find's place (Ctrl+F): that one sees only the rows drawn */}
+      {sf.open ? <span className="flex w-40 min-w-0 md:w-80">{sf.field(needle ? shown.length : null)}</span> : <IconButton icon="search" label="Поиск по файлам (Ctrl+F)" onClick={sf.show} />}
+      <Button variant="primary" small icon="check" busy={!!moving} disabled={!canCommit} onClick={commit}>
+        {moving ? `Переношу ${moving.done} из ${moving.of}` : `Перенести ${tracksWord(ready.length)}`}
+      </Button>
+    </span>
   );
 
   const pick = (label: string, ref: React.RefObject<HTMLInputElement | null>) => (
@@ -923,7 +933,7 @@ export function UploadPage() {
           {only === 'doubt' && <p className="px-4 pt-2 text-xs text-muted lg:px-6">В каталоге есть похожая запись, но не точно эта: другая длина или версия. Такие треки переносятся со своими тегами, а на следующем шаге запись каталога скачивается и сравнивается с вашим файлом по звуку.</p>}
 
           {desktop && shown.length > 0 && <TableHead cols={cols} onCols={setCols} />}
-          {shown.length === 0 && <div className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6"><Empty icon="search" title="Под эту метку ничего не подходит" /></div>}
+          {shown.length === 0 && <div className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6"><Empty icon="search" title={needle ? 'Ничего не найдено' : 'Под эту метку ничего не подходит'} /></div>}
           {shownGroups.map(({ g, files }) => (
             <section key={g.key} className="mx-4 mt-3 rounded-2xl bg-surface lg:mx-6" aria-label={g.single ? `Сингл «${titleOf(g.files[0])}»` : `Альбом «${albumOf(g).title}»`}>
               <AlbumHead g={g} now={albumOf(g)} name={g.single ? titleOf(g.files[0]) : albumOf(g).title} onChoose={(patch) => choose(g, patch)} shown={files.length} canLink={g.files.some((u) => !!u.match?.ref && !usesCatalog(u, rowOf(u)))} onUnlink={() => linkAlbum(g, false)} onLink={() => linkAlbum(g, true)} />
@@ -1419,12 +1429,14 @@ function FindRecord({ u, onClose, onPick }: { u: UploadOut; onClose: () => void;
   const dq = useDebounced(q.trim(), 350);
   const res = useAsync((s) => (dq.length > 1 ? api.searchTracks(dq, 0, s).then((r) => r.tracks) : Promise.resolve([] as TrackOut[])), [dq]);
   const found = (res.data ?? []).filter((t) => t.ref.startsWith('dz:'));
+  const on = useListen((s) => (s.track && s.phase !== 'paused' && s.phase !== 'error' ? s.track.ref : null));
   return (
     <Sheet open onClose={onClose} title="Какая это запись">
       <p className="pb-3 text-xs text-muted">
         Файл: {u.title} — {u.artist || 'исполнитель не указан'} · {fmtDuration(u.duration_s)}
       </p>
       <input className="input" type="search" value={q} autoFocus placeholder="Исполнитель и название" aria-label="Поиск по каталогу" onChange={(e) => setQ(e.target.value)} />
+      <p className="pt-2 text-[11px] text-dim">Обложка — послушать запись, строка — выбрать её.</p>
       <div className="pt-3">
         {res.loading ? (
           <div className="flex justify-center py-6"><Spinner /></div>
@@ -1433,9 +1445,15 @@ function FindRecord({ u, onClose, onPick }: { u: UploadOut; onClose: () => void;
         ) : (
           <ul>
             {found.map((t) => (
-              <li key={t.ref}>
-                <button type="button" onClick={() => onPick(t.ref)} className="flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left hover:bg-fg/10">
+              <li key={t.ref} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-fg/10">
+                {/* the cover plays the record, as a cover does everywhere; the row beside it takes the record */}
+                <button type="button" aria-label={on === t.ref ? 'Пауза' : `Слушать: ${t.title}`} onClick={() => listen(listenTrack(t), found.map(listenTrack), 'upload')} className="group/c relative shrink-0">
                   <Cover src={t.cover_small_url || t.cover_url} size={40} alt="" />
+                  <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center rounded-md bg-black/60 text-white', on !== t.ref && 'opacity-0 group-hover/c:opacity-100')}>
+                    <Icon name={on === t.ref ? 'pause' : 'play'} size={16} filled />
+                  </span>
+                </button>
+                <button type="button" title="Это она — взять эту запись" onClick={() => onPick(t.ref)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[15px]">{t.title}</span>
                     <span className="block truncate text-[13px] text-muted">{[t.artists?.length ? t.artists.join(', ') : t.artist, t.album_title].filter(Boolean).join(' · ')}</span>
