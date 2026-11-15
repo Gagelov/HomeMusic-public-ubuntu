@@ -169,18 +169,24 @@ def _theirs(t: Any, sc: Any, title: str, album: str | None, duration: int | None
     """A record that may be the file's at all: of the file's artist — or, under another name of theirs (an album
     put out as «M00NCHILD»), the same name on the same album over the same length. A song of the same name by
     somebody else is not a record «like» the file: it is another song."""
-    if _goes_on(title, t.title):
-        return sc.artist >= cfg.artist_min_ratio
-    if sc.title < TITLE_FLOOR:
-        return False
-    # a name only somewhat like the file's, over another length, is another song of the artist's («Не надо» is not
-    # «Не знаю»)
-    if sc.title < TITLE_SURE and duration and t.duration_s and abs(duration - t.duration_s) > DOUBT_LENGTH_S:
-        return False
+    goes_on = _goes_on(title, t.title)  # the file's name with something after it: the same name, for this
+    if not goes_on:
+        if sc.title < TITLE_FLOOR:
+            return False
+        # a name only somewhat like the file's, over another length, is another song of the artist's («Не надо» is
+        # not «Не знаю»)
+        if sc.title < TITLE_SURE and duration and t.duration_s and abs(duration - t.duration_s) > DOUBT_LENGTH_S:
+            return False
     if sc.artist >= cfg.artist_min_ratio:
         return True
-    same_album = bool(album and t.album_title and " ".join(album.split()).casefold() == " ".join(t.album_title.split()).casefold())
-    return same_album and sc.title >= 0.95 and bool(duration and t.duration_s and abs(duration - t.duration_s) <= SAME_LENGTH_S)
+    return _other_name(t, sc, title, album, duration)
+
+
+def _other_name(t: Any, sc: Any, title: str, album: str | None, duration: int | None) -> bool:
+    """The record is the file's under another name of its artist: the same name of the song, on the album the file
+    names, over the same length — three things that do not agree by chance."""
+    return (_same_name(t.album_title, album) and (sc.title >= 0.95 or _goes_on(title, t.title))
+            and bool(duration and t.duration_s and abs(duration - t.duration_s) <= SAME_LENGTH_S))
 
 
 def _goes_on(title: str, theirs: str) -> bool:
@@ -269,7 +275,9 @@ async def of_file(tags: dict[str, Any], file_name: str, duration_s: float | None
     close = bool(duration and top.duration_s and abs(duration - top.duration_s) <= SAME_LENGTH_S)
     # a name that only goes on in the catalog — «(prod. by …)», «(feat. …)» — over the same length is the same song
     longer = _goes_on(title or raw_title, top.title)
-    if verdict != "auto" and not (close and longer and next(sc for x, sc in scored if x is top).artist >= cfg.artist_min_ratio):
+    mark = next(sc for x, sc in scored if x is top)
+    # …and so is the song on the file's album under another name of its artist («M00NCHILD» for GONE.Fludd)
+    if verdict != "auto" and not (close and longer and mark.artist >= cfg.artist_min_ratio)             and not _other_name(top, mark, title or raw_title, album, duration):
         why = "названия совпали не полностью"
     # «Отдай кота 2.0» is not «Отдай кота»: the numbers of a name are part of what it names
     if _numbers(raw_title) != _numbers(top.title):
