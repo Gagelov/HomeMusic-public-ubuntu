@@ -1053,7 +1053,8 @@ function AlbumHead({ g, now, name, onChoose, shown, canLink, onUnlink, onLink }:
         </div>
       )}
       <div className="min-w-0 flex-1 basis-64">
-        <div className="text-xs text-muted">{kind}</div>
+        {/* an album the catalog does not stand behind is made here: said so */}
+        <div className="text-xs text-muted">{linked ? kind : g.single ? 'Новый сингл' : 'Новый альбом'}</div>
         {linked || g.single ? (
           <div className="flex min-w-0 items-center gap-1">
             <h3 className="min-w-0 truncate text-xl font-bold">{name || 'без названия'}</h3>
