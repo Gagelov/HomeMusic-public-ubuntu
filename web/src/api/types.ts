@@ -167,6 +167,8 @@ export interface CatalogTrack {
   /** for lists (Deezer 250 px): the big `cover_url` only on a screen of the track or album itself */
   cover_small_url?: string | null;
   preview_url?: string | null;
+  /** how much the track is listened to, as its catalog counts it (Deezer); none: the catalog does not say */
+  rank?: number | null;
 }
 
 export interface CatalogAlbum {

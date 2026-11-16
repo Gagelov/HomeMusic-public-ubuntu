@@ -167,12 +167,18 @@ export function ArtistPage({ refId }: { refId: string }) {
         tracks={hidden ? undefined : top}
         context="artist"
         end={
-          // the ⋯ of the artist: at the top right, and there still when the page is scrolled
+          <>
+          {/* the search through everything of the artist — their releases and every track: the page of them all */}
+          <button type="button" onClick={() => navigate(`/artist/${enc(artist.ref)}/discography?view=tracks&search=1`)} aria-label="Поиск по трекам и релизам исполнителя" title="Поиск по трекам и релизам" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-bg/40 text-fg hover:bg-bg/70">
+            <Icon name="search" size={20} />
+          </button>
+          {/* the ⋯ of the artist: at the top right, and there still when the page is scrolled */}
           <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="relative mr-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-bg/40 text-fg hover:bg-bg/70">
             <Icon name="more" size={22} />
             {/* somebody looks like the same artist under another spelling: «Имя и написания» says who */}
             {artistHint(names.card) && <span aria-hidden="true" className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-info" />}
           </button>
+          </>
         }
       />
       <Banner name={shownName} photo={d.banner_url ? undefined : (photo ?? null)} />
@@ -240,6 +246,14 @@ export function ArtistPage({ refId }: { refId: string }) {
               <TrackRow key={t.ref} track={t} number={i + 1} queue={top} />
             ))}
           </div>
+          {/* the rest of what they made: every track of theirs as one list, the most listened first */}
+          {releases.length > 0 && (
+            <div className="px-4 pt-2 lg:px-6">
+              <Link to={`/artist/${enc(artist.ref)}/discography?view=tracks`} className="inline-flex h-9 items-center rounded-full border border-fg/40 px-4 text-sm font-semibold text-fg transition hover:border-fg active:scale-95">
+                Все треки
+              </Link>
+            </div>
+          )}
         </section>
       )}
 

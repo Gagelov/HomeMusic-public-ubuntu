@@ -1,12 +1,13 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useFollowedCount, useUnseenReleases } from '../lib/releases';
 import { api } from '../api/client';
 import { ForYouTiles } from '../components/ForYouTiles';
 import { Icon } from '../components/Icon';
-import { Cover, ErrorState, IconButton, SkeletonRows } from '../components/ui';
+import { ArtistBubble, TrackRow } from '../components/catalog';
+import { Cover, Empty, ErrorState, IconButton, PageHeader, SectionTitle, SkeletonRows } from '../components/ui';
 import { useHubEvent } from '../lib/events';
 import { plural, tracksWord } from '../lib/format';
-import { useAsync } from '../lib/hooks';
+import { useAsync, useDebounced } from '../lib/hooks';
 import { playlistMenuProps } from '../lib/playlistMenu';
 import { Link, enc, navigate } from '../lib/router';
 
@@ -33,7 +34,10 @@ export function LibraryPage() {
     <div className="px-4 pb-4">
       <header className="pt-safe flex items-center justify-between pb-1 pt-4">
         <h1 className="text-3xl font-bold tracking-tight">Библиотека</h1>
-        <IconButton icon="plus" size={28} label="Создать плейлист" onClick={() => navigate('/playlists')} />
+        <span className="flex items-center">
+          <IconButton icon="search" size={24} label="Поиск по библиотеке" onClick={() => navigate('/library/search')} />
+          <IconButton icon="plus" size={28} label="Создать плейлист" onClick={() => navigate('/playlists')} />
+        </span>
       </header>
 
       <Title>Плейлисты</Title>
@@ -95,5 +99,58 @@ function Row({ to, title, sub, art, menu }: { to: string; title: string; sub?: s
         </span>
       </Link>
     </li>
+  );
+}
+
+/** The search of «Библиотека» (`/library/search`): through what the listener keeps and nothing else — the artists
+ * they follow and the tracks of their playlists and «Любимое» (`/api/search/mine`). No releases: a release is not
+ * kept as such. The field has the cursor at once: the page is opened to type. */
+export function LibrarySearchPage() {
+  const [q, setQ] = useState('');
+  const dq = useDebounced(q.trim(), 250);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => input.current?.focus(), []);
+  const res = useAsync((s) => (dq ? api.searchMine(dq, s) : Promise.resolve(null)), [dq]);
+  const d = dq ? res.data : null;
+  const tracks = d?.tracks ?? [];
+  return (
+    <div className="pb-4">
+      <PageHeader title="Поиск по библиотеке" back="/library" />
+      <div className="px-4 pb-2 lg:px-6">
+        <input ref={input} className="input" type="search" placeholder="Трек из плейлистов или исполнитель" aria-label="Поиск по библиотеке" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+      {!dq ? (
+        <p className="px-4 py-8 text-center text-sm text-muted lg:px-6">Ищет среди треков ваших плейлистов и «Любимого» и среди исполнителей, на которых вы подписаны.</p>
+      ) : res.loading && !d ? (
+        <SkeletonRows n={6} />
+      ) : res.error ? (
+        <ErrorState text={res.error} onRetry={() => res.reload()} />
+      ) : d && !d.artists.length && !tracks.length ? (
+        <Empty icon="search" title="В библиотеке такого нет" text="Попробуйте другое написание — или поищите во всём каталоге на вкладке «Поиск»." />
+      ) : (
+        d && (
+          <>
+            {d.artists.length > 0 && (
+              <section aria-label="Исполнители">
+                <SectionTitle>Исполнители</SectionTitle>
+                <div className="no-scrollbar flex gap-3 overflow-x-auto px-4 pb-1">
+                  {d.artists.map((a) => (
+                    <ArtistBubble key={a.ref} artist={a} />
+                  ))}
+                </div>
+              </section>
+            )}
+            {tracks.length > 0 && (
+              <section aria-label="Треки">
+                <SectionTitle>Треки</SectionTitle>
+                {tracks.map((t, i) => (
+                  <TrackRow key={`${t.ref}:${i}`} track={t} showAlbum queue={tracks.filter((x) => !x.unknown)} index={i + 1} />
+                ))}
+              </section>
+            )}
+          </>
+        )
+      )}
+    </div>
   );
 }

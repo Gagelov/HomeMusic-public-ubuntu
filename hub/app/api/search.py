@@ -16,6 +16,7 @@ from app.api.library import track_out
 from app.api.schemas import (
     ProviderSearchOut,
     SearchHistoryOut,
+    SearchMineOut,
     SearchOut,
     SearchRecentIn,
     SearchRecentOut,
@@ -23,7 +24,7 @@ from app.api.schemas import (
 )
 from app.auth import current_user
 from app.library import artists as artist_names
-from app.catalog.models import CatalogTrack, SearchResults
+from app.catalog.models import CatalogArtist, CatalogTrack, SearchResults
 from app.config import get_settings
 from app.db import get_session
 from app.events import bus
@@ -188,6 +189,41 @@ def _unique(tracks: list[CatalogTrack]) -> list[CatalogTrack]:
     """Deezer may list a track twice; the PWA keys rows by ref."""
     seen: set[str] = set()
     return [t for t in tracks if not (t.ref in seen or seen.add(t.ref))]
+
+
+MINE_LIMIT = 100
+
+
+@router.get("/mine", response_model=SearchMineOut)
+async def search_mine(q: str = Query(min_length=1), user: User = Depends(current_user),
+                      s: AsyncSession = Depends(get_session, scope="function")):
+    """The search of «Библиотека»: what the listener keeps and nothing else — the artists they follow, by their
+    names in every spelling, and the tracks of their playlists and of «Любимое», with a file or without one, as the
+    search of the library reads them (Cyrillic and Latin as one, other names of a track). No releases: a release
+    is not kept as such."""
+    from app import playlists, releases
+    from app.api.playlists import tracks_out
+    from app.models import Playlist, PlaylistItem
+
+    words = artist_names.fold(q).split()
+    if not words:
+        return SearchMineOut()
+    kept = (await s.execute(
+        select(PlaylistItem.track_id).join(Playlist, Playlist.id == PlaylistItem.playlist_id)
+        .where(Playlist.user_id == user.id, Playlist.kind.in_((playlists.USER, playlists.LIKED))).distinct())).scalars().all()
+    tracks = await tracks_out(s, user, [t for t, _ in await artist_names.found(s, q, MINE_LIMIT, among=kept)])
+    follows = [f for f in await releases.follows(s, user.id) if all(w in artist_names.fold(f.name) for w in words)][:20]
+
+    async def shown(ref: str, name: str) -> CatalogArtist:
+        src, _, id_ = ref.partition(":")
+        try:  # their picture, where the catalog is there to say it
+            return (await svc.artist_page(ref)).artist if src != "dz" or svc.deezer is None else await svc.deezer.get_artist(id_)
+        except Exception as e:
+            log.info("search of the library: artist %s not read: %r", ref, e)
+            return CatalogArtist(ref=ref, source=src, id=id_, name=name)  # type: ignore[arg-type]
+
+    artists = await artist_names.shown(s, list(await asyncio.gather(*(shown(f.ref, f.name) for f in follows))))
+    return SearchMineOut(artists=artists, tracks=tracks)
 
 
 @router.get("/tracks", response_model=SearchTracksOut)

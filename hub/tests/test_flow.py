@@ -788,3 +788,16 @@ async def test_an_album_is_said_once_for_its_files(env, tmp_path):
     album = (await c.get(f"/api/library/albums/{out['album_ids'][0]}")).json()
     assert (album["title"], album["album_artist"], album["year"]) == ("Сборник", "Кто", 2020)
     assert sorted(t["track_no"] for t in album["tracks"]) == [1, 2]
+
+
+async def test_the_search_of_the_library_looks_through_what_the_listener_keeps(env):
+    """«Библиотека» is searched through the tracks of the listener's playlists — a track nobody put anywhere is not
+    found there, however well the library has it."""
+    c = env["client"]
+    await download_one(c, {"artist": "Кино", "title": "Группа крови"})
+    assert (await c.get("/api/search/mine", params={"q": "группа"})).json() == {"artists": [], "tracks": []}
+    (own,) = (await c.get("/api/search", params={"q": "Группа крови"})).json()["library"]
+    p = (await c.post("/api/playlists", json={"name": "Моё"})).json()
+    assert (await c.post(f"/api/playlists/{p['id']}/add", json={"track_ids": [own["id"]]})).status_code == 200
+    got = (await c.get("/api/search/mine", params={"q": "gruppa krovi"})).json()  # Latin for Cyrillic, as everywhere
+    assert [t["title"] for t in got["tracks"]] == ["Группа крови"] and got["artists"] == []

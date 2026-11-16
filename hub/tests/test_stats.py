@@ -286,7 +286,7 @@ async def test_the_history_is_the_listens_one_after_another(c):
         await s.flush()
         page = f"/playlist/{pl.id}"
     now = datetime.now(UTC)
-    old = listen("ndK", 100_000, now - timedelta(days=1, hours=1), "a")
+    old = listen("ndK", 100_000, now - timedelta(days=2, hours=1), "a")  # another day in any time zone, at any hour
     for e in old:
         e["context"], e["page"] = "playlist", page
     skipped = listen("ndX", 12_000, now - timedelta(hours=2), "b")

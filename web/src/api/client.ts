@@ -73,6 +73,7 @@ import type {
   SearchHistoryOut,
   SearchRecent,
   SearchTracksOut,
+  TrackOut,
   StarIn,
   StarOut,
   StarredOut,
@@ -303,6 +304,8 @@ export const api = {
   forgetSearch: (key: string) => request<OkOut>('DELETE', withQuery('/api/search/history', { key })),
   clearSearchHistory: () => request<OkOut>('DELETE', '/api/search/history'),
   // more tracks of the same search, from `offset` (`SearchOut.tracks_next`, then `next_offset`)
+  /** the search of «Библиотека»: the artists the listener follows and the tracks of their playlists and «Любимое» */
+  searchMine: (q: string, signal?: AbortSignal) => request<{ artists: CatalogArtist[]; tracks: TrackOut[] }>('GET', withQuery('/api/search/mine', { q }), { signal }),
   searchTracks: (q: string, offset: number, signal?: AbortSignal) =>
     cachedGet<SearchTracksOut>(withQuery('/api/search/tracks', { q, offset }), signal),
   /** `group`: only the regular sources, or only re-uploads by small channels (slower). */

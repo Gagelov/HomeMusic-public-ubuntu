@@ -39,7 +39,7 @@ import { HomePage } from './pages/Home';
 import { ImportItemsPage, ImportPage, ImportsPage } from './pages/Import';
 import { FilesPage } from './pages/Files';
 import { QualityPage } from './pages/Quality';
-import { LibraryPage } from './pages/Library';
+import { LibraryPage, LibrarySearchPage } from './pages/Library';
 import { LibraryAlbumPage } from './pages/LibraryAlbum';
 import { LoginPage } from './pages/Login';
 import { LyricsSettingsPage } from './pages/LyricsSettings';
@@ -117,6 +117,7 @@ const ROUTES: RouteDef[] = [
   ['/map', 'search', () => <ArtistMapPage />],
   ['/downloads', 'downloads', () => <DownloadsPage />],
   ['/downloads/:id', 'downloads', (p) => <DownloadDetailPage key={p.id} id={Number(p.id)} />, 'text'],
+  ['/library/search', 'library', () => <LibrarySearchPage />],
   ['/library', 'library', () => <LibraryPage />, 'text'],
   ['/files', 'more', () => <FilesPage key="files" />],
   ['/quality', 'more', () => <QualityPage />],

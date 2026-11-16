@@ -525,6 +525,13 @@ class SearchOut(BaseModel):
     errors: list[str] = []  # e.g. "Deezer недоступен"
 
 
+class SearchMineOut(BaseModel):
+    """What a listener keeps, searched: the artists they follow and the tracks of their playlists and «Любимое»."""
+
+    artists: list[CatalogArtist] = []
+    tracks: list[TrackOut] = []
+
+
 class SearchTracksOut(BaseModel):
     """A further page of the catalog track search."""
 

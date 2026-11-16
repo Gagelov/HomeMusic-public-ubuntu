@@ -649,10 +649,11 @@ async def renamed(s: AsyncSession, track: Track, was: str | None) -> None:
 # ---------------------------------------------------------------- the library's search
 
 
-async def found(s: AsyncSession, q: str, limit: int = 20) -> list[tuple[Track, list[str]]]:
+async def found(s: AsyncSession, q: str, limit: int = 20, *, among: Iterable[int] | None = None) -> list[tuple[Track, list[str]]]:
     """The library's songs a query finds — tracks that have a file — by a track's name and its other names, its
     artists in every spelling, its album; Cyrillic and Latin read as one. With each: the other names and spellings
-    it was found by (none: by what the row shows)."""
+    it was found by (none: by what the row shows). `among`: these tracks are looked through instead, with a file
+    or without one (what a listener keeps in their playlists)."""
     words = fold(q).split()
     if not words:
         return []
@@ -667,7 +668,13 @@ async def found(s: AsyncSession, q: str, limit: int = 20) -> list[tuple[Track, l
         by.setdefault(tid, []).append(aid)
     has_file = select(TrackFile.id).where(TrackFile.track_id == Track.id).exists()
     hits: list[tuple[int, Track, list[str]]] = []
-    for t in (await s.execute(select(Track).where(has_file))).scalars():
+    ids = None if among is None else list(dict.fromkeys(among))
+    rows: list[Track] = []
+    if ids is None:
+        rows = list((await s.execute(select(Track).where(has_file))).scalars())
+    for k in range(0, len(ids or []), 500):
+        rows += list((await s.execute(select(Track).where(Track.id.in_(ids[k:k + 500])))).scalars())  # type: ignore[index]
+    for t in rows:
         shown_ = fold(f"{t.artist} {t.title} {t.album or ''}")
         also = [*other.get(t.id, []), *([(t.catalog or {}).get("title")] if (t.catalog or {}).get("title") else [])]
         for aid in by.get(t.id, []):
