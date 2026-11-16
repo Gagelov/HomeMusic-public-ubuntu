@@ -102,7 +102,6 @@ export function AlbumPage({ refId }: { refId: string }) {
     if (!ok) return;
     if (await attempt(() => api.namesakesExclude(artistRef, [album.ref]))) toast('Релиз убран у исполнителя', 'success', { label: 'Скрытое', to: '/hidden' });
   };
-  const deezer = album.source === 'dz' ? `https://www.deezer.com/album/${album.id}` : album.source === 'ym' ? `https://music.yandex.ru/album/${album.id}` : null;
   const item = (icon: IconName, label: string, run: () => void) => (
     <button type="button" onClick={run} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5">
       <Icon name={icon} size={21} className="text-muted" />
@@ -185,12 +184,13 @@ export function AlbumPage({ refId }: { refId: string }) {
       <Sheet open={menu} onClose={() => setMenu(false)} title={album.title}>
         <div className="-mx-1">
           {item('link', 'Скопировать ссылку', () => void share())}
-          {deezer && (
-            <a href={deezer} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
-              <BrandIcon service={album.source === 'ym' ? 'yandex' : 'deezer'} size={21} />
-              {album.source === 'ym' ? 'Открыть в Яндекс Музыке' : 'Открыть в Deezer'}
+          {/* every service that has the release: the catalog its record is of, and the other one where it is too */}
+          {(album.links ?? []).map((x) => (
+            <a key={x.service} href={x.url} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
+              <BrandIcon service={x.service} size={21} />
+              {x.service === 'yandex' ? 'Открыть в Яндекс Музыке' : 'Открыть в Deezer'}
             </a>
-          )}
+          ))}
           {album.artist_ref && (
             <Link to={`/artist/${enc(album.artist_ref)}`} onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
               <Icon name="user" size={21} className="text-muted" />

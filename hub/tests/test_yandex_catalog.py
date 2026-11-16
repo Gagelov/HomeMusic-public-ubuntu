@@ -61,3 +61,20 @@ def test_what_another_catalog_found_is_added_once():
     got = _with(dz, more)
     assert [t.ref for t in got.tracks] == ["dz:1", "ym:6"]
     assert [a.ref for a in got.artists] == ["dz:9", "ym:3"]
+
+
+def test_two_catalogs_records_of_one_release():
+    from datetime import date
+
+    from app.api.catalog import same_release
+
+    def rel(src, title, artist="GONE.Fludd", year=2026, n=10, day=None):
+        return CatalogAlbum(ref=f"{src}:1", source=src, id="1", title=title, artist=artist, year=year, nb_tracks=n, release_date=day)
+
+    dz = rel("dz", "Любовь и Ракеты, Ч.1", year=None, day=date(2026, 3, 1))
+    assert same_release(dz, rel("ym", "Любовь и ракеты, ч.1"))
+    assert same_release(dz, rel("ym", "Любовь и Ракеты, Ч.1 (Deluxe)"))  # what is written after the name is not it
+    assert same_release(dz, rel("ym", "Любовь и Ракеты, Ч.1", year=2027))  # a reissue: as many tracks
+    assert not same_release(dz, rel("ym", "Любовь и Ракеты, Ч.1", year=2027, n=12))
+    assert not same_release(dz, rel("ym", "Любовь и Ракеты, Ч.2"))
+    assert not same_release(dz, rel("ym", "Любовь и Ракеты, Ч.1", artist="Другой"))

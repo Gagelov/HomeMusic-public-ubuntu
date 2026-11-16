@@ -443,10 +443,19 @@ class TrackOut(CatalogTrack):
     added_at: datetime | None = None
 
 
+class ServiceLinkOut(BaseModel):
+    """A page of a music service: the release there."""
+
+    service: str  # deezer / yandex
+    url: str
+
+
 class AlbumOut(CatalogAlbum):
     owned_status: OwnedStatus = "none"
     owned_count: int = 0
     tracks: list[TrackOut] | None = None  # type: ignore[assignment]
+    # where the release can be opened: its own catalog, and another that has the same release (its own page only)
+    links: list[ServiceLinkOut] = []
 
 
 class ArtistSourceOut(BaseModel):

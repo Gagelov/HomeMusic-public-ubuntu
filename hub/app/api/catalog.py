@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas import AlbumOut, ArtistPageOut, ArtistSourceOut, DiscographyOut, NamesakeIn, NamesakeOut
+from app.api.schemas import AlbumOut, ArtistPageOut, ArtistSourceOut, DiscographyOut, NamesakeIn, NamesakeOut, ServiceLinkOut
 from app.catalog import banners, namesakes, popular
 from app.auth import current_user
 from app.catalog.models import ArtistPage, CatalogAlbum, CatalogTrack, split_ref
@@ -141,6 +141,53 @@ async def _source(p: ArtistPage) -> ArtistSourceOut:
     return ArtistSourceOut(service=SERVICES.get(a.source, "catalog"), ref=a.ref, name=a.name,
                            picture_url=a.picture_small_url or a.picture_url, followers=a.nb_fans, listeners=heard,
                            releases=len(p.albums), url=ARTIST_URLS[a.source].format(a.id) if a.source in ARTIST_URLS else None)
+
+
+ALBUM_URLS = {"dz": "https://www.deezer.com/album/{}", "ym": "https://music.yandex.ru/album/{}"}
+TWIN_WAIT_S = 4.0  # a release's page does not wait longer for the other catalog
+
+
+def same_release(a: CatalogAlbum, b: CatalogAlbum) -> bool:
+    """Two catalogs' records of one release: the same artist, the same name up to what one of them writes after it
+    («… (prod. by …)»), and the same year — or, where a reissue moved the year, as many tracks."""
+    from app.library import artists
+
+    def year(x: CatalogAlbum) -> int | None:
+        return x.release_date.year if x.release_date else x.year
+
+    if artists.fold(split_suffix(a.title)[0]) != artists.fold(split_suffix(b.title)[0]):
+        return False
+    if not {artists.key(n) for n in [a.artist, *a.artists]} & {artists.key(n) for n in [b.artist, *b.artists]}:
+        return False
+    if year(a) and year(b) and year(a) == year(b):
+        return True
+    return bool(a.nb_tracks and a.nb_tracks == b.nb_tracks)
+
+
+async def album_links(a: CatalogAlbum) -> list[ServiceLinkOut]:
+    """Where the release can be opened: in the catalog its record is of, and in the other one where that has the
+    same release (`same_release`) — asked by the artist and the name. The other catalog away, or slow: its own only."""
+    links = [ServiceLinkOut(service=SERVICES[a.source], url=ALBUM_URLS[a.source].format(a.id))] if a.source in ALBUM_URLS else []
+    if a.nb_tracks is None and a.tracks:
+        a = a.model_copy(update={"nb_tracks": len(a.tracks)})
+
+    async def twin() -> CatalogAlbum | None:
+        if a.source == "dz" and svc.yandex is not None:
+            found = (await svc.yandex.search(f"{a.artist} {split_suffix(a.title)[0]}")).albums
+        elif a.source == "ym" and svc.deezer is not None:
+            found = await svc.deezer.search_albums(a.artist, split_suffix(a.title)[0])
+        else:
+            return None
+        return next((b for b in found if same_release(a, b)), None)
+
+    try:
+        other = await asyncio.wait_for(twin(), TWIN_WAIT_S)
+    except Exception as e:  # asked again the next time the page is opened
+        log.info("album %s: the other catalog not asked: %r", a.ref, e)
+        other = None
+    if other is not None:
+        links.append(ServiceLinkOut(service=SERVICES[other.source], url=ALBUM_URLS[other.source].format(other.id)))
+    return links
 
 
 async def get_album(ref: str, *, credited: bool = False) -> CatalogAlbum:
@@ -280,4 +327,6 @@ async def discography(ref: str, user: User = Depends(current_user),
 @router.get("/album/{ref}", response_model=AlbumOut)
 async def album(ref: str, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
     a = await get_album(ref, credited=True)
-    return (await annotate_albums(s, [a], user.id))[0]
+    out = (await annotate_albums(s, [a], user.id))[0]
+    out.links = await album_links(a)
+    return out

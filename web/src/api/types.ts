@@ -233,6 +233,8 @@ export interface AlbumOut extends CatalogAlbum {
   owned_status: OwnedStatus;
   owned_count: number;
   tracks?: TrackOut[] | null;
+  /** where the release can be opened: its own catalog, and another that has the same release (its own page only) */
+  links?: { service: string; url: string }[];
 }
 
 export interface ArtistPageOut {
