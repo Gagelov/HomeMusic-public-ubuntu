@@ -34,6 +34,7 @@ import { AssistantTaskPage } from './pages/AssistantTask';
 import { setAssistantAccount } from './pages/AssistantChat';
 import { DownloadDetailPage } from './pages/DownloadDetail';
 import { DownloadsPage } from './pages/Downloads';
+import { ArtistMapPage } from './pages/ArtistMapPage';
 import { HomePage } from './pages/Home';
 import { ImportItemsPage, ImportPage, ImportsPage } from './pages/Import';
 import { FilesPage } from './pages/Files';
@@ -112,6 +113,8 @@ const ROUTES: RouteDef[] = [
   // «Микс дня» by its name: no mix has the number 0, so the page opens today's
   ['/mix', 'library', () => <ForYouPage key="mix" kind="mix" />],
   ['/taste', 'search', () => <TastePage />, 'text'],
+  ['/map/:ref', 'search', (p) => <ArtistMapPage refId={p.ref} />],
+  ['/map', 'search', () => <ArtistMapPage />],
   ['/downloads', 'downloads', () => <DownloadsPage />],
   ['/downloads/:id', 'downloads', (p) => <DownloadDetailPage key={p.id} id={Number(p.id)} />, 'text'],
   ['/library', 'library', () => <LibraryPage />, 'text'],

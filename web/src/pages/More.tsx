@@ -110,7 +110,7 @@ export function MorePage() {
               <Item icon="chart" tint="bg-[#2ba6bc]" to="/stats" title="Статистика" />
               <Item icon="history" tint="bg-[#7b61d9]" to="/history" title="История" />
               <Item icon="user" tint="bg-[#a45ad6]" to="/taste" title="Мои исполнители" />
-              {me.artist_map && <Item icon="wave" tint="bg-[#d5483f]" to="/taste?view=map" title="Карта исполнителей" />}
+              {me.artist_map && <Item icon="wave" tint="bg-[#d5483f]" to="/map" title="Карта похожих" />}
               <Item icon="download" tint="bg-[#1f9d55]" to="/offline" title="Офлайн" value={kept ? tracksWord(kept) : undefined} />
               <Item icon="ban" tint="bg-[#b0483f]" to="/hidden" title="Скрытое" value={hiddenCount ? String(hiddenCount) : undefined} />
             </Group>

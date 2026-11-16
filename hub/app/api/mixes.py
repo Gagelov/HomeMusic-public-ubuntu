@@ -210,16 +210,19 @@ async def similar(ref: str = Query(max_length=64), user: User = Depends(current_
     return [a for a in await artists.shown(s, found) if a.ref not in theirs]
 
 
-MAP_ASKED = 24  # of Last.fm's nearest looked up in the catalog
-MAP_SHOWN = 14  # of them on the map
+MAP_ASKED = 60  # of Last.fm's nearest asked for: some the catalog does not know
+MAP_MOST = 50  # of them on the map at most
 
 
 @router.get("/api/taste/map", response_model=ArtistMapOut)
-async def artist_map(ref: str = Query(max_length=64), user: User = Depends(current_user),
+async def artist_map(ref: str = Query(max_length=64), n: int = Query(15, ge=1, le=MAP_MOST),
+                     user: User = Depends(current_user),
                      s: AsyncSession = Depends(get_session, scope="function")):
     """«Карта»: the artists Last.fm holds to be near `ref` (a Deezer artist), nearest first, each with how near.
     Last.fm knows artists by name: each is looked up in the catalog, and one the catalog has nobody of that name for
-    is left out — on the map an artist is someone to pick or to open. No Last.fm key → `404`."""
+    is left out — on the map an artist is someone to go to or to open. `n`: how many are wanted — looking each up
+    takes a request to the catalog the first time, so the map asks for the nearest few, then for all (`more`: the
+    answer may grow with a greater `n`). No Last.fm key → `404`."""
     from app.mixes import sources
     from app.mixes.build import artist_by_name
 
@@ -236,8 +239,10 @@ async def artist_map(ref: str = Query(max_length=64), user: User = Depends(curre
         center = await svc.deezer.get_artist(id_)  # type: ignore[union-attr]
     except Exception as e:
         raise HTTPException(404, f"Исполнитель не найден: {ref}") from e
+    # Last.fm is asked by the name the artist has here (the catalog's record may spell it another way)
+    known = (await artists.shown(s, [center]))[0]
     try:
-        near = await sources.lastfm_near_artists(center.name, MAP_ASKED)
+        near = await sources.lastfm_near_artists(known.name or center.name, MAP_ASKED)
     except sources.SourceDown as e:
         raise HTTPException(502, f"Last.fm не ответил: {e}") from e
 
@@ -248,6 +253,8 @@ async def artist_map(ref: str = Query(max_length=64), user: User = Depends(curre
         except Exception:
             return None
 
+    asked = near[:n + n // 3 + 3]  # a few more than wanted: not everyone is found
+    near, more = asked, len(asked) < len(near) and n < MAP_MOST
     cards = await asyncio.gather(*(one(name) for name, _ in near))
     at = await artists.addresses(s, [center.ref, *(a.ref for a in cards if a is not None)])
     match: dict[str, float] = {}
@@ -257,7 +264,7 @@ async def artist_map(ref: str = Query(max_length=64), user: User = Depends(curre
     # as they are here: under their own names, each once — and the artist in the middle is not around themselves
     here = await artists.shown(s, [center, *(a for a in cards if a is not None)])
     around = [ArtistNearOut(artist=a, match=match[a.ref]) for a in here[1:] if a.ref in match and a.ref != here[0].ref]
-    return ArtistMapOut(center=here[0], around=around[:MAP_SHOWN])
+    return ArtistMapOut(center=here[0], around=around[:n], more=more)
 
 
 @router.post("/api/taste/artists", response_model=MixSettingsOut)

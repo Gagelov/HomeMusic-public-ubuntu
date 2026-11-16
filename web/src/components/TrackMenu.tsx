@@ -10,6 +10,7 @@ import { addToQueue, next, stopListening, useListen, type ListenTrack } from '..
 import { useInPlaylists } from '../lib/inPlaylists';
 import { canPlayAll } from '../lib/player';
 import { enc, navigate } from '../lib/router';
+import { useSession } from '../lib/session';
 import { openShare } from '../lib/shareTrack';
 import { useLiked } from '../lib/stars';
 import { openTagsSheet, tagKey } from '../lib/tags';
@@ -87,6 +88,7 @@ export function TrackMenuButton({ track, extra, className, inPlayer, lean, noTag
  * `lean`: the playlists and the share have buttons of their own beside this menu (the player) — not repeated here. */
 function TrackMenu({ track, extra, inPlayer, lean, noTags, onClose }: { track: MenuTrack; extra?: MenuExtra[]; inPlayer?: boolean; lean?: boolean; noTags?: boolean; onClose: () => void }) {
   const [picking, setPicking] = useState(false);
+  const canMap = !!useSession().me.artist_map; // «Карта похожих» is there
   const trackWave = trackSeed(track);
   const artistWave = artistSeed(track);
   const key = tagKey(track);
@@ -214,6 +216,17 @@ function TrackMenu({ track, extra, inPlayer, lean, noTags, onClose }: { track: M
             onClick={() => {
               onClose();
               void startWave(artistWave, inPlayer ? 'player' : 'artist_menu');
+            }}
+          />
+        )}
+        {canMap && track.artist_ref?.startsWith('dz:') && (
+          <MenuItem
+            icon="nodes"
+            label="Карта похожих"
+            hint={track.artist}
+            onClick={() => {
+              onClose();
+              navigate(`/map/${enc(track.artist_ref!)}`);
             }}
           />
         )}

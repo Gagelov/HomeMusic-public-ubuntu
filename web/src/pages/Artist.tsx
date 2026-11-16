@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import type { AlbumOut, ArtistPageOut } from '../api/types';
-import { ArtistMap, ArtistsViewSwitch, useArtistsView } from '../components/ArtistMap';
 import { ArtistBubble, ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
@@ -16,6 +15,7 @@ import { useAsync, useRememberScrollX } from '../lib/hooks';
 import { imageUrl } from '../lib/img';
 import { Link, enc, navigate } from '../lib/router';
 import { copyText } from '../lib/share';
+import { useSession } from '../lib/session';
 import { toggleLike, useLiked, useLikesKnown } from '../lib/stars';
 import { confirmDialog, toast } from '../lib/ui';
 import { canWave, startWave } from '../lib/wave';
@@ -68,6 +68,7 @@ export function ArtistNamedPage({ name }: { name: string }) {
 
 export function ArtistPage({ refId }: { refId: string }) {
   const res = useAsync((s) => api.artist(refId, s), [refId], true, `artist:${refId}`);
+  const canMap = !!useSession().me.artist_map; // «Карта похожих» is there
   const [menu, setMenu] = useState(false);
   const [naming, setNaming] = useState<'names' | 'projects' | 'looks' | null>(null); // a window of the artist's ⋯
   const [busy, setBusy] = useState<string | null>(null);
@@ -254,6 +255,10 @@ export function ArtistPage({ refId }: { refId: string }) {
             setMenu(false);
             void startWave({ artist_ref: artist.ref }, 'artist_page');
           })}
+          {canMap && item('nodes', 'Карта похожих', () => {
+            setMenu(false);
+            navigate(`/map/${enc(artist.ref)}`);
+          })}
           {item('download', 'Скачать всё', () => void downloadAll())}
           {followed && item('x', 'Отписаться', () => void unfollow())}
           {names.card && item('edit', <span className="flex items-center gap-2">Имя и написания{artistHint(names.card) && <><span aria-hidden="true" className="h-2 w-2 rounded-full bg-info" /><span className="text-[13px] text-info">есть похожий исполнитель</span></>}</span>, () => {
@@ -379,40 +384,29 @@ function Banner({ name, photo }: { name: string; photo?: string | null }) {
   );
 }
 
-/** «Похожие»: the artists the catalog holds to be like this one, in a row — or, on a server with a Last.fm key, the
- * map of those near them (`components/ArtistMap`); a press on anyone opens their page. Nothing where neither knows
- * anybody. */
+/** «Похожие»: the artists the catalog holds to be like this one, in a row; on a server with a Last.fm key the
+ * heading leads to «Карта похожих» around them (`pages/ArtistMapPage`). Nothing where the catalog knows nobody. */
 function Alike({ artistRef }: { artistRef: string }) {
-  const [view, setView, canMap] = useArtistsView();
-  const list = useAsync((s) => api.tasteSimilar(artistRef, s), [artistRef], view === 'list', `alike:${artistRef}`);
-  const map = useAsync((s) => api.artistMap(artistRef, s), [artistRef], view === 'map', `near:${artistRef}`);
+  const canMap = !!useSession().me.artist_map;
+  const list = useAsync((s) => api.tasteSimilar(artistRef, s), [artistRef], true, `alike:${artistRef}`);
   const row = useRememberScrollX(`artist:${artistRef}:alike`);
-  const open = (a: { ref: string }) => navigate(`/artist/${enc(a.ref)}`);
-  // without a map to switch to, an empty list is no section at all
-  if (!canMap && !list.data?.length) return null;
+  if (!list.data?.length) return null;
   return (
     <section aria-label="Похожие" className="pb-4">
       <h2 className="flex items-center justify-between gap-3 px-4 pb-2 pt-5 text-lg font-bold lg:px-6">
         Похожие
-        {canMap && <ArtistsViewSwitch view={view} onChange={setView} />}
+        {canMap && (
+          <Link to={`/map/${enc(artistRef)}`} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-raised px-3.5 text-[13px] font-normal text-fg transition hover:bg-hover">
+            <Icon name="nodes" size={15} />
+            На карте
+          </Link>
+        )}
       </h2>
-      {view === 'map' ? (
-        <div className="px-2">
-          <ArtistMap data={map.data} loading={map.loading} error={map.data ? undefined : map.error} onRetry={() => map.reload()} onArtist={open} />
-        </div>
-      ) : list.data?.length ? (
-        <div ref={row} className="no-scrollbar flex gap-3 overflow-x-auto px-4 lg:px-6">
-          {list.data.map((a) => (
-            <ArtistBubble key={a.ref} artist={a} />
-          ))}
-        </div>
-      ) : list.loading ? (
-        <div className="flex h-36 items-center justify-center">
-          <Spinner size={24} />
-        </div>
-      ) : (
-        <p className="px-4 text-sm text-muted lg:px-6">{list.error ?? 'Каталог не знает похожих — посмотрите карту'}</p>
-      )}
+      <div ref={row} className="no-scrollbar flex gap-3 overflow-x-auto px-4 lg:px-6">
+        {list.data.map((a) => (
+          <ArtistBubble key={a.ref} artist={a} />
+        ))}
+      </div>
     </section>
   );
 }

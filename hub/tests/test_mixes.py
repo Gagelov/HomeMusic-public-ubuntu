@@ -682,6 +682,8 @@ async def test_the_map_is_lastfms_word_of_who_is_near(env, monkeypatch) -> None:
     assert asked == ["Кино"] and r.json()["center"]["name"] == "Кино"
     # nearest first; one the catalog does not know is left out, and so is the artist in the middle
     assert [(x["artist"]["ref"], x["match"]) for x in r.json()["around"]] == [("dz:2", 0.8)]
+    assert r.json()["more"] is False
+    assert (await client.get("/api/taste/map", params={"ref": "dz:1", "n": 51})).status_code == 422
 
 
 async def test_a_picked_artist_is_followed_once(env) -> None:

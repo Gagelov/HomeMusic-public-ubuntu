@@ -460,7 +460,7 @@ export const api = {
   tasteOnboarding: (q?: string, signal?: AbortSignal) =>
     request<TasteOnboardingOut>('GET', withQuery('/api/taste/onboarding', { q }), { signal }),
   tasteSimilar: (ref: string, signal?: AbortSignal) => request<CatalogArtist[]>('GET', withQuery('/api/taste/similar', { ref }), { signal }),
-  artistMap: (ref: string, signal?: AbortSignal) => request<ArtistMapOut>('GET', withQuery('/api/taste/map', { ref }), { signal }),
+  artistMap: (ref: string, n: number, signal?: AbortSignal) => request<ArtistMapOut>('GET', withQuery('/api/taste/map', { ref, n }), { signal }),
   pickArtists: (artist_refs: string[]) => request<MixSettingsOut>('POST', '/api/taste/artists', { json: { artist_refs } }),
 
   // «Моя волна»

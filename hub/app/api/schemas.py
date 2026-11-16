@@ -1324,6 +1324,7 @@ class ArtistMapOut(BaseModel):
 
     center: CatalogArtist
     around: list[ArtistNearOut] = []
+    more: bool = False  # asking for more (`n`) may give more
 
 
 class TasteArtistsIn(BaseModel):

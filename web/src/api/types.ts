@@ -1633,6 +1633,8 @@ export interface MixSettingsIn {
 export interface ArtistMapOut {
   center: CatalogArtist;
   around: Array<{ artist: CatalogArtist; match: number }>;
+  /** asking for more may give more */
+  more?: boolean;
 }
 
 export interface TasteOnboardingOut {

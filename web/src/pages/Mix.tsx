@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { CatalogArtist } from '../api/types';
-import { ArtistMap, ArtistsViewSwitch, useArtistsView } from '../components/ArtistMap';
+import { ArtistMap, ArtistMapPanel, ArtistsViewSwitch, useArtistMap, useArtistsView } from '../components/ArtistMap';
 import { Icon } from '../components/Icon';
 import { Button, Cover, ErrorState, PageHeader, SkeletonRows, cx } from '../components/ui';
 import { useAsync, useDebounced } from '../lib/hooks';
@@ -48,14 +48,14 @@ function ArtistTile({ a, on, onToggle, className }: { a: CatalogArtist; on: bool
  * many as one likes. `?then=wave` — the wave starts once they are picked, `?then=mix` — the mix's page opens.
  *
  * «Карта» (a server with a Last.fm key; `?view=map` opens with it) is the other way to widen the choice: the
- * artist picked last stands in the middle, those near them around; a press on one picks them and puts them in
- * the middle — so one walks from artist to artist. Before the first pick there is nobody to draw a map around:
- * the list is shown. */
+ * artist picked last stands in the middle, those near them around; a press on one goes to them — so one walks
+ * from artist to artist — and the one in the middle is picked by «Отметить» on the strip under the map. Before
+ * the first pick there is nobody to draw a map around: the list is shown. */
 export function TastePage() {
   const route = useRoute();
   const then = route.query.get('then');
   const [view, setView, canMap] = useArtistsView(route.query.get('view') === 'map' ? 'map' : null);
-  /** whom the map is drawn around: the artist picked (or pressed) last */
+  /** whom the map is drawn around: the artist picked last, or gone to on the map */
   const [center, setCenter] = useState<{ ref: string; name: string } | null>(null);
   const [q, setQ] = useState('');
   const dq = useDebounced(q.trim(), 400);
@@ -74,7 +74,7 @@ export function TastePage() {
       setCenter(res.data.selected[res.data.selected.length - 1]);
     }
   }, [res.data, seeded]);
-  const map = useAsync((s) => api.artistMap(center!.ref, s), [center?.ref], view === 'map' && !!center);
+  const map = useArtistMap(center?.ref, view === 'map');
 
   const toggle = (a: { ref: string; name: string }) => {
     if (picked.has(a.ref)) {
@@ -84,11 +84,6 @@ export function TastePage() {
         return next;
       });
       setAlike((rows) => rows.filter((r) => r.ref !== a.ref));
-      // the map goes back to the one picked before
-      if (center?.ref === a.ref) {
-        const rest = [...picked].filter(([ref]) => ref !== a.ref);
-        setCenter(rest.length ? { ref: rest[rest.length - 1][0], name: rest[rest.length - 1][1] } : null);
-      }
       return;
     }
     setPicked((prev) => new Map(prev).set(a.ref, a.name));
@@ -164,23 +159,32 @@ export function TastePage() {
       {canMap && (
         <div className="flex items-center justify-between gap-3 px-4 pt-4">
           <span className="min-w-0 text-[13px] leading-snug text-muted">
-            {view === 'map' ? (center ? 'Нажмите на исполнителя — он будет отмечен, а карта построится вокруг него' : 'Отметьте первого исполнителя — карта построится вокруг него') : ''}
+            {view === 'map' ? (center ? 'Нажмите на исполнителя, чтобы перейти к нему. Отметить — кнопкой под картой' : 'Отметьте первого исполнителя — карта построится вокруг него') : ''}
           </span>
           <ArtistsViewSwitch view={view} onChange={setView} />
         </div>
       )}
 
       {mapped && (
-        <section aria-label={`Карта: рядом с ${center!.name}`} className="px-2 pt-2">
-          <ArtistMap
-            data={map.data}
-            loading={map.loading}
-            error={map.data ? undefined : map.error}
-            onRetry={() => map.reload()}
-            marked={picked}
-            onArtist={(a) => (picked.has(a.ref) ? setCenter({ ref: a.ref, name: a.name }) : toggle(a))}
-            onCenter={(a) => toggle(a)}
-          />
+        <section aria-label={`Карта: рядом с ${center!.name}`} className="pt-2">
+          <ArtistMap data={map.data} loading={map.loading} filling={map.filling} error={map.error} onRetry={map.reload} marked={picked} onArtist={(a) => setCenter({ ref: a.ref, name: a.name })} />
+          {map.data && (
+            <ArtistMapPanel
+              artist={map.data.center}
+              action={
+                picked.has(map.data.center.ref) ? (
+                  <button type="button" onClick={() => toggle(map.data!.center)} title="Снять отметку" className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold text-accent transition hover:bg-fg/5">
+                    <Icon name="check" size={15} stroke={3} />
+                    Отмечен
+                  </button>
+                ) : (
+                  <Button small onClick={() => toggle(map.data!.center)}>
+                    Отметить
+                  </Button>
+                )
+              }
+            />
+          )}
         </section>
       )}
 
