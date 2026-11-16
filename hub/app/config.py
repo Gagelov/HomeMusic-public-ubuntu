@@ -45,6 +45,9 @@ class YtdlpCfg(BaseModel):
     sleep_requests_s: float = Field(default=1.0, ge=0)
     sleep_downloads_s: float = Field(default=5.0, ge=0)
     refusal_cooldown_s: float = Field(default=900, ge=0)
+    # the clients YouTube is asked as (yt-dlp's `player_client`). Empty: yt-dlp's own choice — it follows what
+    # YouTube changes, and a client pinned here goes stale (in November 2026 `mweb` gave links that answered 403)
+    player_clients: list[str] = []
 
 
 class MatchingCfg(BaseModel):

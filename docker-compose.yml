@@ -76,7 +76,7 @@ services:
       start_period: 20s
     logging: *logging
 
-  # PO tokens for yt-dlp's mweb client. Internal only: no host port or cookie/music mounts.
+  # PO tokens for the YouTube clients yt-dlp asks as. Internal only: no host port or cookie/music mounts.
   # Keep the image version in sync with bgutil-ytdlp-pot-provider in hub/pyproject.toml.
   youtube-pot:
     image: brainicism/bgutil-ytdlp-pot-provider:2.0.2

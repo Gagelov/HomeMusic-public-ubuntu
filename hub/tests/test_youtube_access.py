@@ -139,12 +139,12 @@ async def test_metadata_is_coalesced_cached_and_invalidated_on_cookie_replacemen
     assert len(calls) == 3
 
 
-def test_youtube_opts_select_mweb_and_internal_provider_without_affecting_soundcloud(monkeypatch):
+def test_youtube_opts_leave_the_clients_to_ytdlp_and_use_the_internal_provider_without_affecting_soundcloud(monkeypatch):
     monkeypatch.setenv("YTDLP_POT_BASE_URL", "http://youtube-pot:4416")
     cfg = YtdlpCfg()
     for p in (YtdlpProvider(cfg), YtReuploadProvider(cfg)):
         with p._youtube_dl({}) as ydl:
-            assert ydl.params["extractor_args"]["youtube"]["player_client"] == ["mweb"]
+            assert "player_client" not in ydl.params["extractor_args"].get("youtube", {})  # yt-dlp's own choice
             assert ydl.params["extractor_args"]["youtubepot-bgutilhttp"]["base_url"] == ["http://youtube-pot:4416"]
             assert ydl.params["sleep_interval_requests"] == 1
             assert ydl.params["sleep_interval"] == 5
@@ -192,3 +192,11 @@ async def test_metadata_cache_keeps_stream_shortcut_for_both_youtube_providers(m
     assert len(calls) == 1
     await first.aclose()
     await other.aclose()
+
+
+def test_youtube_clients_can_be_pinned_by_the_config(monkeypatch):
+    monkeypatch.setenv("YTDLP_POT_BASE_URL", "http://youtube-pot:4416")
+    with YtdlpProvider(YtdlpCfg(player_clients=["mweb"]))._youtube_dl({}) as ydl:
+        assert ydl.params["extractor_args"]["youtube"]["player_client"] == ["mweb"]
+        assert ydl.params["extractor_args"]["youtubepot-bgutilhttp"]["base_url"] == ["http://youtube-pot:4416"]
+

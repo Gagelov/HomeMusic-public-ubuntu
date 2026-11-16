@@ -500,7 +500,9 @@ class YtdlpProvider:
         }
         if self._youtube:
             opts.update({
-                "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+                # which clients YouTube is asked as is yt-dlp's to choose, unless the config pins them; PO tokens are
+                # given to whichever of them needs one (the `youtube-pot` service)
+                "extractor_args": {"youtube": {"player_client": list(self.cfg.player_clients)} if self.cfg.player_clients else {}},
                 "retries": 2,
                 "fragment_retries": 2,
                 "retry_sleep_functions": {"http": lambda n: min(2 ** n, 8), "fragment": lambda n: min(2 ** n, 8)},
