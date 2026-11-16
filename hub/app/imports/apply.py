@@ -25,6 +25,7 @@ from app.imports.resolve import Resolution
 from app.jobs.queue import PRIORITY_IMPORT, enqueue
 from app.library.owned import ACTIVE_STATUSES, find_owned
 from app.matching.normalize import normalize_artist
+from app.mixes.resolve import remembered_track
 from app.models import (
     Album,
     DownloadBatch,
@@ -129,15 +130,23 @@ async def queue_track(s: AsyncSession, imp: Import, it: ImportItem, kind: str, *
     if twin is not None:
         it.download_item_id, it.status = twin, "queued"
         return True
+    from app.jobs.downloads import meta_from_catalog, query_from_track
+
     raw = it.raw_json or {}
     src, id_ = split_ref(it.ref)
-    meta: dict[str, Any] = {"track_ref": it.ref}
-    if src == "dz":
-        meta["deezer_track_id"] = id_
-    if raw.get("artists"):
-        meta["artists"] = raw["artists"]
-    qj: dict[str, Any] = {"query": track_query(raw).model_dump(), "meta": meta,
-                          "import": {"id": imp.id, "item": it.id}}
+    cat = await remembered_track(it.ref) if src == "dz" else None
+    if cat is not None:
+        # the download is of the catalog's track the row was matched with — its names, its artists with their
+        # records — as one asked for from the search is: what the service called the song found it, no more
+        q, meta = query_from_track(cat), meta_from_catalog(cat)
+        q = q.model_copy(update={"isrc": q.isrc or raw.get("isrc"), "duration_s": q.duration_s or raw.get("duration_s")})
+    else:
+        q, meta = track_query(raw), {"track_ref": it.ref}
+        if src == "dz":
+            meta["deezer_track_id"] = id_  # who it is by, the catalog says when the download asks it (`complete_meta`)
+        elif raw.get("artists"):
+            meta["artists"] = raw["artists"]  # no catalog keeps a record of it: the service's names are all there is
+    qj: dict[str, Any] = {"query": q.model_dump(), "meta": meta, "import": {"id": imp.id, "item": it.id}}
     dl = await new_download(s, imp, qj, priority)
     it.download_item_id, it.status = dl.id, "queued"
     return True
@@ -243,16 +252,31 @@ def like_order(items: list[ImportItem], songs: dict[int, str]) -> list[str]:
     return list(out)
 
 
-def catalog_of(it: ImportItem) -> CatalogTrack | None:
-    """An import's row of a track, as the catalog track it was matched with."""
-    raw = it.raw_json or {}
+async def track_of(s: AsyncSession, it: ImportItem, user_id: int) -> Track | None:
+    """The Hub's track of an import's row: the track of the catalog track the row was matched with, made if the Hub
+    has none. It is named as the catalog names it, by the record kept when the row was matched. Where no record was
+    kept (a match of older days), the track is named as the service called the song until the catalog is asked
+    (`fill_catalog`): the service's words are not the catalog's and are not kept as such. The catalog is not asked
+    here — rows are gone through by the hundred, inside a transaction."""
+    from app.library import tracks as registry
+
+    if it.track_id and (track := await s.get(Track, it.track_id)) is not None:
+        return track
     src, _, ident = (it.ref or "").partition(":")
-    if src not in ("dz", "hm", "mb") or not ident or not raw.get("title"):
+    if src not in ("dz", "hm", "mb") or not ident:
         return None
-    return CatalogTrack(ref=it.ref, source=src, id=ident, title=raw["title"], artist=raw.get("artist") or "",
+    if (track := await registry.by_ref(s, it.ref)) is not None:
+        return track
+    if src == "dz" and (cat := await remembered_track(it.ref)) is not None:
+        return await registry.of_catalog(s, cat, user_id=user_id)
+    raw = it.raw_json or {}
+    if not raw.get("title"):
+        return None
+    said = CatalogTrack(ref=it.ref, source=src, id=ident, title=raw["title"], artist=raw.get("artist") or "",
                         artists=raw.get("artists") or [], album_title=raw.get("album"),
                         duration_s=raw.get("duration_s"), isrc=raw.get("isrc"), cover_url=raw.get("cover_url"),
                         cover_small_url=raw.get("cover_url"))
+    return await registry.of_catalog(s, said, user_id=user_id, word=src != "dz")
 
 
 async def sync_playlists(s: AsyncSession, imp: Import) -> None:
@@ -260,7 +284,6 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
     in the service's order and with the date it was added there — whether the library has its file yet or not. A
     track the catalog does not know is the only one left out."""
     from app import playlists
-    from app.library import tracks as registry
     from app.models import naive
     from app.playlists_mirror import enqueue_mirror
 
@@ -275,8 +298,8 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
         for it in items:
             if it.status in ("skipped", "not_found", "pending"):
                 continue
-            if it.track_id is None and (cat := catalog_of(it)) is not None:
-                it.track_id = (await registry.of_catalog(s, cat, user_id=imp.user_id)).id
+            if it.track_id is None and (track := await track_of(s, it, imp.user_id)) is not None:
+                it.track_id = track.id
             if it.track_id is None or it.track_id in dates:
                 continue
             want.append(it.track_id)

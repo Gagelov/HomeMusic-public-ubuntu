@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.models import CatalogTrack
@@ -55,20 +55,23 @@ def _names(c: CatalogTrack) -> dict:
         fingerprint=fingerprint(c.artist, title))
 
 
-async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = None) -> Track:
+async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = None, word: bool = True) -> Track:
     """The track of this catalog track; made if the Hub does not know the song. A track the Hub has under no
     catalog name yet (an uploaded file, say) that is this very song — the same ISRC, or the same names and length —
-    takes the name instead of a second track being made."""
+    takes the name instead of a second track being made. `word` False: `c` is what somebody else called the song
+    (a music service's row matched with the catalog's track), not the catalog's record of it — the track is named
+    by it, and the catalog's own word is asked for later (`fill_catalog`)."""
     from app.library import artists
 
     ref = c.ref if c.source != "nd" else None
+    said = c.model_dump(mode="json") if word else None
     track = await by_ref(s, ref)
     if track is not None:
         if track.title == ref or not track.artist:
             # met by its ref alone (a like that said nothing of the song): now it is known what the song is
             for k, v in _names(c).items():
                 setattr(track, k, v)
-            track.catalog = c.model_dump(mode="json")
+            track.catalog = said or track.catalog
             await artists.credit_track(s, track)
         return track
     unnamed = select(Track).where(Track.ref.is_(None)).order_by(Track.id.desc())
@@ -82,9 +85,9 @@ async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = 
     if track is not None:
         if ref:
             track.ref = ref
-        track.catalog = track.catalog or c.model_dump(mode="json")
+        track.catalog = track.catalog or said
         return track
-    track = Track(ref=ref, **_names(c), catalog=c.model_dump(mode="json"), created_by=user_id)
+    track = Track(ref=ref, **_names(c), catalog=said, created_by=user_id)
     s.add(track)
     await s.flush()
     await s.refresh(track)  # what is read with a track (its song, its path) is there to be read: none, for now
@@ -93,23 +96,35 @@ async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = 
 
 
 async def fill_catalog(s: AsyncSession, tracks: Iterable[Track] | None = None, limit: int = 60) -> int:
-    """Tracks the catalog knows (`ref`) that were made before a track kept what the catalog says of it get it now:
-    who their artists are there, their album, their cover. `tracks`: these ones (an artist's page needs its few at
-    once); none: any that lack it, `limit` at a time. Returns how many were filled."""
+    """Tracks the catalog knows (`ref`) that do not keep what the catalog says of them get it now: who their artists
+    are there, their album, their cover. Such are the tracks made before a track kept it, and the ones made of what
+    somebody else called the song — a music service's row, a like that knew only the name: what they keep does not
+    say whose record the artist is. A track with no file yet is by whom the catalog says from then on (one with a
+    file was filed by the catalog's word already). `tracks`: these ones (an artist's page needs its few at once);
+    none: any that lack it, `limit` at a time. Returns how many were filled."""
+    from app.library import artists
     from app.mixes.resolve import catalog_track
 
-    rows = [t for t in tracks if t.catalog is None and t.ref and t.ref.startswith("dz:")] if tracks is not None else list(
-        (await s.execute(select(Track).where(Track.catalog.is_(None), Track.ref.like("dz:%")).order_by(Track.id.desc())
-                         .limit(limit))).scalars())
-    n = 0
+    def lacks(t: Track) -> bool:
+        return bool(t.ref and t.ref.startswith("dz:")) and not (t.catalog or {}).get("artist_ref")
+
+    rows = [t for t in tracks if lacks(t)] if tracks is not None else list(
+        (await s.execute(select(Track).where(
+            Track.ref.like("dz:%"),
+            or_(Track.catalog.is_(None), func.json_extract(Track.catalog, "$.artist_ref").is_(None)))
+            .order_by(Track.id.desc()).limit(limit))).scalars())
+    filled: list[Track] = []
     for t in rows[:limit]:
         c = await catalog_track(t.ref)
-        if c is not None:
+        if c is not None and c.artist_ref:
             t.catalog = c.model_dump(mode="json")
-            n += 1
-    if n:
+            filled.append(t)
+    for t in filled:
+        if not await has_file(s, t.id):
+            await artists.credit_track(s, t)
+    if filled:
         await s.flush()
-    return n
+    return len(filled)
 
 
 async def has_file(s: AsyncSession, track_id: int) -> bool:

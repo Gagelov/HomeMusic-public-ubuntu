@@ -220,7 +220,11 @@ async def complete_meta(meta: dict[str, Any]) -> dict[str, Any]:
         if hit:
             t = t.model_copy(update={"track_no": hit.track_no or t.track_no, "disc_no": hit.disc_no or t.disc_no})
     merged = meta_from_catalog(t, album)
-    merged.update({k: v for k, v in meta.items() if v is not None and k not in ("track_no", "disc_no")})
+    # who the track is by is the catalog's word of this very track — the names and, beside each, its record: the
+    # caller's own list of names (a service's, a search's with the first artist only) would stand beside the records
+    # of others
+    merged.update({k: v for k, v in meta.items()
+                   if v is not None and k not in ("track_no", "disc_no", "artists", "artist_refs")})
     for k in ("track_no", "disc_no"):
         merged[k] = merged.get(k) or meta.get(k)
     return merged
@@ -921,8 +925,11 @@ async def known_track(s: AsyncSession, q: TrackQuery, meta: dict[str, Any], user
     if src not in ("dz", "hm", "mb") or not ident:
         return None
     album = meta.get("deezer_album_id")
+    names, refs = meta.get("artists") or [], meta.get("artist_refs") or []
+    refs = refs if len(refs) == len(names) else []
     return await registry.of_catalog(s, CatalogTrack(
-        ref=ref, source=src, id=ident, title=q.title, artist=q.artist, artists=meta.get("artists") or [],
+        ref=ref, source=src, id=ident, title=q.title, artist=q.artist, artists=names, artist_refs=refs,
+        artist_ref=refs[0] if refs else None,
         album_title=meta.get("album") or q.album, album_artist=meta.get("album_artist"), track_no=meta.get("track_no"),
         disc_no=meta.get("disc_no"), isrc=q.isrc or meta.get("isrc"), explicit=q.explicit,
         release_date=meta.get("release_date"), duration_s=q.duration_s or meta.get("duration_s"),

@@ -419,7 +419,9 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
             # the catalog credits to «M00NCHILD, GONE.Fludd» is GONE.Fludd's still, with M00NCHILD beside him
             mine = [a.casefold() for a in split_artists(recognize.names_of(tags, u.orig_name)[0])]
             if mine and all(a in [x.casefold() for x in spec.artists] for a in mine):
-                spec.artists = sorted(spec.artists, key=lambda x: mine.index(x.casefold()) if x.casefold() in mine else len(mine))
+                refs = [*spec.artist_refs, *([None] * len(spec.artists))][:len(spec.artists)]  # each name's own record
+                pairs = sorted(zip(spec.artists, refs), key=lambda p: mine.index(p[0].casefold()) if p[0].casefold() in mine else len(mine))
+                spec.artists, spec.artist_refs = [p[0] for p in pairs], [p[1] for p in pairs]
                 spec.artist = spec.artists[0]
             # a name the catalog only writes in other letters' case is the file's name: «Утром», not «утром»
             mine = recognize.names_of(tags, u.orig_name)[1]

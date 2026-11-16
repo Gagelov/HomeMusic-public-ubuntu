@@ -13,7 +13,7 @@ import logging
 
 from sqlalchemy.exc import IntegrityError
 
-from app.catalog.cache import cache_get, cache_set
+from app.catalog.cache import cache_get, cache_put, cache_set
 from app.catalog.models import CatalogTrack, split_ref
 from app.config import get_settings
 from app.db import session_scope
@@ -47,14 +47,24 @@ def external_id(hit: Hit) -> str:
     return raw if len(raw) <= 128 else hashlib.sha1(raw.encode()).hexdigest()
 
 
-async def remember_track(t: CatalogTrack) -> None:
-    await cache_set(f"mix:track:{t.ref}", t.model_dump(mode="json"), TRACK_TTL_S)
+async def remember_track(t: CatalogTrack, s=None) -> None:
+    """Keep the catalog's record of a track (`s`: within this transaction)."""
+    if s is not None:
+        await cache_put(s, f"mix:track:{t.ref}", t.model_dump(mode="json"), TRACK_TTL_S)
+    else:
+        await cache_set(f"mix:track:{t.ref}", t.model_dump(mode="json"), TRACK_TTL_S)
+
+
+async def remembered_track(ref: str) -> CatalogTrack | None:
+    """The catalog record of a track as the Hub has kept it (`remember_track`); the catalog is not asked."""
+    hit = await cache_get(f"mix:track:{ref}")
+    return CatalogTrack.model_validate(hit) if hit is not None else None
 
 
 async def catalog_track(ref: str) -> CatalogTrack | None:
     """The catalog record of a Deezer track (a source's match remembered, else Deezer's `track/{id}`)."""
-    if (hit := await cache_get(f"mix:track:{ref}")) is not None:
-        return CatalogTrack.model_validate(hit)
+    if (hit := await remembered_track(ref)) is not None:
+        return hit
     src, id_ = split_ref(ref)
     if src != "dz" or svc.deezer is None:
         return None

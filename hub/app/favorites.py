@@ -529,8 +529,7 @@ async def project_liked(s: AsyncSession, user_id: int, starred: list[dict] | Non
     its date and its tags. Navidrome not asked (`starred` None): what the playlist has and nobody unliked stays.
     Returns whether the playlist changed."""
     from app import playlists
-    from app.imports.apply import catalog_of
-    from app.library import tracks as registry
+    from app.imports.apply import track_of
     from app.models import PlaylistItem
     from app.models import naive
 
@@ -558,9 +557,7 @@ async def project_liked(s: AsyncSession, user_id: int, starred: list[dict] | Non
     for position, (it, imported_at) in enumerate(rows):
         if it.ref and f"ref:{it.ref}" in decided:
             continue
-        track = await s.get(Track, it.track_id) if it.track_id else None
-        if track is None and (cat := catalog_of(it)) is not None:
-            track = await registry.of_catalog(s, cat, user_id=user_id)
+        track = await track_of(s, it, user_id)
         if track is None or track.id in want or (track.nd_song_id and f"nd:{track.nd_song_id}" in decided):
             continue
         # the service lists the newest like first: without its dates the order of the list still holds

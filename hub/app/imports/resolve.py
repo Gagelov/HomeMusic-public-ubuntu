@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.catalog.models import make_ref, split_ref
+from app.catalog.models import CatalogTrack, make_ref, split_ref
 from app.config import get_settings
 from app.imports.sources.spotify_csv import clean_isrc
 from app.library.owned import find_owned
@@ -44,6 +44,7 @@ class Resolution:
     ref: str | None = None
     score: float | None = None
     track: Track | None = None  # owned
+    catalog: CatalogTrack | None = None  # the catalog's record of the track, where it was just found
 
 
 async def _remembered(s: AsyncSession, source: str, kind: str, external_id: str) -> SourceMap | None:
@@ -90,7 +91,7 @@ async def catalog_track(raw: dict[str, Any]) -> Resolution:
         want = raw.get("duration_s")
         if by_code is not None and (not want or not by_code.duration_s
                                     or abs(by_code.duration_s - want) <= ISRC_DURATION_TOLERANCE_S):
-            return Resolution("exact", by_code.ref, 1.0)
+            return Resolution("exact", by_code.ref, 1.0, catalog=by_code)
     if svc.deezer is not None:
         for qa, qt in dict.fromkeys([(main, title), (main, base), (artist, title)]):
             try:
@@ -107,7 +108,7 @@ async def catalog_track(raw: dict[str, Any]) -> Resolution:
     if best:
         verdict = VERDICT[classify_scores([x[1].total for x in best], cfg)]
         if verdict != "not_found":
-            return Resolution(verdict, best[0][0].ref, round(best[0][1].total, 3))
+            return Resolution(verdict, best[0][0].ref, round(best[0][1].total, 3), catalog=best[0][0])
     if has_cyrillic(artist + title) and (hm := svc.providers.get("hitmoz")) is not None:
         q = TrackQuery(artist=main, title=title, album=raw.get("album"), duration_s=raw.get("duration_s"))
         try:
@@ -130,6 +131,11 @@ async def resolve_track(s: AsyncSession, source: str, external_id: str, raw: dic
     else:
         r = await catalog_track(raw)
         await _remember(s, source, "track", external_id, r)
+        if r.catalog is not None:
+            # the catalog's own record is kept: the track the Hub makes of the row is named by it, not by the service
+            from app.mixes.resolve import remember_track
+
+            await remember_track(r.catalog, s)
     if r.ref and (lib := await _owned(s, raw, r.ref)) is not None:
         return Resolution("owned", r.ref, 1.0, lib)
     return r
