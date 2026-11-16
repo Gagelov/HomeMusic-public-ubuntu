@@ -100,6 +100,18 @@ async def _chroma(s: AsyncSession, u: Upload) -> bytes | None:
     return (await s.execute(select(Upload.chroma).where(Upload.id == u.id))).scalar_one_or_none()
 
 
+async def _as_here(s: AsyncSession, m: UploadMatch | None) -> UploadMatch | None:
+    """The record a file was told to be, as the Hub calls it: a song the listeners put right (app/library/edits.py)
+    has the name they gave it — that is what the file will be filed under, not what the catalog says still."""
+    from app.library.tracks import by_ref
+
+    t = await by_ref(s, m.ref) if m is not None and m.ref else None
+    if m is None or t is None or t.renamed_at is None:
+        return m
+    return m.model_copy(update={"title": t.title, "artist": split_artists(t.artist)[0] if split_artists(t.artist) else t.artist,
+                                "artists": split_artists(t.artist) or [t.artist]})
+
+
 async def upload_out(s: AsyncSession, u: Upload) -> UploadOut:
     twin = await _twin(s, u) if u.status == "uploaded" else None
     kept = dict(u.probed_tags_json or {})
@@ -111,7 +123,7 @@ async def upload_out(s: AsyncSession, u: Upload) -> UploadOut:
     artist, title = recognize.names_of(tags, u.orig_name)
     return UploadOut(id=u.id, orig_name=u.orig_name, size=u.size, status=u.status, tags=tags,
                      error=u.error, created_at=u.created_at, artists=split_artists(artist),
-                     codec=tags.get("codec"), bitrate_kbps=tags.get("bitrate_kbps"), twin=twin, match=_match(kept),
+                     codec=tags.get("codec"), bitrate_kbps=tags.get("bitrate_kbps"), twin=twin, match=await _as_here(s, _match(kept)),
                      weak=quality.weak(tags.get("codec"), tags.get("bitrate_kbps")), title=title, artist=artist,
                      single=recognize.single_album(tags.get("album"), title), duration_s=u.duration_s)
 
@@ -437,7 +449,8 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
             continue
         u.status, u.track_id = "imported", track.id
         imported += 1
-        await artists.add_title(s, track, recognize.names_of(tags, u.orig_name)[1], "file")
+        if tr.also_title:  # the name the file had is one the song is known by, the listener says
+            await artists.add_title(s, track, tr.also_title, "file")
         weak += quality.weak(spec.codec, spec.bitrate_kbps)
         track_ids.append(track.id)
         if track.album_id and track.album_id not in album_ids:

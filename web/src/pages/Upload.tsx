@@ -82,6 +82,8 @@ interface RowState {
   year: string;
   /** put into an album by hand: that album's key (not said: the album the file is of by itself) */
   group?: string;
+  /** the name the file had, where the catalog's is taken instead, is kept as a second name of the song */
+  also?: boolean;
 }
 
 /** The columns of the table that say what the file itself is: they can be hidden (the choice stays on the device). */
@@ -699,7 +701,7 @@ export function UploadPage() {
   const trackIn = (u: UploadOut): UploadTrackIn => {
     const r = rowOf(u);
     return {
-      upload_id: u.id, catalog: usesCatalog(u, r), title: r.title.trim(), artist: r.artist.trim(), album: r.album.trim() || null, year: toIntOrNull(r.year),
+      upload_id: u.id, catalog: usesCatalog(u, r), also_title: r.also && usesCatalog(u, r) && !same(u.title, u.match?.title) ? u.title : null, title: r.title.trim(), artist: r.artist.trim(), album: r.album.trim() || null, year: toIntOrNull(r.year),
       album_key: all.keys.get(u.id) ?? null, cover: r.cover, replace_track_id: r.replace && u.twin ? u.twin.track_id : null,
     };
   };
@@ -1226,7 +1228,28 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   ) : (
     <span className="min-w-0">
       <span className={cx('block truncate text-[15px]', phase && 'text-accent')}>
-        {by && !same(u.title, m?.title) ? <>{was(u.title)} {pill(m?.title)}</> : title}
+        {by && !same(u.title, m?.title) ? (
+          <>
+            {/* the name the file had: a tap keeps it as a second name of the song — the search finds it by that too */}
+            <button
+              type="button"
+              data-own
+              aria-pressed={!!r.also}
+              title={r.also ? 'Останется вторым названием песни — нажмите, чтобы не сохранять' : 'Было в файле. Нажмите, чтобы оставить вторым названием песни'}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange({ also: !r.also });
+              }}
+              className={cx('transition hover:text-fg', r.also ? 'rounded-full bg-fg/10 px-1.5 text-muted' : 'text-dim line-through')}
+            >
+              {r.also && <span className="text-dim">также: </span>}
+              {u.title}
+            </button>{' '}
+            {pill(m?.title)}
+          </>
+        ) : (
+          title
+        )}
         {doubt}
       </span>
       <span className="block truncate text-[13px] text-muted">
