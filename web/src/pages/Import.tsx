@@ -469,7 +469,7 @@ function Preview({ imp, onStarted }: { imp: ImportOut; onStarted: (r: ImportOut)
             Скачивать любимые альбомы целиком
           </label>
         )}
-        {imp.method !== 'profile' && imp.method !== 'csv' && (
+        {imp.method !== 'profile' && imp.method !== 'csv' && imp.method !== 'link' && (
           <label className="flex items-center gap-1 text-sm">
             <Checkbox checked={keep} onChange={setKeep} label="Запомнить вход" />
             <span className="min-w-0">Запомнить вход, чтобы потом подтянуть новое</span>
@@ -602,7 +602,7 @@ function Progress({ imp, onChange }: { imp: ImportOut; onChange: (r: ImportOut) 
             Скачать всё сейчас ({st.waiting})
           </Button>
         )}
-        {imp.status !== 'running' && (imp.has_token || imp.method === 'profile') && (
+        {imp.status !== 'running' && (imp.has_token || imp.method === 'profile' || imp.method === 'link') && (
           <Button block icon="refresh" busy={busy === 'sync'} onClick={() => run('sync', () => api.importSync(imp.id), `Подтягиваем новое: ${sourceName(imp.source)}`)}>
             Подтянуть новое {SOURCES[imp.source]?.from ?? ''}
           </Button>

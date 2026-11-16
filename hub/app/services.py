@@ -11,7 +11,9 @@ from app.providers.base import Provider, TrackQuery
 if TYPE_CHECKING:
     from app.catalog.deezer import DeezerClient
     from app.catalog.hitmoz_catalog import HitmozCatalog
+    from app.catalog.models import ArtistPage, CatalogAlbum, CatalogTrack
     from app.catalog.musicbrainz import MusicBrainzClient
+    from app.catalog.yandex_catalog import YandexCatalog
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ class Services:
         self.providers: dict[str, Provider] = {}
         self.deezer: DeezerClient | None = None
         self.hitmoz_catalog: HitmozCatalog | None = None
+        self.yandex: YandexCatalog | None = None
         self.musicbrainz: MusicBrainzClient | None = None
 
     def start(self) -> None:
@@ -44,6 +47,9 @@ class Services:
         }
         self.deezer = DeezerClient(cfg.catalog)
         self.hitmoz_catalog = HitmozCatalog(hitmoz)
+        from app.catalog.yandex_catalog import YandexCatalog
+
+        self.yandex = YandexCatalog() if get_settings().yandex_catalog else None
         self.musicbrainz = MusicBrainzClient(cfg.catalog)
 
     async def stop(self) -> None:
@@ -58,6 +64,46 @@ class Services:
                     await c.aclose()
                 except Exception:
                     log.exception("closing catalog client")
+
+    # --- a record of a catalog, read from the catalog it is of (`CatalogNotFound`: no such record, or catalog) ---
+
+    async def artist_page(self, ref: str) -> ArtistPage:
+        from app.catalog.deezer import CatalogNotFound
+        from app.catalog.models import split_ref
+
+        src, id_ = split_ref(ref)
+        if src == "dz" and self.deezer is not None:
+            return await self.deezer.get_artist_page(id_)
+        if src == "ym" and self.yandex is not None:
+            return await self.yandex.get_artist(id_)
+        if src == "hm" and self.hitmoz_catalog is not None:
+            return await self.hitmoz_catalog.get_artist(id_)
+        raise CatalogNotFound(ref)
+
+    async def album(self, ref: str, *, credited: bool = False) -> CatalogAlbum:
+        """`credited`: with everyone credited on each track (Deezer says so only track by track)."""
+        from app.catalog.deezer import CatalogNotFound
+        from app.catalog.models import split_ref
+
+        src, id_ = split_ref(ref)
+        if src == "dz" and self.deezer is not None:
+            return await (self.deezer.get_album_credited(id_) if credited else self.deezer.get_album(id_))
+        if src == "ym" and self.yandex is not None:
+            return await self.yandex.get_album(id_)
+        if src == "hm" and self.hitmoz_catalog is not None:
+            return await self.hitmoz_catalog.get_album(id_)
+        raise CatalogNotFound(ref)
+
+    async def track(self, ref: str) -> CatalogTrack:
+        from app.catalog.deezer import CatalogNotFound
+        from app.catalog.models import split_ref
+
+        src, id_ = split_ref(ref)
+        if src == "dz" and self.deezer is not None:
+            return await self.deezer.get_track(id_)
+        if src == "ym" and self.yandex is not None:
+            return await self.yandex.get_track(id_)
+        raise CatalogNotFound(ref)
 
     def provider_order(self, q: TrackQuery, *, for_download: bool = False) -> list[Provider]:
         from app.matching.normalize import is_russian_query

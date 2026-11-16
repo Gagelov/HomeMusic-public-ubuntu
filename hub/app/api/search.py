@@ -124,6 +124,8 @@ async def search(q: str = Query(min_length=1), user: User = Depends(current_user
     many = await versions.counts(s, [t.id for t, _ in owned])
     out = SearchOut(library=[track_out(t, files.get(t.id)).model_copy(update={"found_by": by, "versions": many.get(t.id, 0)}) for t, by in owned])
     res: SearchResults | None = None
+    # Yandex Music is asked at the same time: what it has that Deezer lacks is added after Deezer's
+    also = asyncio.create_task(svc.yandex.search(q)) if svc.yandex is not None else None
     if svc.deezer is not None:
         try:
             res, (tracks, out.tracks_next) = await asyncio.gather(
@@ -141,11 +143,31 @@ async def search(q: str = Query(min_length=1), user: User = Depends(current_user
         except Exception as e:
             log.warning("hitmoz catalog search failed: %r", e)
             out.errors.append("Каталог hitmoz недоступен")
+    if also is not None:
+        try:
+            res = _with(res, await also)
+        except Exception as e:  # the search is the other catalogs' then
+            log.warning("yandex search failed: %r", e)
     if res is not None:
         out.artists = await artist_names.shown(s, res.artists)  # under the names they have here
         out.albums = await annotate_albums(s, res.albums, user.id)
         out.tracks = await versions.once(s, await annotate_tracks(s, _unique(res.tracks), user.id))
     return out
+
+
+def _with(res: SearchResults | None, more: SearchResults) -> SearchResults:
+    """What one catalog found, and after it what another found that the first did not: an artist of the same name,
+    a release or a track of the same names is one thing, shown once — as the first catalog has it."""
+    from app.matching.normalize import fingerprint
+
+    res = res or SearchResults()
+    artists = {artist_names.key(a.name) for a in res.artists}
+    albums = {(artist_names.fold(a.title), artist_names.key(a.artist)) for a in res.albums}
+    tracks = {fingerprint(t.artist, t.title) for t in res.tracks}
+    return SearchResults(
+        artists=[*res.artists, *(a for a in more.artists if artist_names.key(a.name) not in artists)],
+        albums=[*res.albums, *(a for a in more.albums if (artist_names.fold(a.title), artist_names.key(a.artist)) not in albums)],
+        tracks=[*res.tracks, *(t for t in more.tracks if fingerprint(t.artist, t.title) not in tracks)])
 
 
 def _unique(tracks: list[CatalogTrack]) -> list[CatalogTrack]:

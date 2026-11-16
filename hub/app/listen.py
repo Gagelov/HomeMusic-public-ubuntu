@@ -644,7 +644,8 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
         return await _resolve_file(ref, probe=probe, remembered=remembered)
     if src == "nd":
         return await _resolve_song(ref, id_)
-    if not (src == "dz" and svc.deezer is not None or src == "hm" and "hitmoz" in svc.providers):
+    if not (src == "dz" and svc.deezer is not None or src == "ym" and svc.yandex is not None
+            or src == "hm" and "hitmoz" in svc.providers):
         raise ListenError(400, "Этот трек нельзя послушать")
     choice = await _remembered(ref) if remembered else None
     if choice is not None and full_only and choice.kind == "preview":
@@ -655,7 +656,7 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
     if choice is None:
         if not remembered:
             await cache_delete(_key(ref))
-        choice = await (_resolve_deezer(ref, id_, probe, full_only=full_only) if src == "dz" else _resolve_hitmoz(ref, id_, probe))
+        choice = await (_resolve_hitmoz(ref, id_, probe) if src == "hm" else _resolve_catalog(ref, probe, full_only=full_only))
         how = "probed" if probe else "searched"
         if full_only and choice.kind == "preview":
             raise ListenError(503, "Полная версия пока недоступна. Повторите позже или выберите другой источник.")
@@ -723,16 +724,16 @@ async def _resolve_song(ref: str, song_id: str) -> Choice:
     return choice
 
 
-async def _resolve_deezer(ref: str, id_: str, probe: bool, *, full_only: bool = False) -> Choice:
-    assert svc.deezer is not None
+async def _resolve_catalog(ref: str, probe: bool, *, full_only: bool = False) -> Choice:
+    """A track of a catalog (Deezer, Yandex): the catalog says what the song is, the Hub's sources have the file."""
     try:
-        t = await svc.deezer.get_track(id_)
+        t = await svc.track(ref)
     except CatalogNotFound as e:
         raise ListenError(404, "Трек не найден в каталоге") from e
     except Exception as e:
         raise ListenError(502, f"Каталог недоступен: {e}") from e
     q = query_from_track(t)
-    query = {**q.model_dump(), "deezer_track_id": t.id}
+    query = {**q.model_dump(), **({"deezer_track_id": t.id} if t.source == "dz" else {})}
     # An owned song never waits for optional album/name metadata from external services.
     path, nd_song_id = await _library_file(query)
     if path:

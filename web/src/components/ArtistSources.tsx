@@ -9,7 +9,7 @@ import { Icon } from './Icon';
 import { Sheet, cx } from './ui';
 
 const num = (n: number) => n.toLocaleString('ru-RU');
-const NAMES: Record<string, string> = { deezer: 'Deezer', lastfm: 'Last.fm', catalog: 'Каталог' };
+const NAMES: Record<string, string> = { deezer: 'Deezer', yandex: 'Яндекс Музыка', lastfm: 'Last.fm', catalog: 'Каталог' };
 const people = (s: ArtistSourceOut) =>
   s.followers ? `${num(s.followers)} ${plural(s.followers, ['поклонник', 'поклонника', 'поклонников'])}` : s.listeners ? `${num(s.listeners)} ${plural(s.listeners, ['слушатель', 'слушателя', 'слушателей'])}` : '';
 

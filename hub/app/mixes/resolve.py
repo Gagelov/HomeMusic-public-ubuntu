@@ -62,14 +62,13 @@ async def remembered_track(ref: str) -> CatalogTrack | None:
 
 
 async def catalog_track(ref: str) -> CatalogTrack | None:
-    """The catalog record of a Deezer track (a source's match remembered, else Deezer's `track/{id}`)."""
+    """The catalog's record of a track (a source's match remembered, else read from the catalog it is of)."""
     if (hit := await remembered_track(ref)) is not None:
         return hit
-    src, id_ = split_ref(ref)
-    if src != "dz" or svc.deezer is None:
+    if split_ref(ref)[0] not in ("dz", "ym"):
         return None
     try:
-        t = await svc.deezer.get_track(id_)
+        t = await svc.track(ref)
     except Exception as e:
         log.info("mix: catalog track %s: %r", ref, e)
         return None

@@ -126,7 +126,7 @@ export function AlbumPage({ refId }: { refId: string }) {
     if (!ok) return;
     if (await attempt(() => api.namesakesExclude(artistRef, [album.ref]))) toast('Релиз убран у исполнителя', 'success', { label: 'Скрытое', to: '/hidden' });
   };
-  const deezer = album.source === 'dz' ? `https://www.deezer.com/album/${album.id}` : null;
+  const deezer = album.source === 'dz' ? `https://www.deezer.com/album/${album.id}` : album.source === 'ym' ? `https://music.yandex.ru/album/${album.id}` : null;
   const item = (icon: IconName, label: string, run: () => void) => (
     <button type="button" onClick={run} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5">
       <Icon name={icon} size={21} className="text-muted" />
@@ -202,7 +202,7 @@ export function AlbumPage({ refId }: { refId: string }) {
           {deezer && (
             <a href={deezer} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
               <Icon name="external" size={21} className="text-muted" />
-              Открыть в Deezer
+              {album.source === 'ym' ? 'Открыть в Яндекс Музыке' : 'Открыть в Deezer'}
             </a>
           )}
           {album.artist_ref && (

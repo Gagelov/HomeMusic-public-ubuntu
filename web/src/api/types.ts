@@ -128,7 +128,7 @@ export interface Candidate {
 // --- catalog ----------------------------------------------------------------------------------
 
 /** `nd`: a library-only song; `file`: an exact search file used as a wave seed. */
-export type CatalogSource = 'dz' | 'hm' | 'mb' | 'nd' | 'file';
+export type CatalogSource = 'dz' | 'ym' | 'hm' | 'mb' | 'nd' | 'file';
 export type RecordType = 'album' | 'single' | 'ep' | 'compile';
 export type OwnedStatus = 'full' | 'partial' | 'none';
 
@@ -1085,7 +1085,7 @@ export interface ChatConfirmOut {
 // --- imports from music services ------------------------------------------------------------
 
 export type ImportSource = 'yandex' | 'spotify' | 'vk';
-export type ImportMethod = 'device' | 'token' | 'profile' | 'csv' | 'password';
+export type ImportMethod = 'device' | 'token' | 'profile' | 'csv' | 'password' | 'link';
 export type ImportMode = 'economy' | 'full';
 export type ImportStatus = 'auth' | 'fetching' | 'preview' | 'running' | 'done' | 'failed' | 'cancelled';
 export type ImportCollectionKind = 'likes' | 'playlist' | 'albums' | 'artists' | 'dislikes';

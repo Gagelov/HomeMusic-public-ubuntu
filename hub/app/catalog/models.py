@@ -1,6 +1,6 @@
-"""Catalog entities shared by all catalog sources (Deezer, hitmoz, MusicBrainz).
+"""Catalog entities shared by all catalog sources (Deezer, Yandex Music, hitmoz, MusicBrainz).
 
-A `ref` is "<source>:<id>", e.g. "dz:4505880" (Deezer) or "hm:12345" (hitmoz). The kind (artist/album/track)
+A `ref` is "<source>:<id>", e.g. "dz:4505880" (Deezer), "ym:50685843" (Yandex Music) or "hm:12345" (hitmoz). The kind (artist/album/track)
 is implied by the API that returns or accepts it.
 """
 
@@ -13,7 +13,8 @@ from pydantic import BaseModel
 
 # "nd": a song only the library has (Navidrome id), no catalog record: mixes (`app.mixes`) list such songs too
 # "file": an exact provider file used as the first track of a wave, including songs absent from catalogs.
-Source = Literal["dz", "hm", "mb", "nd", "file"]
+Source = Literal["dz", "ym", "hm", "mb", "nd", "file"]
+CATALOGS = ("dz", "ym", "hm", "mb")  # the sources that are catalogs: a record of one names a song for good
 RecordType = Literal["album", "single", "ep", "compile"]
 
 

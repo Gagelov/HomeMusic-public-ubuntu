@@ -298,8 +298,7 @@ class ChatTools:
     async def get_artist_discography(self, artist_ref: str, types: list[str] | None = None, limit: int = 20) -> Any:
         from app.services import svc
 
-        src, id_ = split_ref(artist_ref)
-        page = await (svc.deezer.get_artist_page(id_) if src == "dz" else svc.hitmoz_catalog.get_artist(id_))
+        page = await svc.artist_page(artist_ref)
         albums = [a for a in page.albums if not types or a.record_type in types][:limit]
         return {"artist": page.artist.name, "releases": _albums(await annotate_albums(self.s, albums))}
 
@@ -321,9 +320,8 @@ class ChatTools:
 
         tracks = []
         for r in refs[:50]:
-            src, id_ = split_ref(r)
-            if src == "dz":
-                tracks.append(await svc.deezer.get_track(id_))
+            if split_ref(r)[0] in ("dz", "ym"):
+                tracks.append(await svc.track(r))
         return {t.ref: t.owned for t in await annotate_tracks(self.s, tracks)}
 
     async def list_starred(self, kind: str = "song", only: str = "all", offset: int = 0, limit: int = 100) -> Any:

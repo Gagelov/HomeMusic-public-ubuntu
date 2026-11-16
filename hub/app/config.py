@@ -187,6 +187,8 @@ class Settings(BaseSettings):
 
     # Last.fm API (similar tracks/artists, tags for mix names): https://www.last.fm/api/account/create
     lastfm_api_key: str = ""
+    # Yandex Music as one more catalog (app/catalog/yandex_catalog.py): read without signing in, no key
+    yandex_catalog: bool = True
     # the audio vector service (MIXES.md 4.2) in the compose network; empty, or it doesn't answer — mixes are built
     # without the audio term
     embedder_url: str = "http://embedder:8090"

@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from app.catalog.models import CATALOGS
 
 from pydantic import ValidationError
 from sqlalchemy import delete, func, or_, select, update
@@ -362,7 +363,7 @@ async def _meet_listened(s: AsyncSession, user_id: int, events: list[Any]) -> No
     for e in events:
         ref = getattr(e, "ref", None)
         src, _, ident = (ref or "").partition(":")
-        if (e.target_type != "track" or src not in ("dz", "hm", "mb") or not ident or ref in met
+        if (e.target_type != "track" or src not in CATALOGS or not ident or ref in met
                 or e.kind not in ("finish", "skip", "progress", "interrupted") or (e.listened_ms or 0) < COUNTED_MS):
             continue
         met.add(ref)

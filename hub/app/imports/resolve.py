@@ -75,7 +75,8 @@ async def _owned(s: AsyncSession, raw: dict[str, Any], ref: str | None = None) -
 
 
 async def catalog_track(raw: dict[str, Any]) -> Resolution:
-    """Deezer first; a Cyrillic track Deezer lacks may be found on hitmoz (never `exact`: no curated metadata)."""
+    """Deezer first, then Yandex Music — it knows the Russian-language music Deezer lacks; a Cyrillic track neither
+    has may be found on hitmoz (never `exact`: no curated metadata)."""
     cfg = get_settings().cfg.matching
     artist, title = raw.get("artist") or "", raw.get("title") or ""
     main = (raw.get("artists") or [artist])[0]
@@ -108,6 +109,17 @@ async def catalog_track(raw: dict[str, Any]) -> Resolution:
         verdict = VERDICT[classify_scores([x[1].total for x in best], cfg)]
         if verdict != "not_found":
             return Resolution(verdict, best[0][0].ref, round(best[0][1].total, 3), catalog=best[0][0])
+    if svc.yandex is not None:
+        try:
+            found = await svc.yandex.search_tracks(main, title)
+        except Exception as e:  # Yandex is away: the row is as Deezer left it
+            log.info("import: Yandex search failed for %s - %s: %r", artist, title, e)
+            found = []
+        if found:
+            scored = match_catalog(artist, title, found, album=raw.get("album"), duration=raw.get("duration_s"))
+            verdict = VERDICT[classify_scores([x[1].total for x in scored], cfg)]
+            if verdict != "not_found":
+                return Resolution(verdict, scored[0][0].ref, round(scored[0][1].total, 3), catalog=scored[0][0])
     if has_cyrillic(artist + title) and (hm := svc.providers.get("hitmoz")) is not None:
         q = TrackQuery(artist=main, title=title, album=raw.get("album"), duration_s=raw.get("duration_s"))
         try:

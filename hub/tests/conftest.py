@@ -54,6 +54,7 @@ def hub_env(db_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> I
     monkeypatch.setenv("ND_SCAN_POLL_S", "0")
     monkeypatch.setenv("EMBEDDER_URL", "")  # a test that needs it mocks its own
     monkeypatch.setenv("LASTFM_API_KEY", "")
+    monkeypatch.setenv("YANDEX_CATALOG", "false")  # nothing of a test goes out to Yandex; one that needs it sets its own
     monkeypatch.setenv("SMTP_HOST", "")  # no letters; a test that sends them captures its own
     monkeypatch.setenv("MIX_EMBED_WAIT_S", "1")
     monkeypatch.setenv("MIX_POLL_S", "0")

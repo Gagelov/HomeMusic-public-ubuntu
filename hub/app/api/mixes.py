@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -190,23 +191,27 @@ async def onboarding(q: str | None = Query(None, max_length=100), user: User = D
 @router.get("/api/taste/similar", response_model=list[CatalogArtist])
 async def similar(ref: str = Query(max_length=64), user: User = Depends(current_user),
                   s: AsyncSession = Depends(get_session, scope="function")):
-    """The artists the catalog holds to be like `ref` (a Deezer artist), closest first: the row «Похожие на …» that
-    follows a pick."""
+    """The artists the catalogs hold to be like `ref` (an artist of Deezer or of Yandex Music), closest first: the
+    row «Похожие на …» that follows a pick, and «Похожие» of an artist's page."""
     _catalog()
     try:
         src, id_ = split_ref(ref)
     except ValueError as e:
         raise HTTPException(400, f"Неверный исполнитель: {ref}") from e
-    if src != "dz":
+    if src not in ("dz", "ym"):
         raise HTTPException(400, f"Неверный исполнитель: {ref}")
-    # an artist the catalog keeps several records of is like whoever any of them is like
-    theirs = [r for r in (await artists.whole(s, ref))[0] if r.startswith("dz:")]
-    lists = await asyncio.gather(*(svc.deezer.get_artist_related(split_ref(r)[1]) for r in theirs),  # type: ignore[union-attr]
-                                 return_exceptions=True)
+
+    def alike(r: str) -> Any:
+        return svc.deezer.get_artist_related(split_ref(r)[1]) if r.startswith("dz:") else svc.yandex.similar(split_ref(r)[1])  # type: ignore[union-attr]
+
+    # an artist the catalogs keep several records of is like whoever any of them is like; Deezer's word first
+    theirs = sorted((r for r in (await artists.whole(s, ref))[0] if r.startswith(("dz:", "ym:"))), key=lambda r: not r.startswith("dz:"))
+    lists = await asyncio.gather(*(alike(r) for r in theirs), return_exceptions=True)
     if all(isinstance(x, BaseException) for x in lists):
         raise HTTPException(502, f"Каталог не ответил: {lists[0]}")
     found = _interleave([x for x in lists if not isinstance(x, BaseException)])
-    found = list({a.ref: a for a in found}.values())  # whom several of the records are like, once
+    seen: set[str] = set()  # whom several of the records are like, once — by the name: two catalogs, one artist
+    found = [a for a in found if not (artists.key(a.name) in seen or seen.add(artists.key(a.name)))]
     return [a for a in await artists.shown(s, found) if a.ref not in theirs]
 
 

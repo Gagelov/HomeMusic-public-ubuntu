@@ -276,6 +276,9 @@ async def create(s: AsyncSession, user_id: int, *, source: str, method: str, tok
         imp.token_enc = encrypt(token.strip())
     elif method == "profile":
         imp.account = yandex.profile_login(url or "")
+    elif method == "link":  # one open playlist, read by its link: «Подтянуть новое» reads it again
+        yandex.link_target(url or "")
+        imp.auth_json = {"url": (url or "").strip()}
     else:
         raise SourceError("Неизвестный способ")
     s.add(imp)
@@ -339,6 +342,8 @@ async def fetch_snapshot(imp: Import) -> Snapshot:
         if not token:
             raise SourceError("Вход в ВК не сохранён — войдите заново")
         return await vk.fetch(token)
+    if imp.method == "link":
+        return await asyncio.to_thread(yandex.fetch_link, (imp.auth_json or {}).get("url") or "")
     login = imp.account if imp.method == "profile" else None
     return await asyncio.to_thread(yandex.fetch, token, login)
 

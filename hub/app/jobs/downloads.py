@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import DownloadItemOut
 from app.catalog.deezer import CatalogNotFound
-from app.catalog.models import CatalogAlbum, CatalogTrack, split_ref
+from app.catalog.models import CATALOGS, CatalogAlbum, CatalogTrack, split_ref
 from app.catalog.yandex import russian_original
 from app.config import get_settings
 from app.db import session_scope
@@ -923,7 +923,7 @@ async def known_track(s: AsyncSession, q: TrackQuery, meta: dict[str, Any], user
         return have
     ref = str(meta.get("track_ref") or "")
     src, _, ident = ref.partition(":")
-    if src not in ("dz", "hm", "mb") or not ident:
+    if src not in CATALOGS or not ident:
         return None
     album = meta.get("deezer_album_id")
     names, refs = meta.get("artists") or [], meta.get("artist_refs") or []
@@ -979,12 +979,10 @@ def query_from_track(t: CatalogTrack) -> TrackQuery:
 
 
 async def get_catalog_album(ref: str) -> CatalogAlbum:
-    src, id_ = split_ref(ref)
-    if src == "dz" and svc.deezer:
-        return await svc.deezer.get_album(id_)
-    if src == "hm" and svc.hitmoz_catalog:
-        return await svc.hitmoz_catalog.get_album(id_)
-    raise PermanentError(f"unknown album ref {ref}")
+    try:
+        return await svc.album(ref)
+    except ValueError as e:
+        raise PermanentError(f"unknown album ref {ref}") from e
 
 
 @handler("expand_batch")
@@ -992,9 +990,8 @@ async def handle_expand_batch(job: Job) -> None:
     p = job.payload_json
     album_refs: list[str] = list(p.get("album_refs") or [])
     if p.get("artist_ref"):
-        src, id_ = split_ref(p["artist_ref"])
         types = set(p.get("record_types") or ["album", "single", "ep"])
-        page = await (svc.deezer.get_artist_page(id_) if src == "dz" else svc.hitmoz_catalog.get_artist(id_))
+        page = await svc.artist_page(p["artist_ref"])
         # oldest first, so singles that are later included in an album don't win the album slot
         album_refs += [a.ref for a in sorted(page.albums, key=lambda a: a.release_date or date.min)
                        if a.record_type in types]
@@ -1013,11 +1010,8 @@ async def handle_expand_batch(job: Job) -> None:
             seen.add(key)
             entries.append((query_from_track(t), meta_from_catalog(t, album), None))
     for ref in p.get("track_refs") or []:
-        src, id_ = split_ref(ref)
-        if src != "dz" or svc.deezer is None:
-            continue
         try:
-            t = await svc.deezer.get_track(id_)
+            t = await svc.track(ref)
         except CatalogNotFound as e:
             log.warning("expand_batch %s: skip track %s: %r", p["batch_id"], ref, e)
             continue

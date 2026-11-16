@@ -165,7 +165,7 @@ async def sync(import_id: int, user: User = Depends(current_user),
         raise HTTPException(409, "Импорт ещё не запущен")
     if imp.method == "csv":
         raise HTTPException(409, "Перенос из файла не обновляется — загрузите новую выгрузку")
-    if imp.method != "profile" and not imp.token_enc:
+    if imp.method not in ("profile", "link") and not imp.token_enc:
         raise HTTPException(409, "Вход в сервис удалён — начните новый перенос")
     imp.status = "fetching"
     await enqueue(s, "import_fetch", {"import_id": imp.id}, priority=PRIORITY_IMPORT)

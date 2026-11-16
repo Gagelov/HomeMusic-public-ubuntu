@@ -34,17 +34,32 @@ def _split(ref: str) -> tuple[str, str]:
 async def get_artist_page(ref: str) -> ArtistPage:
     src, id_ = _split(ref)
     try:
-        if src == "dz" and svc.deezer:
-            return await svc.deezer.get_artist_page(id_)
-        if src == "hm" and svc.hitmoz_catalog:
-            return await svc.hitmoz_catalog.get_artist(id_)
-    except HTTPException:
-        raise
+        return await svc.artist_page(f"{src}:{id_}")
     except Exception as e:
         if type(e).__name__ == "CatalogNotFound":
             raise HTTPException(404, "Исполнитель не найден") from e
         raise HTTPException(502, f"Каталог недоступен: {e}") from e
-    raise HTTPException(404, "Исполнитель не найден")
+
+
+async def _tie_yandex(s: AsyncSession, who: Any, page: ArtistPage) -> None:
+    """The artist Yandex knows by the same name, with music in common, is the same artist: their record there is
+    tied to them — once; from then on the record itself says who it is, and their page is drawn of it too. A
+    namesake has the name and none of the music: nobody is tied."""
+    from app.library import artists
+
+    if svc.yandex is None or page.artist.source == "ym" or any(r.startswith("ym:") for r in await artists.profiles(s, who.id)):
+        return
+    try:
+        found = await svc.yandex.find_artist(who.name)
+        if found is None or await artists.by_ref(s, found.ref) is not None:
+            return
+        theirs = await svc.yandex.get_artist(found.id)
+    except Exception as e:  # Yandex is away: the page is the other catalogs' for now
+        log.info("artist %s: Yandex not asked: %r", page.artist.ref, e)
+        return
+    here = {artists.fold(x.title) for x in [*page.albums, *page.top_tracks]}
+    if here & {artists.fold(x.title) for x in [*theirs.albums, *theirs.top_tracks]}:
+        await artists.who(s, found.name, found.ref, "catalog")
 
 
 async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str], list[ArtistSourceOut]]:
@@ -57,6 +72,8 @@ async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str]
 
     page = await get_artist_page(ref)
     who = await artists.who(s, page.artist.name, ref, "catalog")
+    if who is not None:
+        await _tie_yandex(s, who, page)
     refs = [r for r in (await artists.profiles(s, who.id) if who is not None else []) if r != ref]
 
     async def other(r: str) -> ArtistPage | None:
@@ -67,13 +84,17 @@ async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str]
             return None
 
     pages = [page, *[p for p in await asyncio.gather(*(other(r) for r in refs)) if p is not None]]
-    pages.sort(key=lambda p: p.artist.nb_fans or 0, reverse=True)
+    # Yandex's record adds to the page and does not lead it while another catalog has one: its followers are
+    # counted otherwise (likes of the whole service), and the other catalog's records are what the Hub's own are of
+    pages.sort(key=lambda p: (p.artist.source != "ym", p.artist.nb_fans or 0), reverse=True)
     main = pages[0]
     albums: list[CatalogAlbum] = []
     seen: set[Any] = set()
     for p in pages:
         for a in p.albums:
-            same = (artists.fold(a.title), a.record_type, a.release_date.year if a.release_date else a.year)
+            # one catalog's EP is another's single
+            same = (artists.fold(a.title), "single" if a.record_type == "ep" else a.record_type,
+                    a.release_date.year if a.release_date else a.year)
             if a.ref in seen or same in seen:
                 continue
             seen.update((a.ref, same))
@@ -85,30 +106,41 @@ async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str]
     tracks = list(top.values())
     if len(pages) > 1:  # the most listened of them all, by the catalog's own count of it
         tracks = sorted(tracks, key=lambda t: t.rank or 0, reverse=True)[:max(len(p.top_tracks) for p in pages)]
-    fans = [p.artist.nb_fans for p in pages if p.artist.nb_fans]
+    fans = [p.artist.nb_fans for p in pages if p.artist.nb_fans and p.artist.source == main.artist.source]
     artist = main.artist.model_copy(update={"name": who.name if who is not None else main.artist.name,
                                              "nb_fans": sum(fans) if fans else main.artist.nb_fans})
-    sources = [ArtistSourceOut(service="deezer" if p.artist.source == "dz" else "catalog", ref=p.artist.ref, name=p.artist.name,
-                               picture_url=p.artist.picture_small_url or p.artist.picture_url, followers=p.artist.nb_fans,
-                               releases=len(p.albums),
-                               url=f"https://www.deezer.com/artist/{p.artist.id}" if p.artist.source == "dz" else None)
-               for p in pages]
+    sources = [await _source(p) for p in pages]
     return ArtistPage(artist=artist, top_tracks=tracks, albums=albums), [p.artist.ref for p in pages], sources
+
+
+SERVICES = {"dz": "deezer", "ym": "yandex"}
+ARTIST_URLS = {"dz": "https://www.deezer.com/artist/{}", "ym": "https://music.yandex.ru/artist/{}"}
+
+
+async def _source(p: ArtistPage) -> ArtistSourceOut:
+    """A record of a catalog as that catalog shows the artist: their name and picture there, how many follow them —
+    and, where the catalog says it (Yandex), how many listened in the last month."""
+    a = p.artist
+    heard = None
+    if a.source == "ym" and svc.yandex is not None:
+        try:
+            heard = await svc.yandex.listeners(a.id)
+        except Exception as e:
+            log.info("artist %s: listeners not read: %r", a.ref, e)
+    return ArtistSourceOut(service=SERVICES.get(a.source, "catalog"), ref=a.ref, name=a.name,
+                           picture_url=a.picture_small_url or a.picture_url, followers=a.nb_fans, listeners=heard,
+                           releases=len(p.albums), url=ARTIST_URLS[a.source].format(a.id) if a.source in ARTIST_URLS else None)
 
 
 async def get_album(ref: str, *, credited: bool = False) -> CatalogAlbum:
     """`credited`: with everyone credited on each track (an album's own page; costs a request a track, once)."""
     src, id_ = _split(ref)
     try:
-        if src == "dz" and svc.deezer:
-            return await (svc.deezer.get_album_credited(id_) if credited else svc.deezer.get_album(id_))
-        if src == "hm" and svc.hitmoz_catalog:
-            return await svc.hitmoz_catalog.get_album(id_)
+        return await svc.album(f"{src}:{id_}", credited=credited)
     except Exception as e:
         if type(e).__name__ == "CatalogNotFound":
             raise HTTPException(404, "Альбом не найден") from e
         raise HTTPException(502, f"Каталог недоступен: {e}") from e
-    raise HTTPException(404, "Альбом не найден")
 
 
 @router.get("/artist/{ref}", response_model=ArtistPageOut)

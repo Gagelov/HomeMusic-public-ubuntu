@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from app.catalog.models import CATALOGS
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
@@ -496,7 +497,7 @@ async def _liked_track(s: AsyncSession, user_id: int, ref: str | None, nd_id: st
         if track_id is not None:
             return track_id
     src, _, ident = (ref or "").partition(":")
-    if src not in ("dz", "hm", "mb") or not ident:
+    if src not in CATALOGS or not ident:
         return None
     track = await registry.by_ref(s, ref)
     if track is not None:

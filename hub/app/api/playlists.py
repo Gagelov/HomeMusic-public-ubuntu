@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import playlists
+from app.catalog.models import CATALOGS
 from app.library.owned import with_files
 from app.api.medialib import songs_out
 from app.api.schemas import (
@@ -106,7 +107,7 @@ def track_without_file(t: Track, *, downloading: bool = False) -> NdSongOut:
     ref = t.ref or f"lib:{t.id}"
     src, _, ident = ref.partition(":")
     return NdSongOut(
-        ref=ref, source=src if src in ("dz", "hm", "mb") else "nd", id=ident, title=t.title, artist=t.artist,
+        ref=ref, source=src if src in CATALOGS else "nd", id=ident, title=t.title, artist=t.artist,
         artists=c.get("artists") or [t.artist], artist_refs=c.get("artist_refs") or [], artist_ref=c.get("artist_ref"),
         album_ref=c.get("album_ref"), album_title=t.album, album_artist=t.album_artist, duration_s=t.duration_s,
         track_no=t.track_no, disc_no=t.disc_no, isrc=t.isrc, explicit=t.explicit, cover_url=c.get("cover_url"),

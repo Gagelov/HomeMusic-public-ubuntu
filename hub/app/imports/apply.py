@@ -26,7 +26,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.catalog.models import CatalogTrack, split_ref
+from app.catalog.models import CATALOGS, CatalogTrack, split_ref
 from app.favorites import parse_time
 from app.imports.resolve import Resolution
 from app.jobs.queue import PRIORITY_IMPORT, enqueue
@@ -157,7 +157,7 @@ async def queue_track(s: AsyncSession, imp: Import, it: ImportItem, kind: str, *
 
     raw = it.raw_json or {}
     src, id_ = split_ref(it.ref)
-    cat = await remembered_track(it.ref) if src == "dz" else None
+    cat = await remembered_track(it.ref) if src in ("dz", "ym") else None
     if cat is not None:
         # the download is of the catalog's track the row was matched with — its names, its artists with their
         # records — as one asked for from the search is: what the service called the song found it, no more
@@ -287,7 +287,7 @@ async def track_of(s: AsyncSession, it: ImportItem, user_id: int) -> Track | Non
     if it.track_id and (track := await s.get(Track, it.track_id)) is not None:
         return track
     src, _, ident = (it.ref or "").partition(":")
-    if src not in ("dz", "hm", "mb") or not ident:
+    if src not in CATALOGS or not ident:
         raw = it.raw_json or {}
         if it.match != "not_found" or not raw.get("title"):
             return None
@@ -296,7 +296,7 @@ async def track_of(s: AsyncSession, it: ImportItem, user_id: int) -> Track | Non
                                       isrc=q.isrc, user_id=user_id)
     if (track := await registry.by_ref(s, it.ref)) is not None:
         return track
-    if src == "dz" and (cat := await remembered_track(it.ref)) is not None:
+    if src in ("dz", "ym") and (cat := await remembered_track(it.ref)) is not None:
         return await registry.of_catalog(s, cat, user_id=user_id)
     raw = it.raw_json or {}
     if not raw.get("title"):

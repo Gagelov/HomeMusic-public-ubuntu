@@ -963,7 +963,7 @@ class AssistantTextIn(BaseModel):
 # --- imports from music services ----------------------------------------------------------
 
 ImportSource = Literal["yandex", "spotify", "vk"]
-ImportMethod = Literal["device", "token", "profile", "csv", "password"]
+ImportMethod = Literal["device", "token", "profile", "csv", "password", "link"]
 ImportMode = Literal["economy", "full"]
 
 
@@ -971,7 +971,7 @@ class ImportIn(BaseModel):
     source: ImportSource = "yandex"
     method: ImportMethod = "device"
     token: str | None = None  # method "token"
-    url: str | None = None  # method "profile": a link to the profile or the login
+    url: str | None = None  # method "profile": a link to the profile or the login; "link": to a playlist or an album
     # method "password" (VK): used for the sign-in only, never kept beyond it
     login: str | None = None
     password: str | None = None

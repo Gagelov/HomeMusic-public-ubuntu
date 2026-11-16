@@ -7,7 +7,7 @@ import { fmtLength, tracksWord } from '../lib/format';
 import { STANDALONE } from '../lib/embedded';
 import { useAsync } from '../lib/hooks';
 import { playlistMenuProps } from '../lib/playlistMenu';
-import { Link, enc } from '../lib/router';
+import { Link, enc, navigate } from '../lib/router';
 import { attempt } from '../lib/ui';
 
 export function PlaylistsPage() {
@@ -17,6 +17,17 @@ export function PlaylistsPage() {
   useHubEvent('reconnect', () => res.reload(true));
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  // a playlist of another service copied by its link: a transfer of that one playlist, opened at its preview
+  const [link, setLink] = useState('');
+  const [copying, setCopying] = useState(false);
+  const copy = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!link.trim()) return;
+    setCopying(true);
+    const imp = await attempt(() => api.createImport({ source: 'yandex', method: 'link', url: link.trim() }));
+    setCopying(false);
+    if (imp) navigate(`/import/${imp.id}`);
+  };
 
   const create = async (e: FormEvent) => {
     e.preventDefault();
@@ -37,6 +48,12 @@ export function PlaylistsPage() {
         <input className="input flex-1" placeholder="Название нового плейлиста" aria-label="Название нового плейлиста" value={name} onChange={(e) => setName(e.target.value)} />
         <Button type="submit" variant="primary" icon="plus" busy={busy} disabled={!name.trim()}>
           Создать
+        </Button>
+      </form>
+      <form onSubmit={copy} className="flex gap-2 px-4 pb-3">
+        <input className="input flex-1" inputMode="url" placeholder="Или ссылка на плейлист Яндекс Музыки" aria-label="Ссылка на плейлист Яндекс Музыки" value={link} onChange={(e) => setLink(e.target.value)} />
+        <Button type="submit" icon="transfer" busy={copying} disabled={!link.trim()}>
+          Скопировать
         </Button>
       </form>
       <p className="px-4 pb-2 text-xs text-muted">
