@@ -366,7 +366,7 @@ function Banner({ name, photo }: { name: string; photo?: string | null }) {
             </span>
           ))}
         <div className="min-w-0 flex-1">
-          <div className="hidden text-sm text-fg/80 lg:block">Исполнитель</div>
+          <div className="text-xs text-fg/80 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)] lg:text-sm">Исполнитель</div>
           <h2 ref={title} data-list-title className="line-clamp-2 break-words text-[clamp(2.5rem,12vw,9rem)] font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]">
             {name}
           </h2>
