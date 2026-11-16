@@ -590,7 +590,10 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
             path.unlink(missing_ok=True)
             await step(item_id, "bad", f"Не подошёл на замену: по звуку около {check.blown_from_kbps} кбит/с", cand)
             continue
-        if check.blown_from_kbps:
+        # (a file fetched to tell what a track is — `identify` — is weighed as any other, below: it is there to be
+        # compared by the sound, and is counted for what it sounds like, not for what it says. It is never put aside
+        # to be brought in as a download of its own: that made a second track of the song)
+        if check.blown_from_kbps and not upgrade_of:
             said = check.info.bitrate_kbps if check.info else cand.bitrate_kbps
             await step(item_id, "warn", f"Отложен: заявлено {said} кбит/с, а по звуку около {check.blown_from_kbps}", cand)
             if spare is None:
@@ -617,7 +620,7 @@ async def try_candidates(item_id: int, user_id: int, q: TrackQuery, meta: dict[s
         await step(item_id, "ok", f"Выбран: совпадение {cand.score:.2f}{bitrate}; проверка после скачивания пройдена", cand)
         await import_downloaded(item_id, user_id, q, meta, cand, path, check, force, warning=warning)
         return True, ""
-    if spare is not None:
+    if spare is not None and not upgrade_of:
         cand, path, check = spare
         said = check.info.bitrate_kbps if check.info else cand.bitrate_kbps
         check.warnings = [*check.warnings, f"Заявлено {said} кбит/с, по звуку около {check.blown_from_kbps}: файл сделан из худшего"]

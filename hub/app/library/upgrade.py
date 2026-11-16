@@ -173,6 +173,9 @@ async def take(meta: dict[str, Any], path: Path, check: Any, cand: Any, user_id:
     assert track_id is not None
     info = check.info
     codec, kbps = (info.codec, info.bitrate_kbps) if info else (None, getattr(cand, "bitrate_kbps", None))
+    # a file made of a poorer one is worth what it sounds like, not what it says: it is not «the better file»
+    if sounds := getattr(check, "blown_from_kbps", None):
+        kbps = min(kbps, sounds) if kbps else sounds
     async with session_scope() as s:
         if meta.get("identify"):
             return await _settle(s, meta, track_id, path, codec, kbps, info.duration_s if info else None, cand, user_id)
