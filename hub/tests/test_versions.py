@@ -115,3 +115,22 @@ async def test_a_doubt_is_answered_another_version_of_the_same_song(env, monkeyp
     d = (await c.get("/api/library/versions", params={"track_id": mine_id})).json()
     # the catalog's record is the preferred one — the one the other was joined to; the track keeps its names and file
     assert [(v["title"], v["preferred"], v["has_file"]) for v in d["versions"]] == [("Дорогая", True, False), ("Группа крови", False, True)]
+
+
+async def test_an_uploaded_file_is_said_to_be_another_version(env, tmp_path):
+    """On the upload page: neither the catalog's record nor another song — the file goes in under its own names,
+    tied to the record as a version, and nothing is asked of it afterwards."""
+    from tests.test_flow import make_mp3
+
+    c = env["client"]
+    p = make_mp3(tmp_path / "x.mp3", seconds=2)
+    (u,) = (await c.post("/api/uploads", files=[("files", ("Кино - Группа крови.mp3", p.read_bytes(), "audio/mpeg"))])).json()
+    assert u["match"]["ref"] == "dz:100", u["match"]
+    r = await c.post("/api/uploads/commit", json={"tracks": [{"upload_id": u["id"], "catalog": False, "title": "Группа крови (старая)", "artist": "Кино",
+                                                              "album": "Демо", "version_of_match": True}]})
+    assert r.status_code == 200 and r.json()["imported"] == 1 and r.json()["unsure"] == 0, r.text
+    (tid,) = r.json()["track_ids"]
+    d = (await c.get("/api/library/versions", params={"track_id": tid})).json()
+    assert [(v["title"], v["ref"], v["preferred"], v["has_file"]) for v in d["versions"]] == [
+        ("Группа крови", "dz:100", True, False), ("Группа крови (старая)", None, False, True)]
+

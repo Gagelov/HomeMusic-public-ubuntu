@@ -708,6 +708,9 @@ class UploadTrackIn(BaseModel):
     album_artist: str | None = None
     year: int | None = None
     track_no: int | None = None  # its place in the album (none: the catalog's, else the file's own)
+    # the file is another recording of the song the catalog took it for (`UploadOut.match`): it is filed under its own
+    # names (`catalog` false) and tied to that record as a version (app/library/versions.py)
+    version_of_match: bool = False
     # another name the song is known by — the one its file had, where the listener keeps it (app/library/artists.py)
     also_title: str | None = Field(default=None, max_length=512)
     # a single's picture: the catalog's, or the one in the file (none: the catalog's for a song of the catalog)

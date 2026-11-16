@@ -653,6 +653,9 @@ export interface UploadTrackIn {
   catalog: boolean;
   /** another name the song is known by: the one its file had, kept by the listener's word */
   also_title?: string | null;
+  /** the file is another recording of the song the catalog took it for: filed under its own names, tied to that
+   * record as a version */
+  version_of_match?: boolean;
   title?: string;
   artist?: string;
   album?: string | null;

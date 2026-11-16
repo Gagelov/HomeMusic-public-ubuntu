@@ -84,6 +84,8 @@ interface RowState {
   group?: string;
   /** the name the file had, where the catalog's is taken instead, is kept as a second name of the song */
   also?: boolean;
+  /** another recording of the song the catalog took the file for: filed under its own names, tied to it as a version */
+  version?: boolean;
 }
 
 /** The columns of the table that say what the file itself is: they can be hidden (the choice stays on the device). */
@@ -189,7 +191,9 @@ const catAlbum = (u: UploadOut): string | null => (u.match?.record_type === 'sin
 const usesCatalog = (u: UploadOut, r: RowState) => r.catalog && !!u.match?.ref;
 const valid = (u: UploadOut, r: RowState) => usesCatalog(u, r) || (!!r.title.trim() && !!r.artist.trim());
 /** A record only like the file, not taken by hand: the second step settles it by the sound. */
-const unsure = (u: UploadOut, r: RowState) => u.match?.state === 'doubt' && !usesCatalog(u, r);
+const unsure = (u: UploadOut, r: RowState) => u.match?.state === 'doubt' && !usesCatalog(u, r) && !r.version;
+/** Said to be another version of the song the catalog took it for (and so not filed by the catalog's record). */
+const isVersion = (u: UploadOut, r: RowState) => !!r.version && !!u.match?.ref && !usesCatalog(u, r);
 
 /** What the catalog's record changes in the track itself — its name, who is credited, its place in the album — in
  * a few words each. A name in another case («утром» for «Утром») is no change: the file's spelling is kept. */
@@ -701,7 +705,7 @@ export function UploadPage() {
   const trackIn = (u: UploadOut): UploadTrackIn => {
     const r = rowOf(u);
     return {
-      upload_id: u.id, catalog: usesCatalog(u, r), also_title: r.also && usesCatalog(u, r) && !same(u.title, u.match?.title) ? u.title : null, title: r.title.trim(), artist: r.artist.trim(), album: r.album.trim() || null, year: toIntOrNull(r.year),
+      upload_id: u.id, catalog: usesCatalog(u, r), also_title: r.also && usesCatalog(u, r) && !same(u.title, u.match?.title) ? u.title : null, version_of_match: isVersion(u, r), title: r.title.trim(), artist: r.artist.trim(), album: r.album.trim() || null, year: toIntOrNull(r.year),
       album_key: all.keys.get(u.id) ?? null, cover: r.cover, replace_track_id: r.replace && u.twin ? u.twin.track_id : null,
     };
   };
@@ -1251,6 +1255,11 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
           title
         )}
         {doubt}
+        {isVersion(u, r) && (
+          <span title={`Другая запись песни «${m?.title}» — ${m?.artist}. Трек останется под своими названием и исполнителями и будет связан с ней как версия`} className="ml-2 rounded-full bg-info/15 px-2 py-0.5 align-middle text-[11px] text-info">
+            версия: {m?.title}
+          </span>
+        )}
       </span>
       <span className="block truncate text-[13px] text-muted">
         {!by || sameArtists ? artists : kept ? [...theirs].sort((a, b) => Number(!mine.includes(low(a))) - Number(!mine.includes(low(b))) || mine.indexOf(low(a)) - mine.indexOf(low(b))).map((a, i) => <span key={a}>{i > 0 && ' '}{mine.includes(low(a)) ? a : pill(a)}</span>) : <>{was(u.artist)} {theirs.map((a, i) => <span key={a}>{i > 0 && ' '}{pill(a)}</span>)}</>}
@@ -1266,7 +1275,9 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   const items = (
     <>
       {item('edit', 'Изменить название и исполнителей', onEdit)}
-      {has && item('note', by ? 'Не та запись — оставить как в файле' : m?.state === 'doubt' ? 'Это она — взять данные каталога' : 'Взять данные каталога', () => onChange({ catalog: !by, cover: !by && m?.cover_url ? 'catalog' : 'file' }))}
+      {has && item('note', by ? 'Не та запись — оставить как в файле' : m?.state === 'doubt' ? 'Это она — взять данные каталога' : 'Взять данные каталога', () => onChange({ catalog: !by, cover: !by && m?.cover_url ? 'catalog' : 'file', version: false }))}
+      {/* neither that record nor another song: another recording of the same song — its own names, tied as a version */}
+      {has && item('disc', isVersion(u, r) ? 'Не версия этой песни' : 'Это другая версия этой песни', () => onChange(isVersion(u, r) ? { version: false } : { catalog: false, cover: 'file', version: true }))}
       {item('search', has ? 'Другая запись каталога…' : 'Найти в каталоге вручную', onFind)}
       {!m?.by_hand && item('refresh', 'Сверить заново', onAgain)}
       {item('folder', 'В другой альбом…', onAlbum)}

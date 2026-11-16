@@ -391,6 +391,7 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
         if a.release_of:
             releases[a.key] = (((await _own(s, user, a.release_of)).probed_tags_json or {}).get("_match") or {}).get("meta") or {}
     imported = weak = unsure = 0
+    versions_of: list[tuple[int, str]] = []  # (a track brought in, the catalog's record it is another version of)
     owed: dict[int, str] = {}  # albums whose catalog picture did not come just now: album id -> the picture's address
     track_ids: list[int] = []
     album_ids: list[int] = []
@@ -466,7 +467,10 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
             album_ids.append(track.album_id)
         if wanted and track.album_id and track.album_id not in owed and not _cover_kept(wanted).is_file():
             owed[track.album_id] = wanted  # the catalog did not give the picture: it is put on the album when it does
-        if not tr.catalog and matched.get("state") == "doubt" and matched.get("meta"):
+        record = str((matched.get("meta") or {}).get("track_ref") or "")
+        if tr.version_of_match and not tr.catalog and record:
+            versions_of.append((track.id, record))  # tied once the import is written down (below)
+        elif not tr.catalog and matched.get("state") == "doubt" and matched.get("meta"):
             await upgrade.start_identify(s, user.id, track, matched["meta"])  # is the record its own: by the sound
             unsure += 1
     for album_id, url in owed.items():
@@ -496,6 +500,20 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
                       context="upload")
         await project_liked(s, user.id)
     await s.commit()
+    # another recording of the song the catalog took a file for: tied to that record as a version — the record, the one
+    # the file was joined to, stays the preferred one. After the import is written down: meeting the record asks the
+    # catalog, which keeps its answers through a connection of its own
+    if versions_of:
+        from app.library import versions
+        from app.lyrics.service import track_for
+
+        for track_id, record in versions_of:
+            theirs = await track_for(s, ref=record, user_id=user.id)
+            await s.commit()
+            mine = await s.get(Track, track_id)
+            if theirs is not None and mine is not None and theirs.id != mine.id:
+                await versions.link(s, user.id, theirs, mine)
+                await s.commit()
     notify()
     bus.publish(user.id, "library", {"kind": "imported", "album_id": album_ids[0] if album_ids else None})
     return UploadCommitOut(album_ids=album_ids, imported=imported, track_ids=track_ids, weak=weak, unsure=unsure)
