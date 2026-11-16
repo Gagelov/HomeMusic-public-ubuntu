@@ -401,6 +401,11 @@ async def test_not_found_track_is_picked_by_hand(env):
     dl = (await c.get(f"/api/downloads/{dl_id}")).json()
     assert (dl["title"], dl["star"], dl["import_id"]) == ("Нет такого", False, imp["id"])  # a visible download
     assert (await jobs("download_item"))[0].priority == 0
+    # picked by hand: the row leaves «not found» (it would come back after a reload) and counts as sure
+    assert await items(c, imp, match="not_found") == []
+    assert [(x["id"], x["status"]) for x in await items(c, imp, match="manual")] == [(row["id"], "queued")]
+    st = (await c.get(f"/api/imports/{imp['id']}")).json()["stats"]
+    assert (st["not_found"], st["exact"]) == (0, 2)  # Группа крови and the picked one; the rest is owned
 
     first = cand("7", "https://audio.test/7", title="Нет такого")
     second = cand("8", "https://audio.test/8", title="Нет такого (другая версия)")
@@ -426,6 +431,44 @@ async def test_not_found_track_is_picked_by_hand(env):
     for ref in ("file:soulseek:9", "file:soundcloud:10"):
         assert (await c.get("/api/listen", params={"ref": ref})).status_code == 404
     assert (await c.get(f"/api/downloads/{dl_id}")).json()["chosen"] is None
+
+
+async def test_picked_probable_track_stays_picked_when_the_library_has_it(env):  # justman-1/HomeMusic-public#5
+    from app.catalog.models import CatalogTrack
+    from app.db import session_scope
+    from app.imports import apply
+    from app.imports.sources.base import SnapItem
+    from app.models import DownloadItem, Import
+    from app.services import svc
+
+    zvezda = track("Кино", "Звезда по имени Солнце", 255)  # 30 s longer than the catalog's: probable
+    svc.deezer.more = [CatalogTrack(ref="dz:300", source="dz", id="300", title="Звезда по имени Солнце",
+                                    artist="Кино", duration_s=225)]
+    snap = snapshot()
+    snap.collections[0].items.append(SnapItem("5", zvezda))
+    snap.collections[1].items.append(SnapItem("5", zvezda))
+    env["state"]["snapshot"] = snap
+    c = env["client"]
+    imp = await prepared(c)
+    await c.post(f"/api/imports/{imp['id']}/start", json={"collection_ids": [x["id"] for x in imp["collections"][:2]]})
+    await run_imports()
+    liked, listed = await items(c, imp, match="probable")  # in likes and in the playlist
+    assert (await c.get(f"/api/imports/{imp['id']}")).json()["stats"]["probable"] == 1  # one track
+
+    r = await c.post(f"/api/imports/items/{liked['id']}/pick")
+    assert r.status_code == 200, r.text
+    dl_id = r.json()["download_item_id"]
+    # the file the user picks turns out to be in the library: the download ends at once
+    async with session_scope() as s:
+        dl = await s.get(DownloadItem, dl_id)
+        dl.status, dl.warnings = "done", ["Уже есть в библиотеке"]
+        await apply.refresh_items(s, await s.get(Import, imp["id"]))
+
+    # after a reload the track is no longer «probable» (no «Выбрать файл» again): both rows are picked, done
+    assert await items(c, imp, match="probable") == []
+    assert sorted((x["id"], x["status"], x["download_item_id"]) for x in await items(c, imp, match="manual")) ==         sorted((x["id"], "done", dl_id) for x in (liked, listed))
+    st = (await c.get(f"/api/imports/{imp['id']}")).json()["stats"]
+    assert st["probable"] == 0
 
 
 async def test_unliking_a_waiting_track(env):

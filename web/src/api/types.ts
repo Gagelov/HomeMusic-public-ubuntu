@@ -815,7 +815,8 @@ export interface ImportStartIn {
   keep_token?: boolean;
 }
 
-export type ImportMatch = 'owned' | 'exact' | 'probable' | 'not_found';
+/** `manual`: the user picked the file by hand (`importPick`) — counted and listed as «Точно». */
+export type ImportMatch = 'owned' | 'exact' | 'probable' | 'not_found' | 'manual';
 export type ImportItemStatus = 'pending' | 'waiting' | 'queued' | 'done' | 'failed' | 'not_found' | 'skipped';
 
 export interface ImportItemOut {

@@ -501,7 +501,7 @@ Row statuses: `owned` (already in library), `auto` (confident, pre-selected), `c
 | DELETE | `/api/imports/{id}/token` | → `ImportOut`: the stored sign-in is removed |
 | POST | `/api/imports/{id}/cancel` | → `ImportOut`: stops matching; its downloads that have not started are cancelled; done work stays |
 | DELETE | `/api/imports/{id}` | → `{ok}`: forgets the import and its sign-in; music, ♥ and playlists stay |
-| POST | `/api/imports/items/{id}/pick` | → `ImportPickOut {download_item_id}`: a not found (or wrongly matched) track becomes a visible download by its names without the catalog match; the user picks the file on its page (`/api/downloads/{id}`, `needs_review`) |
+| POST | `/api/imports/items/{id}/pick` | → `ImportPickOut {download_item_id}`: a not found (or wrongly matched) track becomes a visible download by its names without the catalog match; the user picks the file on its page (`/api/downloads/{id}`, `needs_review`). The row and the same track in the import's other likes / playlists get `match` `manual` and follow that download |
 | POST | `/api/imports/items/{id}/skip` | → `{ok}`: the row is left out |
 
 `ImportOut.status`: `auth` (waiting for the code) → `fetching` → `preview` (choose what to move; `stats` counts distinct
@@ -510,7 +510,8 @@ tracks of the likes and playlists: `owned`, `to_download`, `est_bytes` at 320 kb
 `albums`, `artists`, `dislikes` (only kept). Without a sign-in (`profile`) there are no private playlists and no dislikes.
 
 Matching (`ImportItemOut.match`): `owned` — in the library; `exact` — a confident catalog match; `probable` — weaker
-(other duration or version; a track Deezer lacks may be matched on hitmoz, `ref` `hm:…`); `not_found`.
+(other duration or version; a track Deezer lacks may be matched on hitmoz, `ref` `hm:…`); `not_found`; `manual` — the
+user picked the file (`pick`): the report counts it in `stats.exact` and lists it under «Точно».
 What a service id turned out to be is shared by all users (`source_map`); a miss is looked up again after 7 days.
 Row `status`: `pending` (not matched yet), `waiting` (economy: matched, downloaded once listened to), `queued`
 (`download_item_id`, `download_status`), `done`, `failed`, `not_found`, `skipped`.

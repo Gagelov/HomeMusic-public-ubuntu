@@ -462,7 +462,7 @@ function impItemState(m: Imp, it: ImpItem): Json {
   if (it.skipped) return { status: 'skipped' };
   if (it.picked) {
     const d = downloads.find((x) => x.id === it.picked);
-    return { status: 'queued', download_item_id: it.picked, download_status: d?.status ?? 'queued' };
+    return { status: d?.status === 'done' ? 'done' : 'queued', match: 'manual', download_item_id: it.picked, download_status: d?.status ?? 'queued' };
   }
   if (m.started == null || (it.match !== 'owned' && s < (6000 * (i + 1)) / Math.max(1, sel.length))) return { status: it.match === 'owned' ? 'done' : 'pending', match: it.match === 'owned' ? 'owned' : null };
   if (coll.kind === 'dislikes') return { status: 'skipped' };
@@ -494,7 +494,7 @@ function impOut(m: Imp) {
     error: null,
     stats: {
       tracks: tracks.length, owned, to_download: toDownload, est_bytes: toDownload * 9_400_000, free_bytes: 412_000_000_000,
-      pending: count((o) => o.status === 'pending'), exact: count((o) => o.match === 'exact'), probable: count((o) => o.match === 'probable'),
+      pending: count((o) => o.status === 'pending'), exact: count((o) => o.match === 'exact' || o.match === 'manual'), probable: count((o) => o.match === 'probable'),
       not_found: count((o) => o.status === 'not_found'), waiting: count((o) => o.status === 'waiting'),
       downloading: count((o) => o.status === 'queued'), done: count((o) => o.status === 'done' && o.match !== 'owned'), failed: 0,
     },

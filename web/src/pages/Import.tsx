@@ -385,7 +385,7 @@ function Progress({ imp, onChange }: { imp: ImportOut; onChange: (r: ImportOut) 
 
       <SectionTitle>Отчёт</SectionTitle>
       <ul className="mx-4 overflow-hidden rounded-xl bg-surface">
-        <ReportRow to={`/import/${imp.id}/items?match=exact,owned`} icon="check" tone="text-accent" title="Точно" value={st.exact + st.owned} />
+        <ReportRow to={`/import/${imp.id}/items?match=exact,manual,owned`} icon="check" tone="text-accent" title="Точно" value={st.exact + st.owned} />
         <ReportRow to={`/import/${imp.id}/items?match=probable`} icon="alert" tone="text-warn" title="Вероятно — проверьте" value={st.probable} />
         <ReportRow to={`/import/${imp.id}/items?match=not_found`} icon="x" tone="text-danger" title="Не найдено" value={st.not_found} />
         {st.failed > 0 && <ReportRow to={`/import/${imp.id}/items?status=failed`} icon="refresh" tone="text-danger" title="Не скачалось" value={st.failed} />}
@@ -465,6 +465,7 @@ const PAGE = 300;
 const MATCH_LABEL: Record<string, [string, string]> = {
   owned: ['есть', 'text-accent'],
   exact: ['точно', 'text-accent'],
+  manual: ['выбран вручную', 'text-accent'],
   probable: ['вероятно', 'text-warn'],
   not_found: ['не найдено', 'text-danger'],
 };

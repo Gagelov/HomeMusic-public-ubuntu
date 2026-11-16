@@ -214,7 +214,15 @@ async def pick(item_id: int, user: User = Depends(current_user),
     qj = {"query": apply.track_query(raw).model_dump(), "meta": {}, "import": {"id": imp.id, "item": it.id},
           "requested": True}  # a like gets its ♥ from the import, in order (`apply.sync_likes`)
     dl = await apply.new_download(s, imp, qj, 0)
-    it.download_item_id, it.status, it.ref = dl.id, "queued", None
+    # the user decides the file now: the row (and the same track in the other likes / playlists of the import) is no
+    # longer «probable» / «not found», whatever the download ends with — even «already in the library»
+    twins = (await s.execute(
+        select(ImportItem).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+        .where(ImportItem.import_id == imp.id, ImportItem.external_id == it.external_id,
+               ImportCollection.kind.in_(("likes", "playlist")), ImportItem.status != "skipped",
+               ImportItem.match.is_distinct_from("owned")))).scalars().all()
+    for row in {it, *twins}:
+        row.download_item_id, row.status, row.ref, row.match = dl.id, "queued", None, "manual"
     await s.commit()
     notify()
     return ImportPickOut(download_item_id=dl.id)

@@ -723,7 +723,7 @@ class ImportItemOut(BaseModel):
     duration_s: int | None = None
     cover_url: str | None = None
     ref: str | None = None  # catalog track / album / artist
-    match: str | None = None  # owned/exact/probable/not_found
+    match: str | None = None  # owned/exact/probable/not_found/manual
     score: float | None = None
     # pending/waiting/queued/done/failed/not_found/skipped
     status: str
