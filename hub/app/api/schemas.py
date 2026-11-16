@@ -435,6 +435,7 @@ class DownloadItemOut(BaseModel):
     liked: bool = False  # queued with ♥: the song is starred once imported
     import_id: int | None = None  # queued by this import (`/api/imports`)
     candidates: list[Candidate] | None = None  # only in detail view
+    preview_refs: list[str] | None = None  # playable candidates in the detail view
     chosen: Candidate | None = None
     created_at: datetime
     updated_at: datetime

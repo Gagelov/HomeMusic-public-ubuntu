@@ -208,7 +208,7 @@ const ndSong = (id: string) => libTracks.find((t) => `nd${t.id}` === id);
 
 // --- downloads ----------------------------------------------------------------------------------
 
-type DL = Json & { id: number; batch_id: number; status: string; progress: number; artist: string; title: string; ref?: string };
+type DL = Json & { id: number; batch_id: number; status: string; progress: number; artist: string; title: string; ref?: string; candidates?: Json[] };
 let dlSeq = 300;
 let batchSeq = 40;
 const hitmozCand = (artist: string, title: string, i: number) => ({
@@ -1207,7 +1207,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
   mm = p.match(/^\/api\/downloads\/(\d+)$/);
   if (mm) {
     const d = downloads.find((x) => x.id === Number(mm![1]));
-    return d ? send(res, 200, { ...dlOut(d), candidates: d.candidates ?? [] }) : send(res, 404, { detail: 'Загрузка не найдена' }), true;
+    if (!d) return send(res, 404, { detail: 'Загрузка не найдена' }), true;
+    const candidates = d.candidates ?? [];
+    const previewRefs = candidates.filter((c) => c.provider !== 'soulseek').map((c) => {
+      const ref = `file:${c.provider}:${c.provider_id}`;
+      shownFiles.set(ref, c);
+      return ref;
+    });
+    return send(res, 200, { ...dlOut(d), candidates, preview_refs: previewRefs }), true;
   }
   mm = p.match(/^\/api\/downloads\/items\/(\d+)\/(retry|cancel)$/);
   if (mm) {

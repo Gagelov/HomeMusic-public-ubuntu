@@ -385,6 +385,10 @@ async def test_second_import_reuses_the_matches(env):  # two whole imports: ~2x 
 
 
 async def test_not_found_track_is_picked_by_hand(env):
+    from app.db import session_scope
+    from app.models import DownloadItem
+    from app.services import svc
+
     c = env["client"]
     imp = await prepared(c)
     await c.post(f"/api/imports/{imp['id']}/start", json={"collection_ids": [imp["collections"][1]["id"]]})
@@ -393,9 +397,35 @@ async def test_not_found_track_is_picked_by_hand(env):
     assert row["title"] == "Нет такого"
     r = await c.post(f"/api/imports/items/{row['id']}/pick")
     assert r.status_code == 200, r.text
-    dl = (await c.get(f"/api/downloads/{r.json()['download_item_id']}")).json()
+    dl_id = r.json()["download_item_id"]
+    dl = (await c.get(f"/api/downloads/{dl_id}")).json()
     assert (dl["title"], dl["star"], dl["import_id"]) == ("Нет такого", False, imp["id"])  # a visible download
     assert (await jobs("download_item"))[0].priority == 0
+
+    first = cand("7", "https://audio.test/7", title="Нет такого")
+    second = cand("8", "https://audio.test/8", title="Нет такого (другая версия)")
+    peer = cand("9", "https://audio.test/9", provider="soulseek")
+    disabled = cand("10", "https://audio.test/10", provider="soundcloud")
+    svc.providers["soulseek"] = FakeProvider("soulseek", streams=False)
+    async with session_scope() as s:
+        dl = await s.get(DownloadItem, dl_id)
+        dl.status = "needs_review"
+        dl.candidates_json = [candidate.model_dump(mode="json") for candidate in (first, second, peer, disabled)]
+
+    r = await c.get(f"/api/downloads/{dl_id}")
+
+    assert r.status_code == 200, r.text
+    detail = r.json()
+    assert detail["chosen"] is None
+    assert [candidate["provider_id"] for candidate in detail["candidates"]] == ["7", "8", "9", "10"]
+    assert detail["preview_refs"] == ["file:hitmoz:7", "file:hitmoz:8"]
+    for ref in detail["preview_refs"]:
+        preview = await c.get("/api/listen", params={"ref": ref})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["page_url"] == f"https://hitmoz.test/song/{ref.rsplit(':', 1)[1]}"
+    for ref in ("file:soulseek:9", "file:soundcloud:10"):
+        assert (await c.get("/api/listen", params={"ref": ref})).status_code == 404
+    assert (await c.get(f"/api/downloads/{dl_id}")).json()["chosen"] is None
 
 
 async def test_unliking_a_waiting_track(env):

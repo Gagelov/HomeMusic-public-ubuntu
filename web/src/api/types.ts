@@ -451,6 +451,7 @@ export interface DownloadItemOut {
   /** queued by this import (`/api/imports`) */
   import_id?: number | null;
   candidates?: Candidate[] | null;
+  preview_refs?: string[] | null;
   chosen?: Candidate | null;
   created_at: ISODateTime;
   updated_at: ISODateTime;
