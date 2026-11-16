@@ -222,6 +222,8 @@ export interface TrackOut extends CatalogTrack {
   nd_song_id?: string | null;
   /** a download of it is under way (not counting ones queued only for ♥) */
   downloading: boolean;
+  /** known by its name alone: no file and no record of the catalog — nothing to play until it is given a file */
+  unknown?: boolean;
   /** the user ♥ it and a download that stars it is under way: the ♥ shows filled */
   /** in a list: when the track was added to it; else when it came into the library */
   added_at?: string | null;
@@ -843,8 +845,6 @@ export interface PlaylistOut {
   song_count: number;
   /** the playlist's tracks the library has no file of yet: they play, and are downloaded when listened to */
   pending_count?: number;
-  /** places kept for rows of a transfer that have no track yet */
-  missing_count?: number;
   duration_s: number;
   cover_art?: string | null;
   /** the playlist's picture, the user's own or Navidrome's (add `&size=`) */
@@ -864,8 +864,6 @@ export interface PlaylistOfSongsOut extends PlaylistOut {
 export interface PlaylistPageOut extends PlaylistOut {
   /** every track in its place; one the library has no file of yet has `owned: false` */
   tracks: NdSongOut[];
-  /** the places kept for rows of a transfer that have no track yet, each among the tracks by its `index` */
-  missing?: ImportPlaceOut[];
 }
 
 // --- the Navidrome library (the PWA in a browser: /api/nd) ------------------------------------
@@ -931,8 +929,6 @@ export interface NdArtistPageOut {
 
 export interface NdLikedOut {
   songs: NdSongOut[];
-  /** likes a transfer brought of songs that have no track yet, each among the songs by its `index` */
-  missing?: ImportPlaceOut[];
   albums: NdAlbumOut[];
   artists: NdArtistOut[];
 }
@@ -1179,14 +1175,6 @@ export interface ImportStartIn {
 
 export type ImportMatch = 'owned' | 'exact' | 'probable' | 'not_found';
 export type ImportItemStatus = 'pending' | 'waiting' | 'queued' | 'done' | 'failed' | 'not_found' | 'skipped';
-
-/** A place a playlist keeps for a row of a transfer that has no track yet: the row, and where it stands. */
-export interface ImportPlaceOut extends ImportItemOut {
-  import_id: number;
-  /** how many of the list's tracks stand before it */
-  index: number;
-  added_at?: string | null;
-}
 
 export interface ImportItemOut {
   id: number;

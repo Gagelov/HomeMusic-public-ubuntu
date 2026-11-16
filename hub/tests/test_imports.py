@@ -245,8 +245,9 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     assert rows[imp["collections"][4]["id"], "Что-то"]["status"] == "skipped"  # a dislike is only kept
 
     # the playlist is the Hub's: every matched track in Yandex's order, the one the library has no file of in its
-    # place; the track the catalog does not know is the only one left out. ♥ — one by one from the oldest like
-    assert await playlist_tracks(c, "Дорога") == [("Группа крови", None), ("Город золотой", "ndA"), ("Осень", "ndB")]
+    # place. ♥ — one by one from the oldest like
+    # the song the catalog does not know stands in its place too: a track known by its name alone
+    assert await playlist_tracks(c, "Дорога") == [("Группа крови", None), ("Город золотой", "ndA"), ("Нет такого", None), ("Осень", "ndB")]
     assert state["star_log"][-2:] == [("star", ["ndA"]), ("star", ["ndB"])]
     assert state["stars"] == ["ndA", "ndB"]
     # the liked track the library lacks shows ♥ by its catalog ref
@@ -273,7 +274,7 @@ async def test_economy_import_likes_and_playlists_in_order(env):
         item.status, item.track_id = "done", track_id
         await imports_done(s, [item])
     await run_imports()
-    assert await playlist_tracks(c, "Дорога") == [("Группа крови", "ndC"), ("Город золотой", "ndA"), ("Осень", "ndB")]
+    assert await playlist_tracks(c, "Дорога") == [("Группа крови", "ndC"), ("Город золотой", "ndA"), ("Нет такого", None), ("Осень", "ndB")]
     assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {"done"}
     # ♥ in Yandex's order: Группа крови was liked after Город золотой and before Осень, so Осень is starred again after it
     assert state["star_log"][-3:] == [("unstar", ["ndC", "ndB"]), ("star", ["ndC"]), ("star", ["ndB"])]
@@ -306,7 +307,8 @@ async def test_what_waits_shows_in_its_playlist_and_extras_follow_the_tracks(env
     await run_imports()
 
     # the playlist that came with the import: the track the library has no file of stands in its place
-    assert await playlist_tracks(c, "Дорога") == [("Группа крови", None), ("Город золотой", "ndA"), ("Осень", "ndB")]
+    # the song the catalog does not know stands in its place too: a track known by its name alone
+    assert await playlist_tracks(c, "Дорога") == [("Группа крови", None), ("Город золотой", "ndA"), ("Нет такого", None), ("Осень", "ndB")]
 
     # «После переноса»: what the library has got its place in the other playlist (once), its tag and its ♥
     assert await playlist_tracks(c, "Моё") == [("Осень", "ndB"), ("Город золотой", "ndA")]
@@ -324,7 +326,7 @@ async def test_what_waits_shows_in_its_playlist_and_extras_follow_the_tracks(env
         item.status, item.track_id = "done", track_id
         await imports_done(s, [item])
     await run_imports()
-    assert await playlist_tracks(c, "Дорога") == [("Группа крови", "ndC"), ("Город золотой", "ndA"), ("Осень", "ndB")]
+    assert await playlist_tracks(c, "Дорога") == [("Группа крови", "ndC"), ("Город золотой", "ndA"), ("Нет такого", None), ("Осень", "ndB")]
     assert await playlist_tracks(c, "Моё") == [("Осень", "ndB"), ("Город золотой", "ndA"), ("Группа крови", "ndC")]
     assert tag in (await by_songs((await c.get("/api/tags")).json()["map"]))["ndC"] and "ndC" in state["stars"]
 

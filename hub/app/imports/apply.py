@@ -1,11 +1,12 @@
 """What a matched import row does in HomeMusic: a track of the Hub, its place in the playlists, its ♥, its download.
 
-- A matched row is a track of the Hub at once (`track_of`), named as the catalog names it — whether the library has
-  its file yet or not.
-- Playlists: a playlist of the service is a playlist of the Hub (`sync_playlists`), whole from the start: every
-  matched track in the service's order and with the date it was added there, and a place kept for every row that
-  has no track yet (`NO_TRACK_YET`) — the user sees all of the playlist and says later what such a row is. It is
-  settled at most every `core.PLAYLISTS_DELAY_S` while downloads come in — never on every track.
+- A row is a track of the Hub at once (`track_of`): a matched one is named as the catalog names it — whether the
+  library has its file yet or not; one the catalog does not know is a track known by its name alone
+  (`tracks.by_name`) — there is nothing of it to play until the user gives it a file (`pick`), yet it is liked, put
+  into playlists and tagged like any other.
+- Playlists: a playlist of the service is a playlist of the Hub (`sync_playlists`), whole: every track in the
+  service's order and with the date it was added there; it is settled at most every `core.PLAYLISTS_DELAY_S` while
+  downloads come in — never on every track.
 - ♥: the liked tracks are in «Любимое» in the service's order (`favorites.project_liked`); in Navidrome the Hub stars
   the liked songs itself, in that order (`sync_likes`): one by one from the oldest like, and a song downloaded later
   gets its place by starring the likes newer than it again. Likes are downloaded oldest first, so a new song mostly
@@ -113,6 +114,22 @@ def track_query(raw: dict[str, Any]) -> TrackQuery:
     main = (raw.get("artists") or [raw.get("artist") or ""])[0]
     return TrackQuery(artist=main or raw.get("artist") or "", title=raw.get("title") or "", album=raw.get("album"),
                       duration_s=raw.get("duration_s"), isrc=raw.get("isrc"))
+
+
+async def pick(s: AsyncSession, imp: Import, it: ImportItem) -> DownloadItem:
+    """A row that was not found (or found wrong): a visible download by its names, without the catalog match — the
+    user picks the file on its page, as for any download that needs review. The file of a row the catalog does not
+    know is the file of the row's track (`tracks.by_name`): the track stays where it stands — in its playlists, in
+    «Любимое» — and plays from then on."""
+    meta: dict[str, Any] = {}
+    if it.match == "not_found" and (track := await track_of(s, it, imp.user_id)) is not None:
+        it.track_id = track.id
+        meta["track_id"] = track.id
+    qj = {"query": track_query(it.raw_json or {}).model_dump(), "meta": meta, "import": {"id": imp.id, "item": it.id},
+          "requested": True}  # a like gets its ♥ from the import, in order (`sync_likes`)
+    dl = await new_download(s, imp, qj, 0)
+    it.download_item_id, it.status, it.ref = dl.id, "queued", None
+    return dl
 
 
 async def new_download(s: AsyncSession, imp: Import, query_json: dict[str, Any], priority: int) -> DownloadItem:
@@ -258,24 +275,25 @@ def like_order(items: list[ImportItem], songs: dict[int, str]) -> list[str]:
     return list(out)
 
 
-# A row in one of these states may have no track yet: the catalog has not been asked, or does not know the song, or
-# the user is choosing a file for it. A playlist keeps its place (`PlaylistItem.import_item_id`)
-NO_TRACK_YET = ("pending", "not_found", "queued", "failed")
-
-
 async def track_of(s: AsyncSession, it: ImportItem, user_id: int) -> Track | None:
     """The Hub's track of an import's row: the track of the catalog track the row was matched with, made if the Hub
     has none. It is named as the catalog names it, by the record kept when the row was matched. Where no record was
     kept (a match of older days), the track is named as the service called the song until the catalog is asked
     (`fill_catalog`): the service's words are not the catalog's and are not kept as such. The catalog is not asked
-    here — rows are gone through by the hundred, inside a transaction."""
+    here — rows are gone through by the hundred, inside a transaction. A row the catalog does not know is the track
+    known by its name alone (`tracks.by_name`). None: a row not matched yet, or one that says nothing of its song."""
     from app.library import tracks as registry
 
     if it.track_id and (track := await s.get(Track, it.track_id)) is not None:
         return track
     src, _, ident = (it.ref or "").partition(":")
     if src not in ("dz", "hm", "mb") or not ident:
-        return None
+        raw = it.raw_json or {}
+        if it.match != "not_found" or not raw.get("title"):
+            return None
+        q = track_query(raw)
+        return await registry.by_name(s, artist=q.artist, title=q.title, album=q.album, duration_s=q.duration_s,
+                                      isrc=q.isrc, user_id=user_id)
     if (track := await registry.by_ref(s, it.ref)) is not None:
         return track
     if src == "dz" and (cat := await remembered_track(it.ref)) is not None:
@@ -291,16 +309,13 @@ async def track_of(s: AsyncSession, it: ImportItem, user_id: int) -> Track | Non
 
 
 async def sync_playlists(s: AsyncSession, imp: Import) -> None:
-    """The playlists of the service become playlists of the Hub: every row stands in its place, in the service's
-    order and with the date it was added there. A row that was matched is its track — whether the library has its
-    file yet or not; a row that has no track yet has its place kept, and the track takes it when there is one. A row
-    the user left out («Пропустить») is the only one that is not there."""
+    """The playlists of the service become playlists of the Hub: every row is its track, in its place, in the
+    service's order and with the date it was added there — whether the library has its file yet or not, and whether
+    the catalog knows the song or not (`track_of`). A row not matched yet waits; one the user left out is not
+    there."""
     from app import playlists
-    from app.models import PlaylistItem, naive
+    from app.models import naive
     from app.playlists_mirror import enqueue_mirror
-
-    def added(it: ImportItem) -> datetime:
-        return naive(parse_time((it.raw_json or {}).get("liked_at"))) or utcnow()
 
     colls = (await s.execute(select(ImportCollection).where(
         ImportCollection.import_id == imp.id, ImportCollection.kind == "playlist",
@@ -308,24 +323,17 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
     for c in colls:
         items = list((await s.execute(select(ImportItem).where(ImportItem.collection_id == c.id)
                                       .order_by(ImportItem.position, ImportItem.id))).scalars())
-        want: list[tuple[ImportItem, int | None]] = []  # the rows in order, each with its track (None: none yet)
-        seen: set[int] = set()
+        want: list[int] = []
+        dates: dict[int, datetime] = {}
         for it in items:
-            if it.status == "skipped":
+            if it.status in ("skipped", "pending"):
                 continue
-            known = it.status not in ("pending", "not_found")
-            if known and it.track_id is None and (track := await track_of(s, it, imp.user_id)) is not None:
+            if it.track_id is None and (track := await track_of(s, it, imp.user_id)) is not None:
                 it.track_id = track.id
-            track_id = it.track_id if known else None
-            if track_id is None and it.status not in NO_TRACK_YET:
-                continue  # its track is gone from the Hub: nothing to wait for
-            if track_id is not None:
-                if track_id in seen:
-                    continue
-                seen.add(track_id)
-            want.append((it, track_id))
-        # what the playlist was given: a track by its id, a kept place by its row
-        given = [track_id if track_id is not None else f"row:{it.id}" for it, track_id in want]
+            if it.track_id is None or it.track_id in dates:
+                continue
+            want.append(it.track_id)
+            dates[it.track_id] = naive(parse_time((it.raw_json or {}).get("liked_at"))) or utcnow()
         p = await playlists.own(s, imp.user_id, c.playlist_id) if c.playlist_id else None
         if p is None:
             if c.given:
@@ -337,37 +345,15 @@ async def sync_playlists(s: AsyncSession, imp: Import) -> None:
                 continue
             p = await playlists.create(s, imp.user_id, c.title)
             c.playlist_id = p.id
-        elif given == list(c.given or []):
+        elif want == list(c.given or []):
             continue
-        rows = await playlists.places(s, p.id)
-        kept = {i.import_item_id: i for i in rows if i.track_id is None}
-        there = {i.track_id for i in rows if i.track_id is not None}
-        for it, track_id in want:
-            place = kept.pop(it.id, None)
-            if track_id is None:
-                if place is None:
-                    await playlists.keep_place(s, p, it.id, at=added(it))
-            elif place is not None and track_id not in there:
-                place.track_id, place.import_item_id = track_id, None  # the row has its track: the place is its
-                there.add(track_id)
-            else:
-                if place is not None:
-                    await s.delete(place)
-                if track_id not in there:
-                    s.add(PlaylistItem(playlist_id=p.id, track_id=track_id, position=len(rows) + len(there),
-                                       added_at=added(it)))
-                    there.add(track_id)
-        ours = {it.id for it in items}
-        for row_id, place in kept.items():
-            if row_id in ours:  # the row was left out, or turned out to be a track that is in the playlist
-                await s.delete(place)
-        await s.flush()
-        # the service's order for its rows; what the user put in by hand stays after them
-        first: dict[int | str, int] = {}
-        for i in await playlists.places(s, p.id):
-            first.setdefault(i.track_id if i.track_id is not None else f"row:{i.import_item_id}", i.id)
-        await playlists.reorder(s, p, [first[key] for key in given if key in first])
-        c.given = given
+        for track_id in want:
+            await playlists.add(s, p, [track_id], at=dates[track_id])
+        # the service's order for its tracks; what the user put in by hand stays after them
+        rows = await playlists.items(s, p.id)
+        first = {t.id: i.id for i, t in reversed(rows)}
+        await playlists.reorder(s, p, [first[t] for t in want if t in first])
+        c.given = want
         await enqueue_mirror(s, p.id)
     if colls:
         from app.lyrics.service import enqueue_scan_once

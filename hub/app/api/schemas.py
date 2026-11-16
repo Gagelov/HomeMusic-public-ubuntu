@@ -437,6 +437,8 @@ class TrackOut(CatalogTrack):
     library_track_id: int | None = None
     nd_song_id: str | None = None
     downloading: bool = False  # a download of it is under way (not counting the Hub's own quiet ones)
+    # known by its name alone: no file and no record of the catalog — nothing to play until it is given a file
+    unknown: bool = False
     # in a list: when the track was added to it (a playlist, the likes); else when it came into the library
     added_at: datetime | None = None
 
@@ -775,7 +777,6 @@ class PlaylistOut(BaseModel):
     name: str
     song_count: int = 0  # the tracks the library has a file of
     pending_count: int = 0  # the playlist's tracks it has no file of yet
-    missing_count: int = 0  # places kept for rows of a transfer that have no track yet
     duration_s: int = 0
     cover_art: str | None = None
     # the playlist's picture: the user's own, else the one Navidrome makes of its albums (add `&size=`)
@@ -873,7 +874,6 @@ class NdArtistPageOut(BaseModel):
 
 class NdLikedOut(BaseModel):
     songs: list[NdSongOut] = []
-    missing: list[ImportPlaceOut] = []  # likes an import brought of songs that have no track yet
     albums: list[NdAlbumOut] = []
     artists: list[NdArtistOut] = []
 
@@ -888,7 +888,6 @@ class NdHomeOut(BaseModel):
 
 class PlaylistPageOut(PlaylistOut):
     tracks: list[NdSongOut] = []  # every track in its place; one without a file has `owned` false
-    missing: list[ImportPlaceOut] = []  # the places kept for rows of a transfer that have no track yet
 
 
 class PlaylistAddIn(BaseModel):
@@ -1076,14 +1075,6 @@ class ImportItemOut(BaseModel):
     download_item_id: int | None = None
     download_status: str | None = None
     error: str | None = None
-
-
-class ImportPlaceOut(ImportItemOut):
-    """A place a playlist keeps for a row of a transfer that has no track yet: the row, and where it stands."""
-
-    import_id: int
-    index: int  # how many of the list's tracks stand before it
-    added_at: datetime | None = None
 
 
 class ImportItemsOut(BaseModel):

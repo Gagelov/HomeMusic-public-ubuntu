@@ -681,6 +681,7 @@ async def import_downloaded(item_id: int, user_id: int, q: TrackQuery, meta: dic
         explicit=meta.get("explicit") if meta.get("explicit") is not None else cand.explicit,
         deezer_track_id=meta.get("deezer_track_id"),
         ref=meta.get("track_ref") if not str(meta.get("track_ref") or "").startswith(("nd:", "file:")) else None,
+        track_id=meta.get("track_id"),  # a file chosen for a track known by its name alone: it is that track's
         deezer_album_id=meta.get("deezer_album_id"),
         upc=meta.get("upc"),
         cover=cover,

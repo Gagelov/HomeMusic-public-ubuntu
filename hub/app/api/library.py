@@ -373,6 +373,47 @@ async def trash_restore(trashed_id: int, user: User = Depends(current_user),
     return {"ok": True, "track_id": t.id}
 
 
+@router.post("/api/library/tracks/{track_id}/find-file")
+async def find_file(track_id: int, user: User = Depends(current_user),
+                    s: AsyncSession = Depends(get_session, scope="function")):
+    """A track there is nothing to play of — known by its name alone, no file: a visible download by its names. The
+    user picks the file on its page (`/api/downloads/{id}`), and the file is this track's: it stays where it stands
+    and plays from then on."""
+    from app.imports import apply
+    from app.jobs.queue import enqueue
+    from app.library.tracks import has_file
+    from app.models import DownloadBatch, Import, ImportItem
+    from app.providers.base import TrackQuery
+
+    track = await s.get(Track, track_id)
+    if track is None:
+        raise HTTPException(404, "Хаб не знает этот трек")
+    if await has_file(s, track.id):
+        raise HTTPException(400, "У трека уже есть файл")
+    # a transfer brought it: the transfer's row follows the download, as when the file is picked on its page
+    row = (await s.execute(
+        select(ImportItem, Import).join(Import, Import.id == ImportItem.import_id)
+        .where(Import.user_id == user.id, ImportItem.track_id == track.id, ImportItem.match == "not_found",
+               ImportItem.status.in_(("not_found", "failed")))
+        .order_by(ImportItem.id.desc()).limit(1))).first()
+    if row is not None:
+        dl = await apply.pick(s, row[1], row[0])
+    else:
+        batch = DownloadBatch(user_id=user.id, origin="hub", title=f"{track.artist} — {track.title}")
+        s.add(batch)
+        await s.flush()
+        q = TrackQuery(artist=track.artist, title=track.title, album=track.album, duration_s=track.duration_s,
+                       isrc=track.isrc)
+        dl = DownloadItem(batch_id=batch.id, user_id=user.id,
+                          query_json={"query": q.model_dump(), "meta": {"track_id": track.id}, "requested": True})
+        s.add(dl)
+        await s.flush()
+        await enqueue(s, "download_item", {"item_id": dl.id})
+    await s.commit()
+    notify()
+    return {"download_item_id": dl.id}
+
+
 @router.get("/api/library/tracks/{track_id}/keeping")
 async def track_keeping(track_id: int, user: User = Depends(current_user),
                         s: AsyncSession = Depends(get_session, scope="function")) -> dict:

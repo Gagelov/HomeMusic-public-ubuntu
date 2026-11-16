@@ -166,7 +166,7 @@ export function TrackRow({
   const playing = phase === 'playing' || waiting;
   const rowRef = useRef<HTMLDivElement>(null);
   // on screen: the Hub picks the file in the background, so a tap starts at once
-  useEffect(() => (rowRef.current && !track.owned ? watchOnScreen(rowRef.current, track.ref) : undefined), [track.ref, track.owned]);
+  useEffect(() => (rowRef.current && !track.owned && !track.unknown ? watchOnScreen(rowRef.current, track.ref) : undefined), [track.ref, track.owned, track.unknown]);
   const download = async () => {
     setBusy(true);
     await downloadRef(track.ref);
@@ -243,11 +243,12 @@ export function TrackRow({
     key: tagKey(track),
     library_track_id: track.library_track_id,
     has_file: track.owned,
+    unknown: track.unknown,
     artist_ref: track.artist_ref,
     album_ref: track.album_ref,
     nd_album_id: track.nd_album_id,
     nd_artist_id: track.nd_artist_id,
-    listen: listenTrack(track),
+    listen: track.unknown ? undefined : listenTrack(track),
   };
   // picking several rows to act on together (`lib/selection.ts`)
   const selected = useSelected(track.ref);
@@ -275,10 +276,14 @@ export function TrackRow({
     : { icon: 'check', label: 'Выбрать', hint: 'Отметьте несколько треков, чтобы отправить их разом', onClick: () => toggleSelected(asSel(track)) };
   // a browser draws its own rows: a table on a computer, a row that is swiped aside on a phone
   if (STANDALONE) {
-    const action = !track.owned ? listenHere : play;
+    // known by its name alone — no file, no record of the catalog: the row is greyed and nothing of it plays; it is
+    // liked, put into playlists and tagged like any other, and its menu offers to choose a file for it
+    const unknown = !!track.unknown;
+    const grey = unknown && '[&_img]:opacity-40 [&_img]:grayscale';
+    const action = unknown ? undefined : !track.owned ? listenHere : play;
     const toAlbum = link && track.owned && track.album_ref ? `/album/${enc(track.album_ref)}` : null;
-    const downloading = track.downloading || dl === 'queued';
-    const titleColor = current ? 'text-accent' : 'text-fg';
+    const downloading = !unknown && (track.downloading || dl === 'queued');
+    const titleColor = current ? 'text-accent' : unknown ? 'text-dim' : 'text-fg';
     const playMark = waiting ? <Spinner size={18} /> : <Icon name={playing ? 'pause' : 'play'} size={18} filled />;
     const lead = (hover: boolean): ReactNode =>
       number !== undefined && showCover ? (
@@ -320,7 +325,7 @@ export function TrackRow({
             </button>
           )}
         </span>
-        <span className="flex items-center gap-1.5 text-[13px] text-muted">
+        <span className={cx('flex items-center gap-1.5 text-[13px]', unknown ? 'text-dim' : 'text-muted')}>
           <KeptMark refId={track.ref} />
           {track.explicit && <ExplicitBadge />}
           <span className="truncate">{sub}</span>
@@ -378,11 +383,12 @@ export function TrackRow({
           }}
           data-track-row
           aria-selected={selected}
-          className={cx('group/track mx-2 grid min-h-14 items-center gap-3 rounded-lg px-2 transition-colors', unreachable && 'opacity-40', selected ? 'bg-accent/15 hover:bg-accent/20' : dragMark ? 'bg-accent/10' : 'hover:bg-fg/5 focus-within:bg-fg/5')}
+          className={cx('group/track mx-2 grid min-h-14 items-center gap-3 rounded-lg px-2 transition-colors', unreachable && 'opacity-40', grey, selected ? 'bg-accent/15 hover:bg-accent/20' : dragMark ? 'bg-accent/10' : 'hover:bg-fg/5 focus-within:bg-fg/5')}
           style={{ gridTemplateColumns: trackGrid(rowNumber !== undefined, album, cols.duration, added, tagCols, plays, cols.file) }}
         >
           {/* the number is the queue button: «в очередь» on hovering the row, green once the track is queued */}
-          {rowNumber !== undefined && (
+          {rowNumber !== undefined && unknown && <span className="flex h-10 w-8 items-center justify-center text-sm tabular-nums text-dim">{rowNumber}</span>}
+          {rowNumber !== undefined && !unknown && (
             <span data-row-actions className="contents" onMouseDown={(e) => e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey && beginDragAction('queue', dragList(), asSel(track))}>
               <QueueButton
                 track={menuTrack.listen as ListenTrack}
@@ -461,7 +467,7 @@ export function TrackRow({
             </span>
           )}
           <div data-row-actions className="flex h-11 items-center justify-end">
-            {track.owned || dl === 'done' ? null : downloading ? (
+            {track.owned || dl === 'done' || unknown ? null : downloading ? (
               <span className="flex h-11 w-9 items-center justify-center text-info" title="Скачивается"><Spinner size={14} /></span>
             ) : (
               <IconButton icon="download" size={20} label="Скачать трек" onClick={download} busy={busy} className={cx('!w-9 text-muted hover:text-fg', !busy && shown)} />
@@ -473,7 +479,7 @@ export function TrackRow({
               </span>
             )}
             {/* a list without numbers keeps «в очередь» here */}
-            {rowNumber === undefined && (
+            {rowNumber === undefined && !unknown && (
               <span className="contents" onMouseDown={(e) => e.button === 0 && beginDragAction('queue', dragList(), asSel(track))}>
                 <QueueButton track={menuTrack.listen as ListenTrack} className={cx('!w-9', dragMark === 'queue' ? cx(marked, '!text-accent') : dragMark === 'unqueue' && cx(marked, '!text-muted'))} />
               </span>
@@ -487,7 +493,7 @@ export function TrackRow({
               <SaveButton songId={likeTarget.songId} refId={track.ref} listKey={tagKey(track)} title={track.title} data={likeTarget.data} className={cx('!w-9', dragMark === 'like' || dragMark === 'lists' ? cx(marked, '!text-accent') : !kept && shown)} />
             </span>
           </div>
-          {cols.duration && <span className="text-right text-xs tabular-nums text-dim">{fmtDuration(track.duration_s)}</span>}
+          {cols.duration && <span className="text-right text-xs tabular-nums text-dim">{unknown ? '' : fmtDuration(track.duration_s)}</span>}
           {/* ⋯ held and dragged over other rows picks them all; a row that is picked wears a tick in its place */}
           <span
             data-row-actions
@@ -510,17 +516,17 @@ export function TrackRow({
     }
 
     const extras: MenuExtra[] = [
-      ...(!track.owned && dl !== 'done' && !downloading ? [{ icon: 'download' as const, label: 'Скачать', onClick: () => void download() }] : []),
+      ...(!track.owned && dl !== 'done' && !downloading && !unknown ? [{ icon: 'download' as const, label: 'Скачать', onClick: () => void download() }] : []),
       selectExtra,
       ...(menuExtra ?? []),
     ];
     return (
       <div ref={rowRef} onClickCapture={onPick} aria-selected={selected}>
         <SwipeRow
-          right={{ icon: 'queue', onAction: () => { addToQueue([menuTrack.listen as ListenTrack]); toast(`В очереди: «${track.title}»`, 'success'); } }}
+          right={{ icon: 'queue', onAction: () => { if (unknown) return void toast('У трека нет файла: выберите его в меню', 'info'); addToQueue([menuTrack.listen as ListenTrack]); toast(`В очереди: «${track.title}»`, 'success'); } }}
           left={{ icon: 'plus', armedIcon: 'check', onAction: () => setPicking(true) }}
         >
-          <div className={cx('flex min-h-16 items-center gap-1 pl-4 pr-1', selected && 'bg-accent/15', unreachable && 'opacity-40')}>
+          <div className={cx('flex min-h-16 items-center gap-1 pl-4 pr-1', selected && 'bg-accent/15', unreachable && 'opacity-40', grey)}>
             {tap('flex min-w-0 flex-1 items-center gap-3 py-2 text-left', (
               <>
                 {lead(false)}

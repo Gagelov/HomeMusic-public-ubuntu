@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import ImportAuthIn, ImportIn, ImportItemsOut, ImportOut, ImportPickOut, ImportStartIn
@@ -14,7 +14,7 @@ from app.imports import apply, core
 from app.imports.sources import spotify_csv
 from app.imports.sources.base import SourceError
 from app.jobs.queue import PRIORITY_IMPORT, PermanentError, enqueue, notify
-from app.models import Import, ImportCollection, ImportItem, PlaylistItem, Track, User
+from app.models import DownloadItem, Import, ImportCollection, ImportItem, Track, User
 
 router = APIRouter(prefix="/api/imports", tags=["imports"])
 
@@ -113,7 +113,9 @@ async def items(import_id: int, collection_id: int | None = None, status: str | 
     track_ids = {it.track_id for it, _ in rows if it.track_id}
     songs = dict((await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids)))).all()) \
         if track_ids else {}
-    dls = await core.downloads_of(s, [it for it, _ in rows])
+    dl_ids = {it.download_item_id for it, _ in rows if it.download_item_id}
+    dls = {d.id: d for d in (await s.execute(select(DownloadItem).where(DownloadItem.id.in_(dl_ids)))).scalars()} \
+        if dl_ids else {}
     return ImportItemsOut(total=total, items=[
         core.item_out(it, kind, songs.get(it.track_id), dls.get(it.download_item_id)) for it, kind in rows])
 
@@ -227,11 +229,7 @@ async def pick(item_id: int, user: User = Depends(current_user),
     it, coll, imp = await _own_item(s, user, item_id)
     if coll.kind not in ("likes", "playlist"):
         raise HTTPException(400, "Выбрать файл можно только для трека")
-    raw = it.raw_json or {}
-    qj = {"query": apply.track_query(raw).model_dump(), "meta": {}, "import": {"id": imp.id, "item": it.id},
-          "requested": True}  # a like gets its ♥ from the import, in order (`apply.sync_likes`)
-    dl = await apply.new_download(s, imp, qj, 0)
-    it.download_item_id, it.status, it.ref = dl.id, "queued", None
+    dl = await apply.pick(s, imp, it)
     await s.commit()
     notify()
     return ImportPickOut(download_item_id=dl.id)
@@ -240,12 +238,17 @@ async def pick(item_id: int, user: User = Depends(current_user),
 @router.post("/items/{item_id}/skip")
 async def skip(item_id: int, user: User = Depends(current_user),
                s: AsyncSession = Depends(get_session, scope="function")):
-    """Leave this row out (it is not moved): the places kept for it in playlists and in «Любимое» go."""
-    it, _, imp = await _own_item(s, user, item_id)
+    """Leave this row out (it is not moved). A track known by its name alone, which this row brought, leaves the
+    playlist the row brought it into: there was nothing of it but its place there."""
+    from app import playlists
+    from app.library.tracks import has_file
+
+    it, coll, _ = await _own_item(s, user, item_id)
     it.status = "skipped"
-    gone = (await s.execute(delete(PlaylistItem).where(PlaylistItem.import_item_id == it.id)
-                            .returning(PlaylistItem.playlist_id))).scalars().all()
-    await s.commit()
-    for playlist_id in set(gone):
-        bus.publish(user.id, "library", {"kind": "playlist", "playlist_id": str(playlist_id)})
+    track = await s.get(Track, it.track_id) if it.track_id else None
+    p = await playlists.own(s, user.id, coll.playlist_id) if coll.playlist_id else None
+    if track is not None and p is not None and not track.ref and not await has_file(s, track.id):
+        await playlists.remove_tracks(s, p, [track.id])
+        await s.commit()
+        bus.publish(user.id, "library", {"kind": "playlist", "playlist_id": str(p.id)})
     return {"ok": True}

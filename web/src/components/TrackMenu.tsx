@@ -10,6 +10,8 @@ import { addToQueue, next, stopListening, useListen, type ListenTrack } from '..
 import { useInPlaylists } from '../lib/inPlaylists';
 import { canPlayAll } from '../lib/player';
 import { enc, navigate } from '../lib/router';
+import { api } from '../api/client';
+import { attempt } from '../lib/ui';
 import { useSession } from '../lib/session';
 import { openShare } from '../lib/shareTrack';
 import { useLiked } from '../lib/stars';
@@ -29,6 +31,8 @@ export interface MenuTrack {
   library_track_id?: number | null;
   /** the library has a file of it: «Удалить файл» is offered */
   has_file?: boolean;
+  /** known by its name alone — no file, no record of the catalog: «Выбрать файл» is offered, what plays is not */
+  unknown?: boolean;
   artist_ref?: string | null;
   album_ref?: string | null;
   /** the song's Navidrome album and artist (the library pages of a browser) */
@@ -119,6 +123,17 @@ function TrackMenu({ track, extra, inPlayer, lean, noTags, onClose }: { track: M
   return (
     <Sheet open onClose={onClose} title={`${track.artist} — ${track.title}`}>
       <div className="-mx-4 -my-3 flex flex-col py-1">
+        {track.unknown && track.library_track_id != null && (
+          <MenuItem
+            icon="search"
+            label="Выбрать файл"
+            hint="Хаб поищет по источникам, а вы выберете подходящий — трек останется на своём месте"
+            onClick={() => {
+              onClose();
+              void attempt(() => api.trackFindFile(track.library_track_id as number)).then((r) => r && navigate(`/downloads/${r.download_item_id}`));
+            }}
+          />
+        )}
         {queueable && (
           <MenuItem
             icon="queue"
@@ -150,7 +165,7 @@ function TrackMenu({ track, extra, inPlayer, lean, noTags, onClose }: { track: M
             }}
           />
         )}
-        {!lean && (track.nd_song_id || track.ref) && (
+        {!lean && !track.unknown && (track.nd_song_id || track.ref) && (
           <MenuItem
             icon="share"
             label="Поделиться"
@@ -197,7 +212,7 @@ function TrackMenu({ track, extra, inPlayer, lean, noTags, onClose }: { track: M
         )}
         {albumTo && <MenuItem icon="disc" label="Перейти к альбому" onClick={() => go(albumTo)} />}
         {artistTo && <MenuItem icon="user" label="Перейти к исполнителю" hint={track.artist} onClick={() => go(artistTo)} />}
-        {canWave() && trackWave && (
+        {canWave() && trackWave && !track.unknown && (
           <MenuItem
             icon="wave"
             label="Волна по треку"

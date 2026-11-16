@@ -62,7 +62,6 @@ async def _own(s: AsyncSession, user: User, playlist_id: str, *, change: bool = 
 
 async def _outs(s: AsyncSession, rows: list[Playlist]) -> list[PlaylistOut]:
     numbers = await playlists.counts(s, [p.id for p in rows])
-    kept = await playlists.missing_counts(s, [p.id for p in rows])
     keys = dict((await s.execute(select(PlaylistCover.playlist_id, PlaylistCover.key).where(
         PlaylistCover.playlist_id.in_([p.id for p in rows])))).all()) if rows else {}
     out = []
@@ -75,8 +74,7 @@ async def _outs(s: AsyncSession, rows: list[Playlist]) -> list[PlaylistOut]:
         else:
             cover = None
         out.append(PlaylistOut(id=str(p.id), name=p.name, song_count=filed, pending_count=total - filed,
-                               missing_count=kept.get(p.id, 0), duration_s=seconds, cover_art=p.nd_cover,
-                               cover_url=cover))
+                               duration_s=seconds, cover_art=p.nd_cover, cover_url=cover))
     return out
 
 
@@ -113,7 +111,7 @@ def track_without_file(t: Track, *, downloading: bool = False) -> NdSongOut:
         album_ref=c.get("album_ref"), album_title=t.album, album_artist=t.album_artist, duration_s=t.duration_s,
         track_no=t.track_no, disc_no=t.disc_no, isrc=t.isrc, explicit=t.explicit, cover_url=c.get("cover_url"),
         cover_small_url=c.get("cover_small_url") or c.get("cover_url"), owned=False, library_track_id=t.id,
-        downloading=downloading)
+        downloading=downloading, unknown=not t.ref)
 
 
 def track_with_file(t: Track) -> NdSongOut:
@@ -142,6 +140,16 @@ async def tracks_out(s: AsyncSession, user: User, rows: list[Track]) -> list[NdS
     drawn = {x.nd_song_id: x for x in await songs_out(s, known)}
     out = [drawn.get(t.nd_song_id) or (track_with_file(t) if t.path else track_without_file(t)) for t in rows]
     await with_files(s, out)
+    # a track known by its name alone has the picture the service showed of it, where a transfer brought it
+    nameless = [x.library_track_id for x in out if x.unknown]
+    if nameless:
+        from app.models import ImportItem
+
+        covers = {track_id: (raw or {}).get("cover_url") for track_id, raw in (await s.execute(
+            select(ImportItem.track_id, ImportItem.raw_json).where(ImportItem.track_id.in_(nameless)))).all()}
+        for x in out:
+            if x.unknown and covers.get(x.library_track_id):
+                x.cover_url = x.cover_small_url = covers[x.library_track_id]
     return out
 
 
@@ -247,10 +255,7 @@ async def get_playlist(playlist_id: str, user: User = Depends(current_user),
     tracks = await tracks_out(s, user, [t for _, t in rows])
     for (item, _), t in zip(rows, tracks, strict=True):
         t.added_at = item.added_at
-    from app.imports.core import places_out
-
-    return PlaylistPageOut(**(await _out(s, p)).model_dump(), tracks=tracks,
-                           missing=await places_out(s, await playlists.missing(s, p.id)))
+    return PlaylistPageOut(**(await _out(s, p)).model_dump(), tracks=tracks)
 
 
 @router.post("/{playlist_id}/remove")

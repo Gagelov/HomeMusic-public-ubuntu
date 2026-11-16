@@ -2,8 +2,7 @@ import { Children, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import { imageUrl, retryImage } from '../lib/img';
 import { ArtistPage } from './Artist';
 import { api } from '../api/client';
-import type { ImportPlaceOut, NdAlbumOut, NdArtistOut, NdSongOut, TrackOut } from '../api/types';
-import { KeptPlaceRow } from './Import';
+import type { NdAlbumOut, NdArtistOut, NdSongOut, TrackOut } from '../api/types';
 import { playAll, TrackRow, TrackTableHeader, type ListSort } from '../components/catalog';
 import { Icon } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
@@ -138,9 +137,7 @@ export function useShown(tracks: readonly TrackOut[], found: Found[] | null, fil
 /** The tracks as the page shows them: what ▶ of the page plays. */
 export const inOrder = <T extends TrackOut>(tracks: readonly T[], sort: ListSort): readonly T[] => (sort ? byAdded(tracks.map((t, i) => ({ t, i })), sort).map((r) => r.t) : tracks);
 
-/** `missing`: the places the list keeps for rows of a transfer that have no track yet — drawn among the tracks, each
- * in its place, while the list is in its own order and whole (a search, a filter or a sorting shows tracks only). */
-export function SongList<T extends TrackOut>({ tracks, extra, found, sort, onSort, period, missing, onMissingChange }: { period?: { label: string; of: Record<string, number> }; tracks: readonly T[]; extra?: (t: T, i: number) => Parameters<typeof TrackRow>[0]['menuExtra']; found?: Found[] | null; sort: ListSort; onSort: (next: ListSort) => void; missing?: readonly ImportPlaceOut[]; onMissingChange?: () => void }) {
+export function SongList<T extends TrackOut>({ tracks, extra, found, sort, onSort, period }: { period?: { label: string; of: Record<string, number> }; tracks: readonly T[]; extra?: (t: T, i: number) => Parameters<typeof TrackRow>[0]['menuExtra']; found?: Found[] | null; sort: ListSort; onSort: (next: ListSort) => void }) {
   const setSort = onSort;
   const dated = useMemo(() => tracks.some((t) => t.added_at), [tracks]);
   const counts = usePlayCounts();
@@ -148,32 +145,23 @@ export function SongList<T extends TrackOut>({ tracks, extra, found, sort, onSor
     const list = found ? found.map((f) => ({ t: tracks[f.index], i: f.index, line: f.line })) : tracks.map((t, i) => ({ t, i, line: undefined as string | undefined }));
     return byAdded(list, sort);
   }, [tracks, found, sort, counts]);
-  const queue = found || sort ? rows.map((r) => r.t) : tracks;
-  // the kept places by the track each stands before (past the last track: at the end)
-  const kept = useMemo(() => {
-    const at = new Map<number, ImportPlaceOut[]>();
-    if (!found && !sort) for (const m of missing ?? []) at.set(Math.min(m.index, tracks.length), [...(at.get(Math.min(m.index, tracks.length)) ?? []), m]);
-    return at;
-  }, [missing, tracks, found, sort]);
+  // what plays on from a row: a track known by its name alone has nothing to play
+  const queue = useMemo(() => (found || sort ? rows.map((r) => r.t) : tracks).filter((t) => !t.unknown), [rows, tracks, found, sort]);
   if (found && !rows.length) return <p className="px-4 py-10 text-center text-sm text-muted">Ничего не подходит — ни под поиск, ни под выбранные теги.</p>;
-  let n = 0; // the number of the row among the tracks and the kept places together
-  const places = (i: number) => (kept.get(i) ?? []).map((m) => <li key={`kept:${m.id}`}><KeptPlaceRow it={m} n={++n} onChange={() => onMissingChange?.()} /></li>);
   return (
     <ul>
       {rows.length > 0 && <li><TrackTableHeader numbered album tags plays playsLabel={period?.label} added={dated} sort={sort} onSort={setSort} /></li>}
-      {rows.flatMap(({ t, i, line }, at) => [
-        ...places(i),
+      {rows.map(({ t, i, line }, at) => (
         <li key={`${t.ref}:${i}`}>
-          <TrackRow track={t} queue={queue} link={false} showAlbum showTags showPlays playsOf={period ? (period.of[t.nd_song_id ?? ''] ?? 0) : undefined} showAdded={dated} menuExtra={extra?.(t, i)} index={sort ? at + 1 : found ? i + 1 : ++n} />
+          <TrackRow track={t} queue={queue} link={false} showAlbum showTags showPlays playsOf={period ? (period.of[t.nd_song_id ?? ''] ?? 0) : undefined} showAdded={dated} menuExtra={extra?.(t, i)} index={sort ? at + 1 : i + 1} />
           {line !== undefined && (
             <div className="-mt-1 flex items-center gap-1.5 truncate pb-2 pl-16 pr-4 text-xs text-muted">
               <Icon name="lyrics" size={13} className="shrink-0 text-accent" />
               <span className="truncate">{line ? `«${line}»` : 'найдено в тексте'}</span>
             </div>
           )}
-        </li>,
-      ])}
-      {places(tracks.length)}
+        </li>
+      ))}
     </ul>
   );
 }
@@ -230,11 +218,13 @@ export function Hero({ cover, round, title, sub, right, kicker, art, tracks, con
   );
 }
 
-/** «3 не найдено» for the head of a list: the kept places the user has something to decide about. */
-function notFound(missing: readonly ImportPlaceOut[]): string | null {
-  const n = missing.filter((m) => m.status !== 'pending' && m.status !== 'queued').length;
-  return n ? `${n} не ${plural(n, ['найден', 'найдено', 'найдено'])}` : null;
+/** «3 не найдено» for the head of a list: its tracks known by their names alone — no file, no record of the catalog. */
+function notFound(tracks: readonly TrackOut[]): string | null {
+    const n = tracks.filter((t) => t.unknown).length;
+    return n ? `${n} не ${plural(n, ['найден', 'найдено', 'найдено'])}` : null;
 }
+
+const plays = <T extends TrackOut>(tracks: readonly T[]): T[] => tracks.filter((t) => !t.unknown);
 
 // --- pages -------------------------------------------------------------------------------------------------
 
@@ -268,8 +258,6 @@ export function LikedPage() {
     return all.filter((t) => (!!byRef && (t.artist_ref === byRef || !!t.artist_refs?.includes(byRef))) || (t.artists?.length ? t.artists : [t.artist]).some((a) => a.trim().toLocaleLowerCase('ru') === want));
   }, [res.data, by, byRef]);
   const length = useMemo(() => songs.reduce((sum, t) => sum + (t.duration_s ?? 0), 0), [songs]);
-  // likes a transfer brought of songs the catalog does not know: each in its place, waiting for the user's word
-  const missing = useMemo(() => (by ? [] : (res.data?.missing ?? [])), [res.data, by]);
   const title = by ? `Вам нравится · ${by}` : 'Любимое';
   const back = by ? (byRef ? `/artist/${enc(byRef)}` : '/library') : '/library';
   const search = useListSearch(songs);
@@ -278,12 +266,12 @@ export function LikedPage() {
   const [saving, setSaving] = useState(false);
   const shown = useShown(songs, search.found, filter);
   const songIds = useMemo(() => songs.map(tagKey), [songs]);
-  const playing = inOrder(shown ? shown.map((f) => songs[f.index]) : songs, sort);
+  const playing = plays(inOrder(shown ? shown.map((f) => songs[f.index]) : songs, sort));
 
   return (
     <div>
       {saving && <SaveSelection scope="liked" filter={filter} onClose={() => setSaving(false)} onSaved={(r) => navigate(`/selection/${r.id}`)} />}
-      <ListBar title={title} back={back} tracks={playing} context="liked" offline={by ? undefined : { key: 'liked', to: '/liked', tracks: songs }} search={songs.length ? search : undefined} tags={songs.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : songs.length } : undefined} />
+      <ListBar title={title} back={back} tracks={playing} context="liked" offline={by ? undefined : { key: 'liked', to: '/liked', tracks: plays(songs) }} search={songs.length ? search : undefined} tags={songs.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : songs.length } : undefined} />
       {res.data && !search.alone && (
         <Hero
           kicker={by ? 'Из «Любимого»' : 'Плейлист'}
@@ -293,7 +281,7 @@ export function LikedPage() {
               <Icon name="heart" size={84} filled />
             </div>
           }
-          sub={[tracksWord(songs.length + missing.length), length ? fmtLength(length) : null, notFound(missing)].filter(Boolean).join(' · ')}
+          sub={[tracksWord(songs.length), length ? fmtLength(length) : null, notFound(songs)].filter(Boolean).join(' · ')}
           tracks={playing}
           context="liked"
         />
@@ -302,12 +290,12 @@ export function LikedPage() {
         res.data ? <SkeletonRows /> : <HeroSkeleton />
       ) : res.error ? (
         <ErrorState text={res.error} onRetry={() => res.reload()} />
-      ) : !songs.length && !missing.length ? (
+      ) : !songs.length ? (
         <Empty icon="heart" title="Пока ничего" text="Нажмите «+» у трека — он окажется здесь." />
       ) : (
         <>
           <TagFilterChips filter={filter} onChange={setFilter} count={shown ? shown.length : songs.length} />
-          <SongList tracks={songs} found={shown} sort={sort} onSort={setSort} missing={missing} onMissingChange={() => res.reload(true)} />
+          <SongList tracks={songs} found={shown} sort={sort} onSort={setSort} />
         </>
       )}
     </div>
@@ -409,8 +397,6 @@ export function PlaylistPage({ id }: { id: string }) {
   useSmartPage(`playlist:${id}`, p?.name ?? null);
   // the playlist is the Hub's: every track stands in its place, whether the library has its file yet or not
   const all = useMemo(() => p?.tracks ?? [], [p]);
-  // a row of a transfer that has no track yet has its place kept: the playlist is whole, and such a row waits there
-  const missing = useMemo(() => p?.missing ?? [], [p]);
   const search = useListSearch(all);
   const [sort, setSort] = useState<ListSort>(null);
   const [viewing, setViewing] = useState(false);
@@ -421,7 +407,7 @@ export function PlaylistPage({ id }: { id: string }) {
   const closeCover = useCallback(() => setViewing(false), []);
   // its name or its picture changed (the playlist's menu, the picture's window), or it is gone: the Hub says so
   useHubEvent('library', () => res.reload(true));
-  useHubEvent('import', () => res.reload(true)); // a transfer settled its playlists: a kept place may have its track now
+  useHubEvent('import', () => res.reload(true)); // a transfer settled its playlists
 
   const remove = async (i: number, t: NdSongOut) => {
     if (await attempt(() => api.removeFromPlaylist(id, [i]), `«${t.title}» убран из плейлиста`))
@@ -431,25 +417,25 @@ export function PlaylistPage({ id }: { id: string }) {
   if (res.loading && !p) return (<><PageHeader hero title="Плейлист" back="/library" /><HeroSkeleton /></>);
   if (!p) return (<><PageHeader hero title="Плейлист" back="/library" /><ErrorState text={res.error ?? 'Плейлист не найден'} onRetry={() => res.reload()} /></>);
   const cover = p.cover_url ? `${p.cover_url}&size=600` : p.tracks[0]?.cover_url;
-  const playing = inOrder(shown ? shown.map((f) => all[f.index]) : all, sort);
+  const playing = plays(inOrder(shown ? shown.map((f) => all[f.index]) : all, sort));
   return (
     <div>
-      <ListBar title={p.name} back="/library" tracks={playing} context="playlist" offline={{ key: `playlist:${id}`, to: `/playlist/${id}`, tracks: all }} search={all.length ? search : undefined} tags={all.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : all.length } : undefined} />
+      <ListBar title={p.name} back="/library" tracks={playing} context="playlist" offline={{ key: `playlist:${id}`, to: `/playlist/${id}`, tracks: plays(all) }} search={all.length ? search : undefined} tags={all.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : all.length } : undefined} />
       {viewing && <CoverView src={cover} title={p.name} playlistId={id} own={ownCover(p.cover_url)} onClose={closeCover} />}
       {!search.alone && <Hero
         kicker="Плейлист"
         onCover={() => setViewing(true)}
         cover={cover}
         title={p.name}
-        sub={[tracksWord(all.length + missing.length), p.duration_s ? fmtLength(p.duration_s) : null, notFound(missing)].filter(Boolean).join(' · ')}
+        sub={[tracksWord(all.length), p.duration_s ? fmtLength(p.duration_s) : null, notFound(all)].filter(Boolean).join(' · ')}
         tracks={playing}
         context="playlist"
       />}
-      {all.length || missing.length ? (
+      {all.length ? (
         <>
           {saving && <SaveSelection scope={`playlist:${id}`} filter={filter} onClose={() => setSaving(false)} onSaved={(r) => navigate(`/selection/${r.id}`)} />}
           <TagFilterChips filter={filter} onChange={setFilter} count={shown ? shown.length : all.length} />
-          <SongList tracks={all} found={shown} sort={sort} onSort={setSort} missing={missing} onMissingChange={() => res.reload(true)} extra={(t, i) => [{ icon: 'x', label: 'Убрать из плейлиста', onClick: () => void remove(i, t) }]} />
+          <SongList tracks={all} found={shown} sort={sort} onSort={setSort} extra={(t, i) => [{ icon: 'x', label: 'Убрать из плейлиста', onClick: () => void remove(i, t) }]} />
         </>
       ) : (
         <Empty icon="playlist" title="Плейлист пуст" text="Добавляйте треки через ⋯ → «Добавить в плейлист»." />

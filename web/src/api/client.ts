@@ -636,6 +636,8 @@ export const api = {
   importForgetToken: (id: number) => request<ImportOut>('DELETE', `/api/imports/${id}/token`),
   importCancel: (id: number) => request<ImportOut>('POST', `/api/imports/${id}/cancel`),
   importDelete: (id: number) => request<OkOut>('DELETE', `/api/imports/${id}`),
+  /** a track there is nothing to play of: a download by its names, where the user picks the file — the track's own */
+  trackFindFile: (trackId: number) => request<{ download_item_id: number }>('POST', `/api/library/tracks/${trackId}/find-file`),
   importPick: (itemId: number) => request<{ download_item_id: number }>('POST', `/api/imports/items/${itemId}/pick`),
   importSkip: (itemId: number) => request<OkOut>('POST', `/api/imports/items/${itemId}/skip`),
 

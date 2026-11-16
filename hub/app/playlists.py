@@ -1,11 +1,6 @@
 """Playlists (ARCHITECTURE.md): the Hub's own. A playlist holds tracks — with a file or without one, each in its
 place — and keeps when each was added. «Любимое» is the playlist of `kind` "liked", one per user.
 
-A place may also be kept for a row of a transfer that has no track yet (`keep_place`, `missing`): a playlist
-brought from another service is whole from the start, and what the catalog does not know waits in its place for
-the user to say what it is. Everything that plays, counts or mirrors a playlist goes by its tracks and does not
-see such places.
-
 Everything here is the Hub's database only. What Navidrome and the apps that talk to it see is a mirror made
 elsewhere; nothing below waits for it.
 """
@@ -90,48 +85,8 @@ async def items(s: AsyncSession, playlist_id: int) -> list[tuple[PlaylistItem, T
 
 
 async def track_ids(s: AsyncSession, playlist_id: int) -> list[int]:
-    return list((await s.execute(select(PlaylistItem.track_id).where(
-        PlaylistItem.playlist_id == playlist_id, PlaylistItem.track_id.is_not(None))
-        .order_by(PlaylistItem.position, PlaylistItem.id))).scalars())
-
-
-async def places(s: AsyncSession, playlist_id: int) -> list[PlaylistItem]:
-    """Every place of the playlist in its order: the tracks' and the ones kept for rows of a transfer."""
-    return list((await s.execute(select(PlaylistItem).where(PlaylistItem.playlist_id == playlist_id)
+    return list((await s.execute(select(PlaylistItem.track_id).where(PlaylistItem.playlist_id == playlist_id)
                                  .order_by(PlaylistItem.position, PlaylistItem.id))).scalars())
-
-
-async def missing(s: AsyncSession, playlist_id: int) -> list[tuple[PlaylistItem, int]]:
-    """The places kept for rows of a transfer, each with how many tracks stand before it."""
-    out, before = [], 0
-    for place in await places(s, playlist_id):
-        if place.track_id is None:
-            out.append((place, before))
-        else:
-            before += 1
-    return out
-
-
-async def missing_counts(s: AsyncSession, playlist_ids: Iterable[int]) -> dict[int, int]:
-    ids = list(playlist_ids)
-    if not ids:
-        return {}
-    return dict((await s.execute(
-        select(PlaylistItem.playlist_id, func.count(PlaylistItem.id))
-        .where(PlaylistItem.playlist_id.in_(ids), PlaylistItem.track_id.is_(None))
-        .group_by(PlaylistItem.playlist_id))).all())
-
-
-async def keep_place(s: AsyncSession, p: Playlist, import_item_id: int, *, at: datetime | None = None) -> PlaylistItem:
-    """A place after the last one, kept for a row of a transfer that has no track yet."""
-    edge = (await s.execute(select(func.max(PlaylistItem.position))
-                            .where(PlaylistItem.playlist_id == p.id))).scalar_one_or_none()
-    place = PlaylistItem(playlist_id=p.id, import_item_id=import_item_id, position=0 if edge is None else edge + 1,
-                         added_at=at or utcnow())
-    s.add(place)
-    p.updated_at = utcnow()
-    await s.flush()
-    return place
 
 
 async def add(s: AsyncSession, p: Playlist, tracks: Iterable[int], *, at: datetime | None = None,
@@ -179,8 +134,8 @@ async def remove_tracks(s: AsyncSession, p: Playlist, tracks: Iterable[int]) -> 
 
 
 async def reorder(s: AsyncSession, p: Playlist, item_ids: list[int]) -> None:
-    """The playlist in a new order: the places named first, in that order, then the rest as they stood."""
-    rows = {i.id: i for i in await places(s, p.id)}
+    """The playlist in a new order: the items named first, in that order, then the rest as they stood."""
+    rows = {i.id: i for i, _ in await items(s, p.id)}
     order = [i for i in dict.fromkeys(item_ids) if i in rows] + [i for i in rows if i not in set(item_ids)]
     for position, item_id in enumerate(order):
         rows[item_id].position = position
@@ -208,6 +163,5 @@ async def kept(s: AsyncSession, user_id: int) -> tuple[set[int], set[int]]:
     track row goes by."""
     rows = (await s.execute(
         select(Playlist.kind, PlaylistItem.track_id).join(Playlist, Playlist.id == PlaylistItem.playlist_id)
-        .where(Playlist.user_id == user_id, Playlist.kind.in_((USER, LIKED)), PlaylistItem.track_id.is_not(None))
-        .distinct())).all()
+        .where(Playlist.user_id == user_id, Playlist.kind.in_((USER, LIKED))).distinct())).all()
     return {t for kind, t in rows if kind == LIKED}, {t for kind, t in rows if kind == USER}

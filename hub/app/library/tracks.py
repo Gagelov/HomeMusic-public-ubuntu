@@ -55,6 +55,41 @@ def _names(c: CatalogTrack) -> dict:
         fingerprint=fingerprint(c.artist, title))
 
 
+async def _unnamed(s: AsyncSession, *, artist: str, title: str, duration_s: int | None, isrc: str | None) -> Track | None:
+    """A track the Hub has under no catalog name that is this very song: the same ISRC, or the same names and
+    length."""
+    unnamed = select(Track).where(Track.ref.is_(None)).order_by(Track.id.desc())
+    if isrc:
+        track = (await s.execute(unnamed.where(Track.isrc == isrc.upper()).limit(1))).scalar_one_or_none()
+        if track is not None:
+            return track
+    for t in (await s.execute(unnamed.where(Track.fingerprint == fingerprint(artist, title)))).scalars():
+        if _same_length(t.duration_s, duration_s):
+            return t
+    return None
+
+
+async def by_name(s: AsyncSession, *, artist: str, title: str, album: str | None = None, duration_s: int | None = None,
+                  isrc: str | None = None, user_id: int | None = None) -> Track:
+    """The track of a song known by its name alone — a row of a transfer the catalog has no record of: the one the
+    Hub has under no catalog name that is this song, else a new one. With no file and no record of the catalog there
+    is nothing of it to play, yet it is a track like any other: it has its places in playlists, its ♥ and its tags.
+    It plays once it is given a file (`ImportSpec.track_id`), and takes the catalog's name once it is matched with
+    the catalog (`of_catalog`)."""
+    from app.library import artists
+
+    track = await _unnamed(s, artist=artist, title=title, duration_s=duration_s, isrc=isrc)
+    if track is not None:
+        return track
+    track = Track(artist=artist, title=title, album=album, duration_s=duration_s, isrc=isrc.upper() if isrc else None,
+                  fingerprint=fingerprint(artist, title), created_by=user_id)
+    s.add(track)
+    await s.flush()
+    await s.refresh(track)
+    await artists.credit_track(s, track)
+    return track
+
+
 async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = None, word: bool = True) -> Track:
     """The track of this catalog track; made if the Hub does not know the song. A track the Hub has under no
     catalog name yet (an uploaded file, say) that is this very song — the same ISRC, or the same names and length —
@@ -74,14 +109,7 @@ async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = 
             track.catalog = said or track.catalog
             await artists.credit_track(s, track)
         return track
-    unnamed = select(Track).where(Track.ref.is_(None)).order_by(Track.id.desc())
-    if c.isrc:
-        track = (await s.execute(unnamed.where(Track.isrc == c.isrc.upper()).limit(1))).scalar_one_or_none()
-    if track is None:
-        for t in (await s.execute(unnamed.where(Track.fingerprint == fingerprint(c.artist, c.title)))).scalars():
-            if _same_length(t.duration_s, c.duration_s):
-                track = t
-                break
+    track = await _unnamed(s, artist=c.artist, title=c.title, duration_s=c.duration_s, isrc=c.isrc)
     if track is not None:
         if ref:
             track.ref = ref
