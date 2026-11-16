@@ -4,7 +4,7 @@ import type { TrackOut } from '../api/types';
 import { TrackRow, TrackTableHeader } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
-import { PlaylistsPick } from '../components/PlaylistsButton';
+import { BrandIcon } from '../components/BrandIcon';
 import { ErrorState, ExplicitBadge, HeroSkeleton, IconButton, OwnedBadge, PageHeader, Sheet } from '../components/ui';
 import { startDownload } from '../lib/actions';
 import { useHubEvent } from '../lib/events';
@@ -18,7 +18,7 @@ import { Hero } from './MediaLibrary';
 
 /** A release of the catalog (`/album/<ref>`), in the shape of every list: the head — the cover, the kind of release
  * over its name, the artist, the year, the tracks and their length, ▶ and the shuffle — then a row of buttons
- * (at the top of the page: ⋯ — into playlists, the link, the release in its catalog, the artist — and «Скачать
+ * (at the top of the page: ⋯ — the link, the release in its catalog, the artist — and «Скачать
  * альбом»), the tracks by their numbers and,
  * under them, the day it came out. */
 
@@ -27,7 +27,6 @@ export function AlbumPage({ refId }: { refId: string }) {
   const [rev, setRev] = useState(0);
   const res = useAsync((s) => api.album(refId, s, rev > 0), [refId, rev], true, `album:${refId}`);
   const [dlBusy, setDlBusy] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
 
   const reloadTimer = useRef<number | undefined>(undefined);
 
@@ -83,29 +82,6 @@ export function AlbumPage({ refId }: { refId: string }) {
   };
 
   /** The album into the chosen playlists: the tracks the library has at once, the rest as they are downloaded. */
-  const addToPlaylists = async (lists: { id: string; name: string }[]) => {
-    setPickerOpen(false);
-    if (!lists.length) return;
-    const ids = lists.map((p) => p.id);
-    const names = lists.map((p) => `«${p.name}»`).join(', ');
-    if (missing.length) {
-      const r = await attempt(() => api.download({ album_ref: album.ref, playlist_ids: ids }));
-      if (!r) return;
-      markDownloading(new Set(missing.map((t) => t.ref)));
-    }
-    if (owned.length) {
-      const track_ids = owned.map((t) => t.library_track_id).filter((x): x is number => x != null);
-      for (const id of ids) {
-        const ok = await attempt(() => api.addToPlaylist(id, { track_ids }));
-        if (!ok) return;
-      }
-    }
-    toast(
-      missing.length ? `${names}: ${owned.length} добавлено, ${missing.length} появятся после скачивания` : `Добавлено в ${names}: ${tracksWord(owned.length)}`,
-      'success',
-      missing.length ? { label: 'Загрузки', to: '/downloads' } : undefined,
-    );
-  };
 
   const share = async () => {
     setMenu(false);
@@ -208,14 +184,10 @@ export function AlbumPage({ refId }: { refId: string }) {
 
       <Sheet open={menu} onClose={() => setMenu(false)} title={album.title}>
         <div className="-mx-1">
-          {item('playlist', 'Добавить в плейлист', () => {
-            setMenu(false);
-            setPickerOpen(true);
-          })}
           {item('link', 'Скопировать ссылку', () => void share())}
           {deezer && (
             <a href={deezer} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">
-              <Icon name="external" size={21} className="text-muted" />
+              <BrandIcon service={album.source === 'ym' ? 'yandex' : 'deezer'} size={21} />
               {album.source === 'ym' ? 'Открыть в Яндекс Музыке' : 'Открыть в Deezer'}
             </a>
           )}
@@ -234,15 +206,6 @@ export function AlbumPage({ refId }: { refId: string }) {
         </div>
       </Sheet>
 
-      {pickerOpen && (
-        <PlaylistsPick
-          title={`«${album.title}» — в плейлисты`}
-          note={missing.length ? `В библиотеке ${owned.length} из ${tracks.length}: остальные скачаются и появятся в выбранных плейлистах.` : undefined}
-          picked={[]}
-          onClose={() => setPickerOpen(false)}
-          onDone={(lists) => void addToPlaylists(lists)}
-        />
-      )}
     </div>
   );
 }
