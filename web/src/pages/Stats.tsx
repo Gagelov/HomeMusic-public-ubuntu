@@ -67,7 +67,8 @@ export function StatsPage() {
         <Loading />
       ) : (
         <div className={cx('space-y-4 px-4 transition-opacity', stats.loading && 'opacity-60')}>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          {/* a phone: two in a row, the first — how much was listened to — across both */}
+          <div className="grid grid-cols-2 gap-3 max-md:[&>*:first-child]:col-span-2 md:grid-cols-5">
             <Tile label="Прослушано" value={fmtListened(d.summary.ms)} />
             <Tile label="Прослушиваний" value={fmtNum(d.summary.plays)} />
             <Tile label="Разных треков" value={fmtNum(d.summary.tracks)} />
@@ -78,12 +79,12 @@ export function StatsPage() {
             <Empty icon="history" title="За этот период прослушиваний нет" text="Выберите период подольше или импортируйте историю из Spotify." />
           ) : (
             <>
-              <div className="grid gap-4 lg:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 {KINDS.map((k) => (
                   <TopCard key={k.kind} {...k} top={d[k.kind]} by={by} bySong={bySong} onAll={() => setAll(k.kind)} />
                 ))}
               </div>
-              <div className="grid gap-4 lg:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <Card title="По часам суток">
                   <Bars values={d.hours} labels={d.hours.map((_, h) => (h % 3 ? '' : String(h)))} by={by} name={(h) => `${h}:00–${h}:59`} />
                 </Card>
@@ -140,7 +141,7 @@ function Tile({ label, value, hint }: { label: string; value: string; hint?: str
 
 function Card({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
   return (
-    <section className="rounded-2xl bg-surface p-4">
+    <section className="min-w-0 rounded-2xl bg-surface p-4">
       <div className="flex items-center pb-3">
         <h2 className="flex-1 text-sm font-bold">{title}</h2>
         {right}
@@ -189,7 +190,8 @@ function Rows({ kind, items, by, bySong, icon, round }: { kind: StatsKind; items
               </span>
             )}
             <span className="min-w-0 flex-1">
-              <span className="flex items-baseline gap-2">
+              {/* a phone has no room for both in a line: the name, and under it whose it is */}
+              <span className="flex flex-col sm:flex-row sm:items-baseline sm:gap-2">
                 <span className={cx('truncate text-sm', outside ? 'text-muted' : 'text-fg')}>{x.name}</span>
                 {x.sub && <span className="truncate text-xs text-dim">{x.sub}</span>}
               </span>
@@ -197,9 +199,14 @@ function Rows({ kind, items, by, bySong, icon, round }: { kind: StatsKind; items
                 <span className={cx('block h-full rounded-full', outside ? 'bg-fg/30' : 'bg-accent')} style={{ width: `${Math.max(2, (amount(x, by) / max) * 100)}%` }} />
               </span>
             </span>
-            {kind === 'tracks' && x.weeks && <Trend weeks={x.weeks} className="shrink-0" />}
-            {kind === 'tracks' && x.weeks && <Change x={x} place={i + 1} />}
-            <span className="w-16 shrink-0 text-right text-sm tabular-nums text-muted">{shown(amount(x, by), by)}</span>
+            {/* the weeks and the change of place are for a wider screen: on a phone the name would have no room */}
+            {kind === 'tracks' && x.weeks && (
+              <span className="hidden shrink-0 items-center gap-3 sm:flex">
+                <Trend weeks={x.weeks} className="shrink-0" />
+                <Change x={x} place={i + 1} />
+              </span>
+            )}
+            <span className="shrink-0 whitespace-nowrap text-right text-sm tabular-nums text-muted sm:w-16">{shown(amount(x, by), by)}</span>
           </>
         );
         const title = `${playsWord(x.plays)} · ${fmtListened(x.ms)}${outside ? ' · нет в библиотеке' : ''}`;
@@ -311,7 +318,7 @@ function Weeks({ heat, by }: { heat: StatsOut['heatmap']; by: StatsBy }) {
     <div>
       <div className="flex gap-[3px] overflow-x-auto no-scrollbar">
         {weeks.map((w, i) => (
-          <div key={i} className="flex flex-1 flex-col gap-[3px]" style={{ minWidth: 10, maxWidth: 22 }}>
+          <div key={i} className="flex flex-1 flex-col gap-[3px]" style={{ minWidth: 8, maxWidth: 22 }}>
             {w.map((day) => {
               const v = heat.days[dayKey(day)] ?? 0;
               return (
