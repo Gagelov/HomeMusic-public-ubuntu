@@ -29,6 +29,7 @@ from app.api.schemas import (
     ImportAuthOut,
     ImportCollectionOut,
     ImportItemOut,
+    ImportPlaceOut,
     ImportOut,
     ImportStatsOut,
 )
@@ -153,6 +154,33 @@ def item_out(it: ImportItem, kind: str, nd_song_id: str | None = None, dl: Downl
         track_id=it.track_id if ITEM_KIND.get(kind, "track") == "track" else None, download_item_id=it.download_item_id,
         download_status=dl.status if dl else None, error=dl.error if dl else None,
     )
+
+
+async def downloads_of(s: AsyncSession, items: list[ImportItem]) -> dict[int, DownloadItem]:
+    """download id -> the download, for the rows that have one."""
+    ids = {it.download_item_id for it in items if it.download_item_id}
+    if not ids:
+        return {}
+    return {d.id: d for d in (await s.execute(select(DownloadItem).where(DownloadItem.id.in_(ids)))).scalars()}
+
+
+async def places_out(s: AsyncSession, places: list[tuple[Any, int]]) -> list[ImportPlaceOut]:
+    """The places a playlist keeps for rows that have no track yet (`playlists.missing`), as the rows they are of."""
+    ids = [place.import_item_id for place, _ in places]
+    if not ids:
+        return []
+    rows = {it.id: (it, kind) for it, kind in (await s.execute(
+        select(ImportItem, ImportCollection.kind).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+        .where(ImportItem.id.in_(ids)))).all()}
+    dls = await downloads_of(s, [it for it, _ in rows.values()])
+    out = []
+    for place, index in places:
+        if place.import_item_id not in rows:
+            continue
+        it, kind = rows[place.import_item_id]
+        out.append(ImportPlaceOut(**item_out(it, kind, None, dls.get(it.download_item_id)).model_dump(),
+                                  import_id=it.import_id, index=index, added_at=place.added_at))
+    return out
 
 
 def publish(imp: Import) -> None:

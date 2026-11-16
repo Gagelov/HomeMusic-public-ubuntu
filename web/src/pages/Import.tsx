@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
-import type { ImportCollectionOut, ImportItemOut, ImportMode, ImportOut, ImportSource } from '../api/types';
+import type { ImportCollectionOut, ImportItemOut, ImportMode, ImportOut, ImportPlaceOut, ImportSource } from '../api/types';
 import { BrandIcon } from '../components/BrandIcon';
 import { PlaylistsPick } from '../components/PlaylistsButton';
 import { AfterImport } from './Upload';
@@ -756,6 +756,52 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** A place a playlist keeps for a row of a transfer that has no track yet: the song as the service named it, dimmed
+ * — there is nothing to play — in the row's place, and what can be done about it: choose a file for it, or leave it
+ * out. `n`: its number in the list. */
+export function KeptPlaceRow({ it, n, onChange }: { it: ImportPlaceOut; n: number; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const choosing = it.status === 'queued' && it.download_status === 'needs_review' && it.download_item_id != null;
+  const decide = it.status === 'not_found' || it.status === 'failed';
+  const pick = async () => {
+    setBusy(true);
+    const r = await attempt(() => api.importPick(it.id));
+    setBusy(false);
+    if (r) navigate(`/downloads/${r.download_item_id}`);
+  };
+  const skip = async () => {
+    setBusy(true);
+    const r = await attempt(() => api.importSkip(it.id), 'Пропущено: этот трек не переносится');
+    setBusy(false);
+    if (r) onChange();
+  };
+  return (
+    <div className="flex min-h-16 items-center gap-3 pl-4 pr-1 lg:mx-2 lg:min-h-14 lg:rounded-lg lg:px-2" title={decide ? 'Трек из переноса: в каталоге его не нашлось. Выберите файл или пропустите.' : undefined}>
+      <span className="hidden w-8 shrink-0 text-center text-sm tabular-nums text-dim lg:block">{n}</span>
+      <span className="shrink-0 opacity-40 grayscale">
+        <Cover src={it.cover_url} size={40} icon="note" alt="" />
+      </span>
+      <span className="min-w-0 flex-1 opacity-50">
+        <span className="block truncate text-[15px]">{it.title}</span>
+        <span className="block truncate text-[13px] text-muted">{it.artist}</span>
+      </span>
+      {decide ? <span className={cx(PILL, 'hidden bg-fg/5 text-muted sm:inline')}>{it.status === 'failed' ? 'не скачалось' : 'не найдено'}</span> : !choosing && <StatePill it={it} />}
+      {choosing ? (
+        <Button small onClick={() => navigate(`/downloads/${it.download_item_id}`)}>
+          Выбрать файл
+        </Button>
+      ) : decide ? (
+        <>
+          <Button small busy={busy} onClick={() => void pick()}>
+            Выбрать файл
+          </Button>
+          <IconButton icon="x" label={`Пропустить «${it.title}»`} disabled={busy} onClick={() => void skip()} className="!text-dim hover:!text-fg" />
+        </>
+      ) : null}
     </div>
   );
 }

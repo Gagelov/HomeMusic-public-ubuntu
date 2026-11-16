@@ -526,10 +526,11 @@ async def project_liked(s: AsyncSession, user_id: int, starred: list[dict] | Non
     on top, each with the day it was liked. A track an import brought as liked is in it too, and so is a song
     starred in Navidrome (`starred`: its starred songs as it gives them, when it was asked) — unless the user has
     since said otherwise. A liked track the library has no file of is a track like any other: it has its place,
-    its date and its tags. Navidrome not asked (`starred` None): what the playlist has and nobody unliked stays.
-    Returns whether the playlist changed."""
+    its date and its tags. A like an import brought of a song that has no track yet (`apply.NO_TRACK_YET`) has its
+    place kept among the rest, by its date. Navidrome not asked (`starred` None): what the playlist has and nobody
+    unliked stays. Returns whether the playlist changed."""
     from app import playlists
-    from app.imports.apply import track_of
+    from app.imports.apply import NO_TRACK_YET, track_of
     from app.models import PlaylistItem
     from app.models import naive
 
@@ -552,17 +553,20 @@ async def project_liked(s: AsyncSession, user_id: int, starred: list[dict] | Non
         select(ImportItem, Import.created_at).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
         .join(Import, Import.id == ImportItem.import_id)
         .where(Import.user_id == user_id, ImportCollection.kind == "likes", ImportCollection.selected.is_(True),
-               ImportItem.status.in_(("done", "waiting", "queued")))
+               ImportItem.status != "skipped")
         .order_by(ImportItem.import_id, ImportItem.position))).all()
+    waiting: dict[int, datetime] = {}  # rows that have no track yet -> when the song was liked: their places are kept
     for position, (it, imported_at) in enumerate(rows):
         if it.ref and f"ref:{it.ref}" in decided:
             continue
-        track = await track_of(s, it, user_id)
-        if track is None or track.id in want or (track.nd_song_id and f"nd:{track.nd_song_id}" in decided):
-            continue
         # the service lists the newest like first: without its dates the order of the list still holds
         at = naive(parse_time((it.raw_json or {}).get("liked_at"))) or imported_at - timedelta(seconds=position)
-        want[track.id] = at
+        track = await track_of(s, it, user_id) if it.status not in ("pending", "not_found") else None
+        if track is None:
+            if it.status in NO_TRACK_YET:
+                waiting[it.id] = at
+        elif track.id not in want and not (track.nd_song_id and f"nd:{track.nd_song_id}" in decided):
+            want[track.id] = at
     p = await playlists.liked(s, user_id)
     have = await playlists.items(s, p.id)
     if starred is not None:
@@ -579,22 +583,26 @@ async def project_liked(s: AsyncSession, user_id: int, starred: list[dict] | Non
             names = {f"ref:{track.ref}" if track.ref else "", f"nd:{track.nd_song_id}" if track.nd_song_id else ""}
             if not names & unliked:
                 want.setdefault(track.id, item.added_at)
-    order = sorted(want, key=lambda t: (want[t], t), reverse=True)
-
-    if [t.id for _, t in have] == order and all(i.added_at == want[t.id] for i, t in have):
+    # every place, the newest like on top: (when, track, row of an import that has no track yet)
+    order = sorted([(at, t, None) for t, at in want.items()] + [(at, None, row) for row, at in waiting.items()],
+                   key=lambda x: (x[0], x[1] or 0, x[2] or 0), reverse=True)
+    now = await playlists.places(s, p.id)
+    if [(i.added_at, i.track_id, i.import_item_id) for i in now] == order:
         return False
-    kept: dict[int, PlaylistItem] = {}
-    for item, track in have:
-        if track.id in want and track.id not in kept:
-            kept[track.id] = item
+    wanted = {(t, row) for _, t, row in order}
+    kept: dict[tuple[int | None, int | None], PlaylistItem] = {}
+    for item in now:
+        key = (item.track_id, item.import_item_id)
+        if key in wanted and key not in kept:
+            kept[key] = item
         else:
             await s.delete(item)
-    for position, track_id in enumerate(order):
-        item = kept.get(track_id)
+    for position, (at, track_id, row) in enumerate(order):
+        item = kept.get((track_id, row))
         if item is None:
-            s.add(PlaylistItem(playlist_id=p.id, track_id=track_id, position=position, added_at=want[track_id]))
+            s.add(PlaylistItem(playlist_id=p.id, track_id=track_id, import_item_id=row, position=position, added_at=at))
         else:
-            item.position, item.added_at = position, want[track_id]
+            item.position, item.added_at = position, at
     p.updated_at = utcnow()
     await s.flush()
     return True

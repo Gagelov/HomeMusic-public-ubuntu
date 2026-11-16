@@ -988,14 +988,18 @@ class Playlist(Base):
 
 
 class PlaylistItem(Base):
-    """A track's place in a playlist. A track may stand in a playlist more than once."""
+    """A place in a playlist: a track's (a track may stand in a playlist more than once), or — `import_item_id`,
+    no track — one kept for a row of a transfer that has no track yet: the catalog does not know the song, or has
+    not been asked. Such a place is nothing to play; it is there so that the playlist is whole, and it becomes the
+    track's once the row has one (app/imports/apply.py)."""
 
     __tablename__ = "playlist_items"
     __table_args__ = (Index("ix_playlist_items_order", "playlist_id", "position"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     playlist_id: Mapped[int] = mapped_column(ForeignKey("playlists.id", ondelete="CASCADE"))
-    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
+    track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
+    import_item_id: Mapped[int | None] = mapped_column(ForeignKey("import_items.id", ondelete="CASCADE"), index=True)
     position: Mapped[int] = mapped_column(Integer)
     added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

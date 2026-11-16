@@ -62,6 +62,7 @@ async def _own(s: AsyncSession, user: User, playlist_id: str, *, change: bool = 
 
 async def _outs(s: AsyncSession, rows: list[Playlist]) -> list[PlaylistOut]:
     numbers = await playlists.counts(s, [p.id for p in rows])
+    kept = await playlists.missing_counts(s, [p.id for p in rows])
     keys = dict((await s.execute(select(PlaylistCover.playlist_id, PlaylistCover.key).where(
         PlaylistCover.playlist_id.in_([p.id for p in rows])))).all()) if rows else {}
     out = []
@@ -74,7 +75,8 @@ async def _outs(s: AsyncSession, rows: list[Playlist]) -> list[PlaylistOut]:
         else:
             cover = None
         out.append(PlaylistOut(id=str(p.id), name=p.name, song_count=filed, pending_count=total - filed,
-                               duration_s=seconds, cover_art=p.nd_cover, cover_url=cover))
+                               missing_count=kept.get(p.id, 0), duration_s=seconds, cover_art=p.nd_cover,
+                               cover_url=cover))
     return out
 
 
@@ -245,7 +247,10 @@ async def get_playlist(playlist_id: str, user: User = Depends(current_user),
     tracks = await tracks_out(s, user, [t for _, t in rows])
     for (item, _), t in zip(rows, tracks, strict=True):
         t.added_at = item.added_at
-    return PlaylistPageOut(**(await _out(s, p)).model_dump(), tracks=tracks)
+    from app.imports.core import places_out
+
+    return PlaylistPageOut(**(await _out(s, p)).model_dump(), tracks=tracks,
+                           missing=await places_out(s, await playlists.missing(s, p.id)))
 
 
 @router.post("/{playlist_id}/remove")

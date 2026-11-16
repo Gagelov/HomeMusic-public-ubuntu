@@ -283,7 +283,12 @@ async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(ge
         st = decisions.get((typ, f"nd:{obj.get('id')}"))
         return st is None or st.liked
 
-    return NdLikedOut(songs=songs,
+    # the likes that have no track yet stand among the songs by their dates (Navidrome's own stars are among them)
+    from app.imports.core import places_out
+
+    kept = await playlists.missing(s, (await playlists.liked(s, user.id)).id)
+    newer = [sum(1 for x in songs if (x.added_at or datetime.min) > place.added_at) for place, _ in kept]
+    return NdLikedOut(songs=songs, missing=await places_out(s, [(place, n) for (place, _), n in zip(kept, newer)]),
                       albums=[album_out(a) for a in sorted(body.get("album") or [], key=lambda x: x.get("starred") or "", reverse=True)
                               if visible("album", a)],
                       artists=[artist_out(a) for a in body.get("artist") or [] if visible("artist", a)])
