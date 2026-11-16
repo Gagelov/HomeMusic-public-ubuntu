@@ -111,18 +111,23 @@ async def follows(s: AsyncSession, user_id: int) -> list[Follow]:
                   reverse=True)
 
 
-async def followed(s: AsyncSession, user_id: int) -> dict[str, str]:
-    """catalog ref -> name of the artists the user follows: every record the catalog keeps of each of them (one
-    artist may have several, and a new release may come out under any — app/library/artists.py)."""
+async def _records(s: AsyncSession, whom: list[Follow]) -> dict[str, Follow]:
+    """Every record the catalog keeps of the followed artists -> the follow it belongs to (one artist may have
+    several, and a new release may come out under any — app/library/artists.py)."""
     from app.library import artists
 
-    out: dict[str, str] = {}
-    for f in await follows(s, user_id):
-        out.setdefault(f.ref, f.name)
+    out: dict[str, Follow] = {}
+    for f in whom:
+        out.setdefault(f.ref, f)
         who = await artists.by_ref(s, f.ref)
         for ref in await artists.profiles(s, who.id) if who is not None else []:
-            out.setdefault(ref, f.name)
+            out.setdefault(ref, f)
     return out
+
+
+async def followed(s: AsyncSession, user_id: int) -> dict[str, str]:
+    """catalog ref -> name of the artists the user follows: every record the catalog keeps of each of them."""
+    return {ref: f.name for ref, f in (await _records(s, await follows(s, user_id))).items()}
 
 
 async def refresh(user_id: int, *, only_new: bool = False) -> int:
@@ -220,18 +225,24 @@ async def feed(s: AsyncSession, user_id: int) -> dict[str, Any]:
     from app.library.owned import annotate_tracks
 
     whom = await follows(s, user_id)
-    artists = {f.ref: f.name for f in whom}
+    artists = await _records(s, whom)  # every record of theirs: a release is the artist's under whichever it came out
     rows = list((await s.execute(
         select(ArtistRelease).where(ArtistRelease.user_id == user_id, ArtistRelease.artist_ref.in_(artists))
         .order_by(ArtistRelease.release_date.desc(), ArtistRelease.id.desc()).limit(FEED_LIMIT))).scalars()) if artists else []
-    checks = {c.artist_ref: c for c in (await s.execute(
+    looked = {c.artist_ref: c for c in (await s.execute(
         select(ArtistReleaseCheck).where(ArtistReleaseCheck.user_id == user_id))).scalars()} if artists else {}
+    # what was last seen of an artist: of their records, the one with the latest release (the follow's own first)
+    checks: dict[str, ArtistReleaseCheck] = {}
+    for ref, f in sorted(artists.items(), key=lambda x: x[0] != x[1].ref):
+        c = looked.get(ref)
+        if c is not None and (f.ref not in checks or (c.last_release_date or date.min) > (checks[f.ref].last_release_date or date.min)):
+            checks[f.ref] = c
     kept = [[CatalogTrack.model_validate(t) for t in (r.tracks_json or [])] for r in rows]
     told = iter(await annotate_tracks(s, [t for ts in kept for t in ts], user_id))
     fresh: dict[str, int] = {}
     for r in rows:
         if r.seen_at is None:
-            fresh[r.artist_ref] = fresh.get(r.artist_ref, 0) + 1
+            fresh[artists[r.artist_ref].ref] = fresh.get(artists[r.artist_ref].ref, 0) + 1
 
     def last(f: Follow) -> date | None:
         c = checks.get(f.ref)
@@ -239,7 +250,7 @@ async def feed(s: AsyncSession, user_id: int) -> dict[str, Any]:
 
     whom.sort(key=lambda f: (fresh.get(f.ref, 0) > 0, last(f) or date.min), reverse=True)
     return {
-        "artists": len(artists),
+        "artists": len(whom),
         "unseen": sum(fresh.values()),
         "following": [{
             "ref": f.ref, "name": f.name, "like_ref": f.like_ref, "nd_id": f.nd_id, "picture_url": checks[f.ref].picture_url if f.ref in checks else None,
@@ -248,7 +259,7 @@ async def feed(s: AsyncSession, user_id: int) -> dict[str, Any]:
             "new": fresh.get(f.ref, 0),
         } for f in whom],
         "items": [{
-            "album_ref": r.album_ref, "title": r.title, "artist": r.artist, "artist_ref": r.artist_ref,
+            "album_ref": r.album_ref, "title": r.title, "artist": r.artist, "artist_ref": artists[r.artist_ref].ref,
             "record_type": r.record_type, "release_date": r.release_date.isoformat(), "cover_url": r.cover_url,
             "nb_tracks": r.nb_tracks, "new": r.seen_at is None,
             "tracks": [next(told) for _ in ts] if r.tracks_json is not None else None,

@@ -152,6 +152,10 @@ async def server_artists(s: AsyncSession, limit: int = 30) -> list[CatalogArtist
     return (await artists.shown(s, cards))[:limit]  # the several records of one artist are one card
 
 
+def _interleave(lists: list[list]) -> list:
+    return [x[i] for i in range(max((len(x) for x in lists), default=0)) for x in lists if i < len(x)]
+
+
 def _catalog() -> None:
     if svc.deezer is None:
         raise HTTPException(503, "Каталог недоступен")
@@ -177,7 +181,10 @@ async def onboarding(q: str | None = Query(None, max_length=100), user: User = D
         except Exception as e:
             raise HTTPException(502, f"Каталог не ответил: {e}") from e
     needed = not st.artists_json and not await core.has_history(s, user.id)
-    return TasteOnboardingOut(needed=needed, selected=list(st.artists_json or []), suggestions=suggestions, source=source)
+    # picks made before an artist's records were tied together come back at the artist's one address
+    at = await artists.addresses(s, [a.get("ref") for a in st.artists_json or []])
+    selected = list({at.get(a["ref"], a["ref"]): {**a, "ref": at.get(a["ref"], a["ref"])} for a in st.artists_json or [] if a.get("ref")}.values())
+    return TasteOnboardingOut(needed=needed, selected=selected, suggestions=suggestions, source=source)
 
 
 @router.get("/api/taste/similar", response_model=list[CatalogArtist])
@@ -192,11 +199,15 @@ async def similar(ref: str = Query(max_length=64), user: User = Depends(current_
         raise HTTPException(400, f"Неверный исполнитель: {ref}") from e
     if src != "dz":
         raise HTTPException(400, f"Неверный исполнитель: {ref}")
-    try:
-        found = await svc.deezer.get_artist_related(id_)  # type: ignore[union-attr]
-    except Exception as e:
-        raise HTTPException(502, f"Каталог не ответил: {e}") from e
-    return await artists.shown(s, found)
+    # an artist the catalog keeps several records of is like whoever any of them is like
+    theirs = [r for r in (await artists.whole(s, ref))[0] if r.startswith("dz:")]
+    lists = await asyncio.gather(*(svc.deezer.get_artist_related(split_ref(r)[1]) for r in theirs),  # type: ignore[union-attr]
+                                 return_exceptions=True)
+    if all(isinstance(x, BaseException) for x in lists):
+        raise HTTPException(502, f"Каталог не ответил: {lists[0]}")
+    found = _interleave([x for x in lists if not isinstance(x, BaseException)])
+    found = list({a.ref: a for a in found}.values())  # whom several of the records are like, once
+    return [a for a in await artists.shown(s, found) if a.ref not in theirs]
 
 
 MAP_ASKED = 24  # of Last.fm's nearest looked up in the catalog
@@ -238,10 +249,14 @@ async def artist_map(ref: str = Query(max_length=64), user: User = Depends(curre
             return None
 
     cards = await asyncio.gather(*(one(name) for name, _ in near))
-    match = {a.ref: m for a, (_, m) in zip(cards, near) if a is not None}
+    at = await artists.addresses(s, [center.ref, *(a.ref for a in cards if a is not None)])
+    match: dict[str, float] = {}
+    for a, (_, m) in zip(cards, near):
+        if a is not None:
+            match.setdefault(at[a.ref], m)  # nearest first: an artist's nearest record says how near they are
     # as they are here: under their own names, each once — and the artist in the middle is not around themselves
     here = await artists.shown(s, [center, *(a for a in cards if a is not None)])
-    around = [ArtistNearOut(artist=a, match=match[a.ref]) for a in here[1:] if a.ref in match and a.ref != center.ref]
+    around = [ArtistNearOut(artist=a, match=match[a.ref]) for a in here[1:] if a.ref in match and a.ref != here[0].ref]
     return ArtistMapOut(center=here[0], around=around[:MAP_SHOWN])
 
 
@@ -263,14 +278,17 @@ async def pick_artists(body: TasteArtistsIn, user: User = Depends(current_user),
             a = await svc.deezer.get_artist(id_)  # type: ignore[union-attr]
         except Exception as e:
             raise HTTPException(404, f"Исполнитель не найден: {ref}") from e
-        picked.append({"ref": a.ref, "name": a.name})
+        picked.append(a)
+    # the artists as they are here: each once, at their one address, under their name
+    picked = [{"ref": a.ref, "name": a.name} for a in await artists.shown(s, picked)]
     st = await core.settings_of(s, user.id)
     first = not st.artists_json and await core.current_mix(s, user.id) is None
     st.artists_json = picked
     # a pick is a follow: who one says one listens to is whose releases one is told of. Those followed already stay
     # as they are; taking an artist off the picks later does not unfollow them
     states = await favorites.snapshot(s, user.id)
-    followed = {x.ref for x in states.values() if x.target_type == "artist" and x.liked and x.ref}
+    followed = {a[4:] for x in states.values() if x.target_type == "artist" and x.liked
+                for a in x.aliases if a.startswith("ref:")}  # by any record of theirs
     new = [FavoriteTarget(target_type="artist", ref=a["ref"], target_data={"name": a["name"]})
            for a in picked if a["ref"] not in followed]
     if new:

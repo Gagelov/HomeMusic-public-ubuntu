@@ -699,6 +699,44 @@ async def test_a_picked_artist_is_followed_once(env) -> None:
     assert likes == 1
 
 
+async def test_an_artist_of_several_catalog_records_is_one(env) -> None:
+    """One address, one follow, one pick — whichever of the records it was said by."""
+    from app import favorites, releases
+    from app.catalog.models import CatalogArtist
+    from app.db import session_scope
+    from app.library import artists
+    from app.models import Artist, ArtistRef, PlayEvent
+
+    client = env["client"]
+    async with session_scope() as s:
+        kino = Artist(name="КИНО")
+        s.add(kino)
+        await s.flush()
+        s.add(ArtistRef(ref="dz:1", artist_id=kino.id, tied_at=datetime(2026, 1, 1)))
+        s.add(ArtistRef(ref="dz:7", artist_id=kino.id, tied_at=datetime(2026, 2, 1)))
+    # followed by the second record
+    r = await client.post("/api/star", json={"targets": [{"target_type": "artist", "ref": "dz:7", "target_data": {"name": "Кино"}}]})
+    assert r.status_code == 200, r.text
+    async with session_scope() as s:
+        states = [x for x in (await favorites.snapshot(s, env["admin"])).values() if x.target_type == "artist"]
+        assert [(x.ref, x.liked, x.aliases) for x in states] == [("dz:1", True, ["ref:dz:1", "ref:dz:7"])]
+        assert [f.ref for f in await releases.follows(s, env["admin"])] == ["dz:1"]
+        assert await releases.followed(s, env["admin"]) == {"dz:1": "Кино", "dz:7": "Кино"}
+        # shown at the address, whichever record the catalog gave
+        card = (await artists.shown(s, [CatalogArtist(ref="dz:7", source="dz", id="7", name="Кино")]))[0]
+        assert (card.ref, card.id, card.name) == ("dz:1", "1", "КИНО")
+    # picked by the first: followed already, nothing new
+    r = await client.post("/api/taste/artists", json={"artist_refs": ["dz:1"]})
+    assert r.status_code == 200 and r.json()["artists"] == [{"ref": "dz:1", "name": "КИНО"}]
+    async with session_scope() as s:
+        assert (await s.execute(select(func.count(PlayEvent.id)).where(PlayEvent.kind == "like"))).scalar_one() == 1
+    # unfollowed by the first: the follow made by the second is gone
+    r = await client.post("/api/star", json={"targets": [{"target_type": "artist", "ref": "dz:1"}], "unstar": True})
+    assert r.status_code == 200, r.text
+    async with session_scope() as s:
+        assert await releases.follows(s, env["admin"]) == []
+
+
 async def test_the_picker_offers_whom_this_server_listens_to(env) -> None:
     """The most listened to first, then those the library has most of — and only artists with a catalog record."""
     from app.db import session_scope

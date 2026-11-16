@@ -340,10 +340,20 @@ async def cold_seeds(p: Profile, n: int) -> list[TasteTrack]:
     """A new user: the top tracks of the artists picked on «Что вы слушаете?»."""
     if svc.deezer is None or not p.picked_artists:
         return []
+    from app.library import artists
+
     refs = [a["ref"] for a in p.picked_artists if str(a.get("ref", "")).startswith("dz:")]
-    tops = await asyncio.gather(*(svc.deezer.get_artist_top(split_ref(r)[1], limit=2) for r in refs),
-                                return_exceptions=True)
-    tracks = _interleave([x for x in tops if not isinstance(x, BaseException)])
+    # a catalog may keep several records of one artist: their two most popular tracks are of all of them
+    async with session_scope() as s:
+        theirs = [[x for x in (await artists.whole(s, r))[0] if x.startswith("dz:")] for r in refs]
+    flat = list(dict.fromkeys(x for xs in theirs for x in xs))
+    got = dict(zip(flat, await asyncio.gather(*(svc.deezer.get_artist_top(split_ref(r)[1], limit=2) for r in flat),
+                                              return_exceptions=True)))
+    tops = []
+    for xs in theirs:
+        own = {t.ref: t for r in xs if not isinstance(got[r], BaseException) for t in got[r]}
+        tops.append(sorted(own.values(), key=lambda t: -(t.rank or 0))[:2])
+    tracks = _interleave(tops)
     return [TasteTrack(key=t.ref, ref=t.ref, artist=t.artist, title=t.title, duration_s=t.duration_s, track=t)
             for t in tracks][:n]
 

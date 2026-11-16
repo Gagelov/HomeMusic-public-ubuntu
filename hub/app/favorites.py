@@ -251,13 +251,20 @@ async def subjects_of(s: AsyncSession, events: Iterable[Any] = (), *, refs: Iter
     """What ties the names of one thing together, for `AliasIndex`.
 
     An album or an artist: the verified pairs kept in `favorite_subjects` (a catalog ref and a Navidrome id that
-    were seen to be one). A track needs no such table: it is the Hub's own track — its id, its catalog ref and
+    were seen to be one). The several records a catalog keeps of one artist are one artist too — read from the
+    library (`artists.records`), so a follow by any of them is the artist's, at their one address, and stays
+    so whatever is tied or merged later. A track needs no such table: it is the Hub's own track — its id, its catalog ref and
     the Navidrome song of every file it has — so its names are read from the library, for the tracks these
     events, `refs` and `songs` speak of. An event that knows its track (`PlayEvent.track_id`) ties whatever
     else it called it (a provider's file, say) to that track by itself."""
     from app.models import TrackFile
 
+    from app.library import artists
+
     out = list((await s.execute(select(FavoriteSubject).where(FavoriteSubject.target_type != "track"))).scalars())
+    # after the kept ones: the address of an artist is what their state is told by (`fold`)
+    out += [FavoriteSubject(target_type="artist", canonical_key=f"ref:{refs[0]}", ref=refs[0],
+                            aliases=sorted(f"ref:{r}" for r in refs), data={}) for refs in await artists.records(s)]
     ids: set[int] = set()
     refs, songs = {x for x in refs if x}, {x for x in songs if x}
     for e in events:
@@ -420,7 +427,8 @@ async def command(s: AsyncSession, user: User, targets: list[FavoriteTarget], *,
                 if states is None:
                     states = await snapshot(s, user.id)
                 current = next((x for x in states.values() if x.target_type == typ and
-                    ((x.ref and x.ref == target.ref) or (x.nd_id and x.nd_id == getattr(target, ND_FIELDS[typ]))
+                    ((x.ref and x.ref == target.ref) or (target.ref and f"ref:{target.ref}" in x.aliases)
+                     or (x.nd_id and x.nd_id == getattr(target, ND_FIELDS[typ]))
                      or (target.track_id and f"t:{target.track_id}" in x.aliases))), None)
                 if current and current.event.ts > at:
                     events.append(await record(s, user.id, target, liked, ts=at, event_id=eid,

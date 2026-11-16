@@ -94,6 +94,31 @@ async def profiles(s: AsyncSession, artist_id: int) -> list[str]:
     return list((await s.execute(select(ArtistRef.ref).where(ArtistRef.artist_id == artist_id).order_by(ArtistRef.tied_at, ArtistRef.ref))).scalars())
 
 
+async def addresses(s: AsyncSession, refs: Iterable[str | None]) -> dict[str, str]:
+    """A catalog's records -> the one each artist is addressed by: the first tied of that catalog's records of them.
+    Whatever is said of an artist by a record — their page, a follow, a pick — is said at this one address, so
+    the several records a catalog keeps of one artist never look like several artists. A record nobody is tied
+    to is its own address."""
+    refs = {r for r in refs if r}
+    if not refs:
+        return {}
+    whose = dict((await s.execute(select(ArtistRef.ref, ArtistRef.artist_id).where(ArtistRef.ref.in_(refs)))).all())
+    first: dict[tuple[int, str], str] = {}
+    if whose:
+        for id_, ref in (await s.execute(select(ArtistRef.artist_id, ArtistRef.ref).where(
+                ArtistRef.artist_id.in_(set(whose.values()))).order_by(ArtistRef.tied_at, ArtistRef.ref))).all():
+            first.setdefault((id_, ref.partition(":")[0]), ref)
+    return {r: first[(whose[r], r.partition(":")[0])] if r in whose else r for r in refs}
+
+
+async def records(s: AsyncSession) -> list[list[str]]:
+    """The artists a catalog keeps several records of: each one's records, the address first."""
+    by: dict[tuple[int, str], list[str]] = {}
+    for id_, ref in (await s.execute(select(ArtistRef.artist_id, ArtistRef.ref).order_by(ArtistRef.tied_at, ArtistRef.ref))).all():
+        by.setdefault((id_, ref.partition(":")[0]), []).append(ref)
+    return [refs for refs in by.values() if len(refs) > 1]
+
+
 async def _new(s: AsyncSession, name: str, source: str, *, spelling: bool) -> Artist:
     a = Artist(name=" ".join(name.split()))
     s.add(a)
@@ -200,9 +225,11 @@ def put_right(o: Any, r: Reader) -> None:
 
 async def shown(s: AsyncSession, found_: list[Any]) -> list[Any]:
     """A catalog's artists (each with a `ref` and a `name`) as they are here: under their names, and once each —
-    the several records a catalog keeps of one artist are one card, that of the record with the most followers."""
+    the several records a catalog keeps of one artist are one card, that of the record with the most followers,
+    at the artist's one address (`addresses`): the same artist is the same `ref` wherever they are shown."""
     if not found_:
         return found_
+    at_ = await addresses(s, [a.ref for a in found_])
     r = await reader(s, [a.name for a in found_], [a.ref for a in found_])
     from app.library import looks
 
@@ -215,6 +242,8 @@ async def shown(s: AsyncSession, found_: list[Any]) -> list[Any]:
             out.append(a)
             continue
         card_ = a.model_copy(update={"name": hit[1]}) if hit[1] != a.name else a
+        if (addr := at_.get(a.ref, a.ref)) != a.ref:
+            card_ = card_.model_copy(update={"ref": addr, **({"id": addr.partition(":")[2]} if hasattr(a, "id") else {})})
         if hit[0] not in photos:
             who_ = await s.get(Artist, hit[0])
             photos[hit[0]] = await looks.photo(s, who_, chosen_only=True) if who_ is not None else None
