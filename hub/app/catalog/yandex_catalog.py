@@ -104,6 +104,13 @@ def track_of(t: Any, album: Any | None = None) -> CatalogTrack | None:
         release_date=day, cover_url=_img(uri, COVER), cover_small_url=_img(uri, COVER_SMALL))
 
 
+def _own_first(artist_ref: str, tracks: list[Any]) -> list[CatalogTrack]:
+    """An artist's most listened as Yandex lists them, their own tracks before the ones they are a guest on: the
+    list counts every track that credits them, and somebody else's track is not what they are known by."""
+    found = [x for t in tracks if (x := track_of(t)) is not None]
+    return sorted(found, key=lambda t: t.artist_ref != artist_ref)
+
+
 def _missing(e: Exception) -> bool:
     return type(e).__name__ in ("NotFoundError", "BadRequestError")
 
@@ -153,13 +160,12 @@ class YandexCatalog:
                               key=lambda a: (a.release_date or date(a.year or 1, 1, 1)), reverse=True)
             stats = getattr(b, "stats", None)
             return {
-                "page": ArtistPage(artist=artist, top_tracks=[x for t in (b.popular_tracks or []) if (x := track_of(t))],
-                                   albums=releases).model_dump(mode="json"),
+                "page": ArtistPage(artist=artist, top_tracks=_own_first(artist.ref, b.popular_tracks or []), albums=releases).model_dump(mode="json"),
                 "listeners": getattr(stats, "last_month_listeners", None),
                 "similar": [artist_of(a).model_dump(mode="json") for a in (b.similar_artists or []) if getattr(a, "name", None)],
             }
 
-        return await cached(f"ym:artist:{artist_id}", ARTIST_TTL_S, lambda: self._call(read))
+        return await cached(f"ym:artist2:{artist_id}", ARTIST_TTL_S, lambda: self._call(read))
 
     async def get_artist(self, artist_id: str | int) -> ArtistPage:
         """Their page: the most listened tracks and every release of their own, the newest first."""

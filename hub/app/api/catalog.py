@@ -15,6 +15,7 @@ from app.api.schemas import AlbumOut, ArtistPageOut, ArtistSourceOut, Discograph
 from app.catalog import banners, namesakes, popular
 from app.auth import current_user
 from app.catalog.models import ArtistPage, CatalogAlbum, CatalogTrack, split_ref
+from app.catalog.yandex import split_suffix
 from app.db import get_session
 from app.library.owned import annotate_albums, annotate_tracks
 from app.models import User
@@ -57,8 +58,10 @@ async def _tie_yandex(s: AsyncSession, who: Any, page: ArtistPage) -> None:
     except Exception as e:  # Yandex is away: the page is the other catalogs' for now
         log.info("artist %s: Yandex not asked: %r", page.artist.ref, e)
         return
-    here = {artists.fold(x.title) for x in [*page.albums, *page.top_tracks]}
-    if here & {artists.fold(x.title) for x in [*theirs.albums, *theirs.top_tracks]}:
+    def names(p: ArtistPage) -> set[str]:  # without what is written after a name («… (prod. by …)»)
+        return {artists.fold(split_suffix(x.title)[0]) for x in [*p.albums, *p.top_tracks]}
+
+    if names(page) & names(theirs):
         await artists.who(s, found.name, found.ref, "catalog")
 
 
@@ -93,19 +96,27 @@ async def whole_artist(s: AsyncSession, ref: str) -> tuple[ArtistPage, list[str]
     for p in pages:
         for a in p.albums:
             # one catalog's EP is another's single
-            same = (artists.fold(a.title), "single" if a.record_type == "ep" else a.record_type,
-                    a.release_date.year if a.release_date else a.year)
-            if a.ref in seen or same in seen:
+            kind, year = "single" if a.record_type == "ep" else a.record_type, a.release_date.year if a.release_date else a.year
+            same = (artists.fold(a.title), kind, year)
+            # Yandex writes into a release's name what the others keep apart («… (prod. by …)»): its release is one
+            # the page has already when the names agree up to that
+            plain = (artists.fold(split_suffix(a.title)[0]), kind, year)
+            if a.ref in seen or same in seen or (a.source == "ym" and plain in seen):
                 continue
-            seen.update((a.ref, same))
+            seen.update((a.ref, same, plain))
             albums.append(a)
+    # The most listened are the leading catalog's word (and Last.fm's after it, `popular.more`). Yandex's own list
+    # is not added to another catalog's: it counts every track the artist is credited on — other people's tracks
+    # with them as a guest come first there — and has no number to set the two lists against each other by
     top: dict[str, CatalogTrack] = {}
     for p in pages:
+        if p.artist.source == "ym" and main.artist.source != "ym":
+            continue
         for t in p.top_tracks:
             top.setdefault(t.ref, t)
     tracks = list(top.values())
     if len(pages) > 1:  # the most listened of them all, by the catalog's own count of it
-        tracks = sorted(tracks, key=lambda t: t.rank or 0, reverse=True)[:max(len(p.top_tracks) for p in pages)]
+        tracks = sorted(tracks, key=lambda t: t.rank or 0, reverse=True)[:max(len(p.top_tracks) for p in pages if p.artist.source == main.artist.source)]
     fans = [p.artist.nb_fans for p in pages if p.artist.nb_fans and p.artist.source == main.artist.source]
     artist = main.artist.model_copy(update={"name": who.name if who is not None else main.artist.name,
                                              "nb_fans": sum(fans) if fans else main.artist.nb_fans})

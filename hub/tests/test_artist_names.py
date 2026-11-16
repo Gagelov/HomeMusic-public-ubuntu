@@ -294,3 +294,48 @@ async def test_how_an_artist_looks_is_chosen_for_everyone(env, monkeypatch):
     await c.put(f"/api/artists/{a['id']}/banner", json={"choice": None})
     assert await shown() == ("https://img.test/big.jpg", "/found-by-itself")
 
+
+
+async def test_yandexs_record_adds_releases_to_an_artists_page_and_not_its_most_listened(env, monkeypatch):
+    """Yandex's list of an artist's most listened counts other people's tracks with them as a guest: it does not
+    replace the leading catalog's word. Its releases join the page — one the page has already, once."""
+    from datetime import date
+
+    from app.api import catalog
+    from app.catalog.models import ArtistPage, CatalogAlbum, CatalogArtist, CatalogTrack
+    from app.services import svc
+
+    def page(src, id_, fans, albums, top):
+        a = CatalogArtist(ref=f"{src}:{id_}", source=src, id=str(id_), name="Автостопом", nb_fans=fans)
+        return ArtistPage(
+            artist=a,
+            albums=[CatalogAlbum(ref=f"{src}:al{n}", source=src, id=f"al{n}", title=title, artist=a.name, artist_ref=a.ref,
+                                 record_type=kind, release_date=date(2026, 1, 1)) for n, title, kind in albums],
+            top_tracks=[CatalogTrack(ref=f"{src}:t{n}", source=src, id=f"t{n}", title=title, artist=who, artists=[who], rank=rank)
+                        for n, title, who, rank in top])
+
+    pages = {"dz:1": page("dz", 1, 2000, [(1, "ОКЕАНАРИУМ", "single"), (2, "Движение", "album")], [(1, "Давай поправимся", "Автостопом", 9)]),
+             "ym:7": page("ym", 7, 200000, [(3, "ОКЕАНАРИУМ (prod. by Evil Xan)", "single"), (4, "Только в Яндексе", "album")],
+                          [(2, "Утиль", "m0roks0n", None), (3, "Проблема", "Heart Sorrower", None)])}
+
+    class Yandex:
+        async def find_artist(self, name):
+            return pages["ym:7"].artist
+
+        async def get_artist(self, id_):
+            return pages[f"ym:{id_}"]
+
+        async def listeners(self, id_):
+            return 4321
+
+    async def get_artist_page(ref):
+        return pages[ref]
+
+    monkeypatch.setattr(catalog, "get_artist_page", get_artist_page)
+    monkeypatch.setattr(svc, "yandex", Yandex())
+    got = (await env["client"].get("/api/catalog/artist/dz:1")).json()
+    assert got["profiles"] == ["dz:1", "ym:7"]  # tied: the same name, a release in common; Deezer's record leads
+    assert [t["title"] for t in got["top_tracks"]] == ["Давай поправимся"]
+    assert sorted(a["title"] for a in [*got["albums"], *got["singles"]]) == ["Движение", "ОКЕАНАРИУМ", "Только в Яндексе"]
+    yandex = next(x for x in got["sources"] if x["service"] == "yandex")
+    assert (yandex["listeners"], yandex["url"]) == (4321, "https://music.yandex.ru/artist/7")
