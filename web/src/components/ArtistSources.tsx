@@ -12,14 +12,15 @@ const NAMES: Record<string, string> = { deezer: 'Deezer', lastfm: 'Last.fm', cat
 
 /** Under an artist's name: what is known of them, and where from.
  *
- * One line says it all together — the releases, the followers in the catalog, the listeners on Last.fm. An artist
+ * One line says it all together — the followers in the catalog, the listeners on Last.fm (how many releases there
+ * are is said by «Дискография», where they are). An artist
  * may be known in several places — a catalog keeps more than one record of some, Last.fm knows them by the name —
  * so before the line stand those places' small round pictures. A tap on them (or on the line) lays them out: each
  * round picture grows into a plate of its own — the service, the name the artist has there, its own numbers — and
  * a tap on a plate opens the artist's page there. Laid out, the plates say everything the line did, so the line is
  * not shown: after the plates stands the button that folds them back. Whether they are laid out is kept on the
  * device, for every artist's page. */
-export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[]; /** the releases of the page, each once */ releases: number }) {
+export function ArtistSources({ sources }: { sources: ArtistSourceOut[] }) {
   const [open, setOpen] = useState(() => {
     try {
       return localStorage.getItem(OPEN_KEY) === '1';
@@ -40,7 +41,6 @@ export function ArtistSources({ sources, releases }: { sources: ArtistSourceOut[
   const followers = sources.reduce((n, s) => n + (s.followers ?? 0), 0);
   const listeners = sources.reduce((n, s) => n + (s.listeners ?? 0), 0);
   const line = [
-    releases ? `${num(releases)} ${plural(releases, ['релиз', 'релиза', 'релизов'])}` : null,
     followers ? `${num(followers)} ${plural(followers, ['поклонник', 'поклонника', 'поклонников'])} в Deezer` : null,
     listeners ? `${num(listeners)} ${plural(listeners, ['слушатель', 'слушателя', 'слушателей'])} в Last.fm` : null,
   ].filter(Boolean).join(' · ');
