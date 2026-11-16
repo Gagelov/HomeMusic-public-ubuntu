@@ -757,6 +757,10 @@ export interface QualityRow {
   codec?: string | null;
   bitrate_kbps?: number | null;
   likeness?: number | null;
+  /** by the sound it is the same recording (though the two files may differ in length or at places) */
+  sure?: boolean;
+  /** the file found is the better one of the two */
+  better?: boolean;
   provider?: string | null;
   note?: string | null;
   duration_s?: number | null;

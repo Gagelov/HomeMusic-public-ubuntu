@@ -65,10 +65,11 @@ export function QualityPage() {
     toast(r.queued ? `В очереди: ${tracksWord(r.queued)}` : 'Слабых файлов нет', r.queued ? 'success' : 'info');
     res.reload(true);
   };
-  const say = async (r: QualityRow, yes: boolean) => {
+  /** `file`: with the yes to «is it that record?» the file found is taken too (said apart: yes by itself keeps one's own). */
+  const say = async (r: QualityRow, yes: boolean, file = false) => {
     setBusy(`${r.id}`);
     listening.stop();
-    const ok = await attempt(() => (yes ? api.qualityAccept(r.id) : api.qualityDecline(r.id)), yes ? (r.kind === 'identify' ? 'Данные каталога применены' : 'Файл заменён') : undefined);
+    const ok = await attempt(() => (yes ? api.qualityAccept(r.id, file) : api.qualityDecline(r.id)), yes ? (r.kind === 'identify' ? (file ? 'Данные каталога применены, файл заменён' : 'Данные каталога применены, файл остался ваш') : 'Файл заменён') : undefined);
     setBusy(null);
     if (!ok) return;
     if (yes) window.dispatchEvent(new Event(EDITED_EVENT));
@@ -194,6 +195,7 @@ export function QualityPage() {
                           onYes={() => void say(r, true)}
                           onNo={() => void say(r, false)}
                           onVersion={r.kind === 'identify' ? () => void version(r) : undefined}
+                          onTake={r.kind === 'identify' && r.better ? () => void say(r, true, true) : undefined}
                         />
                       )}
                       {r.can_revert && open === r.id && <Compare r={r} listening={listening} busy={busy === `${r.id}`} onYes={() => setOpen(null)} onNo={() => void back(r)} />}
@@ -275,10 +277,11 @@ function useTwoFiles() {
   return { on, play, stop };
 }
 
-function Compare({ r, listening, busy, onYes, onNo, onVersion }: { r: QualityRow; listening: ReturnType<typeof useTwoFiles>; busy: boolean; onYes: () => void; onNo: () => void; /** «is it that record?» has a third answer: another version of the same song */ onVersion?: () => void }) {
+function Compare({ r, listening, busy, onYes, onNo, onVersion, onTake }: { r: QualityRow; listening: ReturnType<typeof useTwoFiles>; busy: boolean; onYes: () => void; onNo: () => void; /** «is it that record?» has a third answer: another version of the same song */ onVersion?: () => void; /** …and yes with the file found taken too, where it is the better one */ onTake?: () => void }) {
   const peaks = useAsync((s) => api.qualityPeaks(r.id, s), [r.id]);
   const done = r.state === 'replaced'; // replaced already: the file it had beside the one it has, the new one taken
-  // where the two files part though they are one recording: the places a censor's cut shows as
+  const [more, setMore] = useState(false); // the answers that are hardly the case, where the sound says «the same recording»
+  // where the two files part though they are one recording
   const gaps = peaks.data?.gaps ?? [];
   type Which = 'current' | 'found' | 'was';
   const [upper, lower]: [Which, Which] = done ? ['was', 'current'] : ['current', 'found'];
@@ -320,43 +323,87 @@ function Compare({ r, listening, busy, onYes, onNo, onVersion }: { r: QualityRow
             <span className="h-1 w-full rounded bg-fg/10" />
           )}
         </button>
-        <span className={cx('w-20 shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-center text-[11px]', good ? 'bg-accent/15 text-accent' : 'bg-warn/15 text-warn')}>{words}</span>
+        <span className={cx('w-20 shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-center text-[11px]', good ? 'bg-accent/15 text-accent' : 'bg-fg/10 text-muted')}>{words}</span>
         <span className="w-16 shrink-0 text-[11px] text-accent">{taken ? '✓ выбран' : ''}</span>
       </div>
     );
   };
   return (
     <div className="pt-2 md:pl-[3.25rem]">
-      {r.kind === 'identify' && !done && <p className="pb-1 text-xs text-muted">Каталог считает, что это «{r.record}». «Это она» — трек получит её название, альбом и обложку; файл заменится, только если найденный лучше.</p>}
+      {r.kind === 'identify' && !done && (
+        <p className="pb-1 text-xs text-muted">
+          Каталог считает, что это «{r.record}». «Это она» — трек получит её название, альбом и обложку. {r.better ? 'Файл останется ваш, если не сказать иначе.' : 'Файл останется ваш: найденный не лучше.'}
+        </p>
+      )}
       {done ? lane('was', 'Был', fileWords(r.was_codec, r.was_kbps), false) : lane('current', 'Сейчас', fileWords(r.was_codec, r.was_kbps), false)}
-      {done ? lane('current', 'Стал', fileWords(r.codec, r.bitrate_kbps), true, true) : lane('found', 'Найден', fileWords(r.codec, r.bitrate_kbps), true)}
+      {done ? lane('current', 'Стал', fileWords(r.codec, r.bitrate_kbps), true, true) : lane('found', 'Найден', fileWords(r.codec, r.bitrate_kbps), !!r.better)}
       {gaps.length > 0 && (
         <div className="pt-1 text-xs">
-          <p className="pb-1 text-danger">Файлы расходятся в {gaps.length === 1 ? 'одном месте' : `${gaps.length} местах`} — так выглядит вырезанное или запиканное слово. Послушайте оба:</p>
+          <p className="pb-1 text-danger">Файлы расходятся в {gaps.length === 1 ? 'одном месте' : `${gaps.length} местах`}. Что там, слышно только на слух — послушайте оба:</p>
           <ul className="space-y-1">
             {gaps.map((g) => (
               <li key={g.at} className="flex flex-wrap items-center gap-2">
                 <span className="w-24 tabular-nums text-fg">{clock(g.at)}–{clock(g.to)}</span>
                 <button type="button" onClick={() => hear(upper, g.at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ {done ? 'был' : 'сейчас'}</button>
                 <button type="button" onClick={() => hear(lower, g.other_at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ {done ? 'стал' : 'найден'}</button>
-                {g.quieter && <span className="text-muted">здесь тише файл «{g.quieter === 'upper' ? (done ? 'был' : 'сейчас') : done ? 'стал' : 'найден'}» — похоже, вырезано в нём</span>}
+                {g.quieter && <span className="text-muted">здесь тише файл «{g.quieter === 'upper' ? (done ? 'был' : 'сейчас') : done ? 'стал' : 'найден'}»</span>}
               </li>
             ))}
           </ul>
         </div>
       )}
-      {done && gaps.length === 0 && !peaks.loading && <p className="pt-1 text-xs text-muted">Отличающихся мест не нашлось. Очень короткую вырезку сверка может не заметить — если сомневаетесь, послушайте. Прежний файл хранится 30 дней.</p>}
+      {done && gaps.length === 0 && !peaks.loading && <p className="pt-1 text-xs text-muted">Отличающихся мест не нашлось. Очень короткое расхождение сверка может не заметить — если сомневаетесь, послушайте. Прежний файл хранится 30 дней.</p>}
       <div className="flex flex-wrap items-center gap-2 pt-2">
-        <Button small variant="primary" busy={busy && !done} onClick={onYes}>
-          {done ? 'Оставить новый' : r.kind === 'identify' ? 'Это она' : 'Заменить'}
-        </Button>
-        <Button small busy={busy && done} disabled={busy && !done} onClick={onNo}>
-          {done ? 'Вернуть мой файл' : r.kind === 'identify' ? 'Нет, другая песня' : 'Оставить мой'}
-        </Button>
-        {onVersion && !done && (
-          <Button small disabled={busy} onClick={onVersion} title="Трек останется как есть и будет связан с записью каталога: это разные записи одной песни">
-            Другая версия той же песни
-          </Button>
+        {done ? (
+          <>
+            <Button small variant="primary" onClick={onYes}>
+              Оставить новый
+            </Button>
+            <Button small busy={busy} onClick={onNo}>
+              Вернуть мой файл
+            </Button>
+          </>
+        ) : r.kind === 'identify' ? (
+          <>
+            {/* yes is of the record: the track keeps its file unless the listener says the other thing — and that is
+                offered only where the file found is the better one. Where the sound says «the same recording» the
+                yes stands out, and the other answers are put away: they are hardly the case */}
+            <Button small variant={r.sure ? 'primary' : undefined} busy={busy} onClick={onYes}>
+              {onTake ? 'Это она · оставить мой файл' : 'Это она'}
+            </Button>
+            {onTake && (
+              <Button small disabled={busy} onClick={onTake} className="!border !border-danger/60 !text-danger" title="Трек получит данные каталога, а его файл заменится найденным. Прежний хранится 30 дней">
+                Это она · взять найденный файл
+              </Button>
+            )}
+            {r.sure && !more ? (
+              <button type="button" className="px-2 text-sm text-muted hover:text-fg" onClick={() => setMore(true)}>
+                ещё…
+              </button>
+            ) : (
+              <>
+                {onVersion && (
+                  <Button small disabled={busy} onClick={onVersion} title="Трек останется как есть и будет связан с записью каталога: это разные записи одной песни">
+                    Другая версия той же песни
+                  </Button>
+                )}
+                <Button small disabled={busy} onClick={onNo}>
+                  Нет, другая песня
+                </Button>
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            {/* a better file of a weak one that the Hub did not take by itself: the two differ, or are only alike —
+                keeping one's own is the safe word, replacing is said on purpose */}
+            <Button small variant={r.sure ? 'primary' : undefined} busy={busy} onClick={onNo}>
+              Оставить мой
+            </Button>
+            <Button small disabled={busy} onClick={onYes} className="!border !border-danger/60 !text-danger" title="Файл трека заменится найденным. Прежний хранится 30 дней">
+              Заменить всё равно
+            </Button>
+          </>
         )}
         <span className="min-w-0 truncate text-[11px] text-dim">
           {[r.provider ? `источник: ${providerLabel(r.provider)}` : null, r.duration_s ? fmtDuration(r.duration_s) : null, r.note].filter(Boolean).join(' · ')}

@@ -46,6 +46,8 @@ class QualityRow(BaseModel):
     codec: str | None = None  # of the file found
     bitrate_kbps: int | None = None
     likeness: float | None = None
+    sure: bool = False  # by the sound it is the same recording (though the two files may differ in length or at places)
+    better: bool = False  # the file found is the better one of the two: there is something to replace the track's with
     provider: str | None = None
     note: str | None = None
     duration_s: int | None = None
@@ -83,6 +85,10 @@ async def listed(user: User = Depends(current_user), s: AsyncSession = Depends(g
         select(Upgrade, Track, DownloadItem.progress).join(Track, Track.id == Upgrade.track_id)
         .join(DownloadItem, DownloadItem.id == Upgrade.item_id, isouter=True)
         .where(Upgrade.user_id == user.id).order_by(Upgrade.updated_at.desc(), Upgrade.id.desc()))).all()
+    from app.library import acoustic, quality
+    from app.library.tracks import current_files
+
+    files = await current_files(s, [t.id for row, t, _ in rows if row.state == "found"])
     seen: set[int] = set()
     out = []
     for row, t, progress in rows:  # of a track looked for twice, the last time
@@ -95,6 +101,8 @@ async def listed(user: User = Depends(current_user), s: AsyncSession = Depends(g
             progress=float(progress or 0) if row.state == "searching" else 0, known=str(t.ref or "").startswith("dz:"),
             was_codec=row.was_codec, was_kbps=row.was_kbps, codec=row.codec, bitrate_kbps=row.bitrate_kbps,
             likeness=row.likeness, provider=row.provider, note=row.note, duration_s=t.duration_s,
+            sure=row.likeness is not None and row.likeness >= acoustic.SAME,
+            better=row.state == "found" and (f := files.get(t.id)) is not None and quality.better(row.codec, row.bitrate_kbps, f.codec, f.bitrate_kbps),
             can_revert=row.state == "replaced" and upgrade.was(row) is not None, updated_at=row.updated_at))
     return QualityOut(rows=out, weak=len([i for i in await _weak_ids(s, user) if i not in seen]))
 
@@ -117,10 +125,13 @@ async def _row(s: AsyncSession, user: User, row_id: int) -> Upgrade:
 
 
 @router.post("/{row_id}/accept")
-async def accept(row_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> dict:
+async def accept(row_id: int, file: bool | None = None, user: User = Depends(current_user),
+                 s: AsyncSession = Depends(get_session, scope="function")) -> dict:
+    """Yes. `file`: the file found takes the place of the track's own — said apart for «is it that record?», where
+    yes by itself is of the record only and the track keeps its file; a better file found for a weak one is taken."""
     row = await _row(s, user, row_id)
     try:
-        await upgrade.accept(s, row, user.id)
+        await upgrade.accept(s, row, user.id, take_file=bool(file) if row.kind == "identify" else True)
     except ValueError as e:
         raise HTTPException(409, str(e)) from e
     await enqueue_scan(s)

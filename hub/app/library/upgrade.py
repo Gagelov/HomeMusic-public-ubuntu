@@ -161,7 +161,7 @@ async def judge(s: AsyncSession, track_id: int, path: Path, codec: str | None, k
         # listener hears them and says
         gaps = await acoustic.differences(library_abs(old.path), path)
         if gaps:
-            return "ask", f"та же запись (сходство {alike:.2f}), но отличается {places(gaps)} — возможно, в одном из файлов вырезаны слова", alike
+            return "ask", f"та же запись (сходство {alike:.2f}), но файлы расходятся {places(gaps)}", alike
         return "replace", f"та же запись (сходство по звуку {alike:.2f})", alike
     return "ask", f"похожая запись (сходство по звуку {alike:.2f}) — возможно, другая версия", alike
 
@@ -217,7 +217,9 @@ async def _settle(s: AsyncSession, meta: dict[str, Any], track_id: int, path: Pa
     found = dict(codec=codec, bitrate_kbps=kbps, likeness=alike, provider=getattr(cand, "provider", None),
                  source_url=getattr(cand, "page_url", None))
     near = not (duration_s and track.duration_s) or abs(duration_s - track.duration_s) <= SAME_LENGTH_S
-    gaps = await acoustic.differences(library_abs(old.path), path) if alike >= acoustic.SAME and near and better else []
+    # where the two part at some places — whichever is the better file: a record is not taken for the track's own
+    # by itself while its file differs from the track's
+    gaps = await acoustic.differences(library_abs(old.path), path) if alike >= acoustic.SAME and near else []
     if alike >= acoustic.SAME and near and not gaps:
         await adopt(s, track, meta)
         was = None
@@ -235,7 +237,7 @@ async def _settle(s: AsyncSession, meta: dict[str, Any], track_id: int, path: Pa
     dest.unlink(missing_ok=True)
     await asyncio.to_thread(_move, path, dest)
     words = (f"похожая запись (сходство по звуку {alike:.2f})" if alike < acoustic.SAME
-             else f"та же запись (сходство {alike:.2f}), но отличается {places(gaps)} — возможно, в одном из файлов вырезаны слова" if gaps
+             else f"та же запись (сходство {alike:.2f}), но файлы расходятся {places(gaps)}" if gaps
              else f"звучит так же (сходство {alike:.2f}), но длина другая")
     await mark_in(s, meta, state="found", staged_path=rel.as_posix(), note=words, **found)
     return "found", words
@@ -385,8 +387,10 @@ def staged(row: Upgrade) -> Path | None:
     return p if p is not None and p.is_file() else None
 
 
-async def accept(s: AsyncSession, row: Upgrade, user_id: int) -> None:
-    """The listener says the file found is to take the old one's place."""
+async def accept(s: AsyncSession, row: Upgrade, user_id: int, *, take_file: bool = True) -> None:
+    """The listener's yes. To «a better file was found»: it takes the old one's place. To «is it that record?»:
+    the track takes the record's names — and the file found takes the old one's place only where the listener
+    said that too (`take_file`) and it is the better file; else the track keeps its own."""
     path = staged(row)
     if row.state != "found" or path is None:
         raise ValueError("Файл уже не ждёт решения")
@@ -394,7 +398,7 @@ async def accept(s: AsyncSession, row: Upgrade, user_id: int) -> None:
     old = (await current_files(s, [row.track_id])).get(row.track_id)
     if row.kind == "identify" and track is not None:  # «это она»: the record's names — and its file if it is better
         await adopt(s, track, row.meta_json or {})
-        if old is not None and not quality.better(row.codec, row.bitrate_kbps, old.codec, old.bitrate_kbps):
+        if not take_file or (old is not None and not quality.better(row.codec, row.bitrate_kbps, old.codec, old.bitrate_kbps)):
             path.unlink(missing_ok=True)
             row.state, row.staged_path = "replaced", None
             row.note = "вы подтвердили запись: взяты данные каталога, файл оставлен ваш"

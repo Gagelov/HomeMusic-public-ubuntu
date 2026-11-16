@@ -473,7 +473,8 @@ export const api = {
   quality: (signal?: AbortSignal) => request<QualityOut>('GET', '/api/quality', { signal }),
   /** Look for a better file of these tracks (none: of every weak file one looks after). */
   qualityStart: (track_ids?: number[]) => request<{ queued: number }>('POST', '/api/quality/start', { json: { track_ids: track_ids ?? null } }),
-  qualityAccept: (id: number) => request<OkOut>('POST', `/api/quality/${id}/accept`),
+  /** `file`: «is it that record?» answered yes *and* the file found is to take the place of the track's own */
+  qualityAccept: (id: number, file?: boolean) => request<OkOut>('POST', withQuery(`/api/quality/${id}/accept`, { file: file || undefined })),
   qualityDecline: (id: number) => request<OkOut>('POST', `/api/quality/${id}/decline`),
   /** the third answer to «is it that record?»: another version of the same song */
   qualityVersion: (id: number) => request<OkOut>('POST', `/api/quality/${id}/version`),

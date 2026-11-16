@@ -134,3 +134,50 @@ async def test_an_uploaded_file_is_said_to_be_another_version(env, tmp_path):
     assert [(v["title"], v["ref"], v["preferred"], v["has_file"]) for v in d["versions"]] == [
         ("Группа крови", "dz:100", True, False), ("Группа крови (старая)", None, False, True)]
 
+
+async def test_yes_to_a_record_keeps_the_file_unless_told_otherwise(env, tmp_path):
+    """«Это она» is of the record: the track keeps its own file though the one found is the better — the file is
+    taken only by a word that says so."""
+    import shutil
+
+    from sqlalchemy import select
+
+    from app.config import get_settings
+    from app.db import session_scope
+    from app.library.importer import library_abs
+    from app.models import Track, TrackFile, Upgrade, User
+    from tests.test_flow import make_mp3
+
+    c = env["client"]
+    await download_one(c, {"artist": "Кино", "title": "Группа крови"})
+
+    async def waiting() -> tuple[int, str]:
+        staged = get_settings().staging_dir / "upgrades"
+        staged.mkdir(parents=True, exist_ok=True)
+        async with session_scope() as s:
+            t = (await s.execute(select(Track).join(TrackFile, TrackFile.track_id == Track.id))).scalars().first()
+            f = (await s.execute(select(TrackFile).where(TrackFile.track_id == t.id).order_by(TrackFile.id.desc()))).scalars().first()
+            row = Upgrade(user_id=(await s.execute(select(User.id).limit(1))).scalar_one(), track_id=t.id, kind="identify", state="found",
+                          codec="flac", bitrate_kbps=900, likeness=0.96, meta_json={"title": t.title, "artist": t.artist, "album": t.album})
+            s.add(row)
+            await s.flush()
+            shutil.copy(make_mp3(tmp_path / f"found{row.id}.mp3", seconds=2), staged / f"{row.id}.mp3")
+            row.staged_path = f"upgrades/{row.id}.mp3"
+            return row.id, f.path
+
+    row_id, mine = await waiting()
+    (shown,) = [r for r in (await c.get("/api/quality")).json()["rows"] if r["id"] == row_id]
+    assert shown["sure"] and shown["better"]  # the same recording by the sound, and a better file: there is a choice
+    assert (await c.post(f"/api/quality/{row_id}/accept")).status_code == 200
+    async with session_scope() as s:
+        row = await s.get(Upgrade, row_id)
+        f = (await s.execute(select(TrackFile).where(TrackFile.track_id == row.track_id).order_by(TrackFile.id.desc()))).scalars().first()
+        assert f.path == mine and library_abs(mine).is_file() and row.state == "replaced" and "файл оставлен ваш" in row.note
+
+    row_id, mine = await waiting()
+    assert (await c.post(f"/api/quality/{row_id}/accept", params={"file": "true"})).status_code == 200
+    async with session_scope() as s:
+        row = await s.get(Upgrade, row_id)
+        f = (await s.execute(select(TrackFile).where(TrackFile.track_id == row.track_id).order_by(TrackFile.id.desc()))).scalars().first()
+        assert f.codec == "flac" and row.was_path  # taken by the listener's word; the old one is kept to be brought back
+

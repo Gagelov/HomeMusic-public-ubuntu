@@ -180,7 +180,7 @@ function Window({ track }: { track: FileSought }) {
       const quiet = gaps.filter((g) => g.quieter === 'other').length;
       const ok = await confirmDialog({
         title: 'Файлы расходятся местами',
-        body: `Запись та же, но отличается на ${gaps.map((g) => clock(g.at)).join(', ')}. Так выглядит вырезанное или запиканное слово` + (quiet ? ' — и там тише именно найденный файл' : '') + '. Заменить всё равно?',
+        body: `Запись та же, но файлы расходятся на ${gaps.map((g) => clock(g.at)).join(', ')}` + (quiet ? ' — и там тише найденный файл' : '') + '. Что там, слышно только на слух. Заменить всё равно?',
         okLabel: 'Заменить',
       });
       if (!ok) return setBusy(null);
@@ -332,7 +332,7 @@ function Window({ track }: { track: FileSought }) {
                         <span className="w-24 tabular-nums text-danger">{clock(g.at)}–{clock(g.to)}</span>
                         <button type="button" onClick={() => from('mine', g.at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ ваш</button>
                         <button type="button" onClick={() => from('other', g.other_at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ найден</button>
-                        <span className="text-dim">{g.quieter === 'other' ? 'здесь тише найденный — похоже, вырезано в нём' : g.quieter === 'mine' ? 'здесь тише ваш — похоже, вырезано в нём' : 'так выглядит вырезанное или запиканное слово'}</span>
+                        <span className="text-dim">{g.quieter === 'other' ? 'здесь тише найденный' : g.quieter === 'mine' ? 'здесь тише ваш' : ''}</span>
                       </li>
                     ))}
                   </ul>
