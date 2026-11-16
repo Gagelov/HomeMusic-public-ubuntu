@@ -248,7 +248,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           </div>
           {/* the rest of what they made: every track of theirs as one list, the most listened first */}
           {releases.length > 0 && (
-            <div className="px-4 pt-2 lg:px-6">
+            <div className="flex justify-center px-4 pt-2 lg:px-6">
               <Link to={`/artist/${enc(artist.ref)}/discography?view=tracks`} className="inline-flex h-9 items-center rounded-full border border-fg/40 px-4 text-sm font-semibold text-fg transition hover:border-fg active:scale-95">
                 Все треки
               </Link>
