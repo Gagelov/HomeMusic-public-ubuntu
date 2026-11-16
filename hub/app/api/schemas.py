@@ -217,6 +217,7 @@ class LibTrackOut(BaseModel):
     path: str
     # a search found it by these — its other names, its artists' other spellings — not by what the row shows
     found_by: list[str] = []
+    versions: int = 0  # how many recordings the song it is has here (0: it is nobody's version)
 
 
 class TrackSourceOut(BaseModel):

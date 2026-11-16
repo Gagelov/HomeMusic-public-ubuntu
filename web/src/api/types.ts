@@ -299,6 +299,8 @@ export interface LibTrackOut {
   path: string;
   /** a search found it by these — its other names, its artists' other spellings — not by what the row shows */
   found_by?: string[];
+  /** how many recordings the song it is has here (0: it is nobody's version) */
+  versions?: number;
 }
 
 export interface LibAlbumOut {

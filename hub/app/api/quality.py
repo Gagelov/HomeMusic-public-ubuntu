@@ -155,6 +155,19 @@ async def decline(row_id: int, user: User = Depends(current_user), s: AsyncSessi
     return {"ok": True}
 
 
+@router.post("/{row_id}/version")
+async def version(row_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")) -> dict:
+    """The third answer to «is it that record?»: another version of the same song — the track stays as it is, and
+    the two are tied as versions."""
+    row = await _row(s, user, row_id)
+    try:
+        await upgrade.other_version(s, user.id, row)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    await s.commit()
+    return {"ok": True}
+
+
 async def _file(s: AsyncSession, row: Upgrade, which: str):
     if which == "found":
         path = upgrade.staged(row)

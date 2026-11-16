@@ -117,7 +117,12 @@ async def search(q: str = Query(min_length=1), user: User = Depends(current_user
     q = q.strip()
     owned = await artist_names.found(s, q)
     files = await current_files(s, [t.id for t, _ in owned])
-    out = SearchOut(library=[track_out(t, files.get(t.id)).model_copy(update={"found_by": by}) for t, by in owned])
+    from app.library import versions
+
+    # a song is shown once: of its versions the preferred one, with how many there are
+    owned = await versions.once(s, owned, lambda x: x[0].id)
+    many = await versions.counts(s, [t.id for t, _ in owned])
+    out = SearchOut(library=[track_out(t, files.get(t.id)).model_copy(update={"found_by": by, "versions": many.get(t.id, 0)}) for t, by in owned])
     res: SearchResults | None = None
     if svc.deezer is not None:
         try:
@@ -139,7 +144,7 @@ async def search(q: str = Query(min_length=1), user: User = Depends(current_user
     if res is not None:
         out.artists = await artist_names.shown(s, res.artists)  # under the names they have here
         out.albums = await annotate_albums(s, res.albums, user.id)
-        out.tracks = await annotate_tracks(s, _unique(res.tracks), user.id)
+        out.tracks = await versions.once(s, await annotate_tracks(s, _unique(res.tracks), user.id))
     return out
 
 

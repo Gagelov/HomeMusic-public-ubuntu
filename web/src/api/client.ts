@@ -359,7 +359,8 @@ export const api = {
   /** A song and its versions (the Hub's `app/library/versions.py`). */
   versions: (q: { track_id?: number; ref?: string; nd_song_id?: string }, signal?: AbortSignal) => request<VersionsOut>('GET', withQuery('/api/library/versions', q), { signal }),
   versionsFind: (id: number, q: string, signal?: AbortSignal) => request<VersionOut[]>('GET', withQuery(`/api/library/tracks/${id}/versions/find`, { q }), { signal }),
-  versionAdd: (id: number, track_id: number) => request<VersionsOut>('POST', `/api/library/tracks/${id}/versions`, { json: { track_id } }),
+  /** `other`: a track of the Hub's, or a song of the catalog by its ref (it becomes a track, without a file) */
+  versionAdd: (id: number, other: { track_id?: number; ref?: string }) => request<VersionsOut>('POST', `/api/library/tracks/${id}/versions`, { json: other }),
   versionPatch: (id: number, body: { label?: string; preferred?: boolean }) => request<VersionsOut>('PATCH', `/api/library/tracks/${id}/version`, { json: body }),
   versionDrop: (id: number, of?: number) => request<VersionsOut>('DELETE', withQuery(`/api/library/tracks/${id}/version`, { of })),
   addTrackName: (id: number, name: string) => request<TrackEditOut>('POST', `/api/library/tracks/${id}/names`, { json: { name } }),
@@ -474,6 +475,8 @@ export const api = {
   qualityStart: (track_ids?: number[]) => request<{ queued: number }>('POST', '/api/quality/start', { json: { track_ids: track_ids ?? null } }),
   qualityAccept: (id: number) => request<OkOut>('POST', `/api/quality/${id}/accept`),
   qualityDecline: (id: number) => request<OkOut>('POST', `/api/quality/${id}/decline`),
+  /** the third answer to «is it that record?»: another version of the same song */
+  qualityVersion: (id: number) => request<OkOut>('POST', `/api/quality/${id}/version`),
   /** A track of the library and the file it plays from («Найти другой файл»). */
   trackFile: (id: number, signal?: AbortSignal) => request<TrackFileOut>('GET', `/api/quality/track/${id}`, { signal }),
   /** Download a file found for the track and say how it compares with the track's own. */

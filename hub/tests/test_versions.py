@@ -44,6 +44,15 @@ async def test_versions_are_one_group_with_a_preferred_one(env, monkeypatch):
         told = await annotate_tracks(s, list(songs.values()))
         assert [t.versions for t in told] == [4, 4, 4, 4]
 
+    # a list that shows a song once keeps one of its versions: the preferred one, in the place of the first of them
+    from app.library import versions as lib
+
+    async with session_scope() as s:
+        told = await annotate_tracks(s, [songs["dz:72"], songs["dz:74"], songs["dz:71"]])
+        assert [(t.ref, t.versions) for t in await lib.once(s, told)] == [("dz:71", 4)]
+        told = await annotate_tracks(s, [songs["dz:73"], songs["dz:72"]])  # the preferred one is not among them: the first
+        assert [t.ref for t in await lib.once(s, told)] == ["dz:73"]
+
     # said by hand, for everyone: the preferred version, and a word for what a version is
     r = await c.patch(f"/api/library/tracks/{old}/version", json={"label": "  старая   версия "})
     assert next(v["label"] for v in r.json()["versions"] if v["track_id"] == old) == "старая версия"
@@ -65,3 +74,44 @@ async def test_versions_are_one_group_with_a_preferred_one(env, monkeypatch):
     await download_one(c, {"artist": "Кино", "title": "Группа крови"})
     found = (await c.get(f"/api/library/tracks/{old}/versions/find", params={"q": "группа крови"})).json()
     assert [v["title"] for v in found] == ["Группа крови"] and found[0]["has_file"]
+
+    # a version that only the catalog has is joined by its ref: it becomes a track here
+    songs["dz:75"] = CatalogTrack(ref="dz:75", source="dz", id="75", title="Дорогая (Remix)", artist="Thomas Mraz", artists=["Thomas Mraz"], duration_s=200)
+    r = await c.post(f"/api/library/tracks/{old}/versions", json={"ref": "dz:75"})
+    assert r.status_code == 200 and [(v["ref"], v["label"], v["has_file"]) for v in r.json()["versions"]] == [("dz:71", None, False), ("dz:75", "remix", False)], r.text
+    assert (await c.post(f"/api/library/tracks/{old}/versions", json={"ref": "dz:404"})).status_code == 404
+
+
+async def test_a_doubt_is_answered_another_version_of_the_same_song(env, monkeypatch):
+    """«Is it that record?» has a third answer: the track stays as it is, tied to the catalog's record as a version."""
+    from sqlalchemy import select
+
+    from app.catalog.models import CatalogTrack
+    from app.db import session_scope
+    from app.mixes import resolve
+    from app.models import Track, Upgrade
+
+    cat = CatalogTrack(ref="dz:81", source="dz", id="81", title="Дорогая", artist="Thomas Mraz", artists=["Thomas Mraz"], duration_s=243)
+
+    async def catalog_track(ref):
+        return cat if ref == "dz:81" else None
+
+    monkeypatch.setattr(resolve, "catalog_track", catalog_track)
+    c = env["client"]
+    await download_one(c, {"artist": "Кино", "title": "Группа крови"})
+    async with session_scope() as s:
+        mine = (await s.execute(select(Track).where(Track.title == "Группа крови"))).scalars().first()
+        row = Upgrade(user_id=mine.created_by or 1, track_id=mine.id, kind="identify", state="kept", meta_json={"track_ref": "dz:81"})
+        user = (await s.execute(select(Upgrade.user_id).join(Track, Track.id == Upgrade.track_id).limit(1))).scalar_one_or_none()
+        from app.models import User
+
+        row.user_id = (await s.execute(select(User.id).limit(1))).scalar_one()
+        s.add(row)
+        await s.flush()
+        row_id, mine_id = row.id, mine.id
+        del user
+    r = await c.post(f"/api/quality/{row_id}/version")
+    assert r.status_code == 200, r.text
+    d = (await c.get("/api/library/versions", params={"track_id": mine_id})).json()
+    # the catalog's record is the preferred one — the one the other was joined to; the track keeps its names and file
+    assert [(v["title"], v["preferred"], v["has_file"]) for v in d["versions"]] == [("Дорогая", True, False), ("Группа крови", False, True)]

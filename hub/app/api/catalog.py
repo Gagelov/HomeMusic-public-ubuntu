@@ -118,7 +118,7 @@ async def artist(ref: str, user: User = Depends(current_user), s: AsyncSession =
     albums = await annotate_albums(s, page.albums, user.id)
     albums.sort(key=lambda a: (a.release_date is not None, a.release_date), reverse=True)
     # how the artist looks, where the listeners chose: the photo, the wide picture — or none over the page
-    from app.library import artists, looks
+    from app.library import artists, looks, versions
 
     who = await artists.by_ref(s, records[0])
     look = await looks.of(s, who.id) if who is not None else None
@@ -134,7 +134,8 @@ async def artist(ref: str, user: User = Depends(current_user), s: AsyncSession =
         popular.listeners(page.artist.name), popular.more(page.artist, page.top_tracks), found_banner())
     return ArtistPageOut(
         artist=page.artist,
-        top_tracks=await annotate_tracks(s, [*page.top_tracks, *extra], user.id),
+        # a song is among the most listened once: of its versions the preferred one
+        top_tracks=await versions.once(s, await annotate_tracks(s, [*page.top_tracks, *extra], user.id)),
         lastfm_listeners=heard, top_from_lastfm=len(extra), banner_url=banner,
         albums=[a for a in albums if a.record_type == "album"],
         singles=[a for a in albums if a.record_type in ("single", "ep")],

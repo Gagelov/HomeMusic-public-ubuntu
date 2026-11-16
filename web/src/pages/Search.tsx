@@ -1,3 +1,5 @@
+import { openVersions } from '../lib/versions';
+import { plural } from '../lib/format';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, errorMessage, isAbort, peekCache, withQuery } from '../api/client';
 import type { Candidate, LibTrackOut, ProviderSearchOut, SearchOut, SearchRecent, SearchTracksOut, TrackOut } from '../api/types';
@@ -452,7 +454,15 @@ function LibraryTrackRow({ t, onPlay }: { t: LibTrackOut; onPlay?: () => void })
         <Icon name="check" size={20} stroke={2.6} />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[15px]">{t.title}</div>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-[15px]">{t.title}</span>
+          {/* the song has other recordings here; the one shown is the preferred */}
+          {(t.versions ?? 0) > 1 && (
+            <button type="button" title="Другие версии этой песни" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openVersions({ title: t.title, library_track_id: t.id }); }} className="shrink-0 rounded-full bg-info/20 px-1.5 text-[11px] leading-[1.35] text-info hover:bg-info/30">
+              {t.versions} {plural(t.versions ?? 0, ['версия', 'версии', 'версий'])}
+            </button>
+          )}
+        </div>
         <div className="truncate text-[13px] text-muted">
           {[t.artist, t.album].filter(Boolean).join(' · ')}
           {/* found by another name of the track, or another spelling of its artist: said, so the row is no riddle */}

@@ -35,6 +35,8 @@ function Window({ of }: { of: VersionsOf }) {
   const id = d?.track_id;
   const words = q.trim();
   const found = useAsync((s) => (id && words.length > 1 ? api.versionsFind(id, words, s) : Promise.resolve([] as VersionOut[])), [id, words]);
+  // …and the catalog's songs the same words find: a version need not have a file here
+  const inCatalog = useAsync((s) => (words.length > 1 ? api.searchTracks(words, 0, s) : Promise.resolve(null)), [words]);
   const playing = useListen((s) => (s.phase === 'playing' ? s.track?.ref : null));
 
   const close = () => {
@@ -101,6 +103,13 @@ function Window({ of }: { of: VersionsOf }) {
       </li>
     );
   };
+  // of the catalog's songs: the ones that are neither a version already nor among the library's own found above
+  const known = new Set([...(d?.versions ?? []).map((v) => v.track_id), ...(found.data ?? []).map((v) => v.track_id)]);
+  const knownRefs = new Set((d?.versions ?? []).map((v) => v.ref).filter(Boolean));
+  const catalogOnly: VersionOut[] = (inCatalog.data?.tracks ?? [])
+    .filter((t) => !knownRefs.has(t.ref) && !(t.library_track_id && known.has(t.library_track_id)))
+    .slice(0, 8)
+    .map((t, i) => ({ track_id: -1 - i, title: t.title, artist: t.artists?.length ? t.artists.join(', ') : t.artist, album: t.album_title, duration_s: t.duration_s, label: null, preferred: false, cover_url: t.cover_small_url ?? t.cover_url, ref: t.ref, nd_song_id: t.nd_song_id, has_file: !!t.owned }));
   const small = 'flex h-9 w-9 shrink-0 items-center justify-center rounded-full hover:bg-fg/10';
   const many = (d?.versions.length ?? 0) > 1;
 
@@ -140,13 +149,22 @@ function Window({ of }: { of: VersionsOf }) {
                 {(found.data ?? []).map((v) =>
                   row(
                     v,
-                    <button type="button" className="shrink-0 rounded-full bg-fg/10 px-3 py-1 text-xs hover:bg-fg/20" onClick={() => void run(() => api.versionAdd(id as number, v.track_id)).then((ok) => ok && setQ(''))}>
+                    <button type="button" className="shrink-0 rounded-full bg-fg/10 px-3 py-1 text-xs hover:bg-fg/20" onClick={() => void run(() => api.versionAdd(id as number, { track_id: v.track_id })).then((ok) => ok && setQ(''))}>
                       это версия
                     </button>,
                     false,
                   ),
                 )}
-                {!found.loading && (found.data ?? []).length === 0 && <li className="py-3 text-center text-[13px] text-muted">В библиотеке ничего не нашлось. Версией можно сделать трек, у которого есть файл.</li>}
+                {catalogOnly.map((v) =>
+                  row(
+                    v,
+                    <button type="button" className="shrink-0 rounded-full bg-fg/10 px-3 py-1 text-xs hover:bg-fg/20" onClick={() => void run(() => api.versionAdd(id as number, { ref: v.ref as string })).then((ok) => ok && setQ(''))}>
+                      это версия
+                    </button>,
+                    false,
+                  ),
+                )}
+                {!found.loading && !inCatalog.loading && (found.data ?? []).length === 0 && catalogOnly.length === 0 && <li className="py-3 text-center text-[13px] text-muted">Ничего не нашлось ни в библиотеке, ни в каталоге.</li>}
               </ul>
             )}
           </div>

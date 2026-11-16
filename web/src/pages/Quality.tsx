@@ -74,6 +74,16 @@ export function QualityPage() {
     if (yes) window.dispatchEvent(new Event(EDITED_EVENT));
     res.reload(true);
   };
+  /** «Другая версия той же песни»: the track stays as it is, tied to the catalog's record as a version. */
+  const version = async (r: QualityRow) => {
+    setBusy(`${r.id}`);
+    listening.stop();
+    const ok = await attempt(() => api.qualityVersion(r.id), 'Связаны как версии одной песни');
+    setBusy(null);
+    if (!ok) return;
+    window.dispatchEvent(new Event(EDITED_EVENT));
+    res.reload(true);
+  };
   const back = async (r: QualityRow) => {
     if (!(await confirmDialog({ title: `Вернуть прежний файл: «${r.title}»?`, body: 'Найденный файл уйдёт в корзину, трек снова будет играть ваш.', okLabel: 'Вернуть' }))) return;
     setBusy(`${r.id}`);
@@ -183,6 +193,7 @@ export function QualityPage() {
                           busy={busy === `${r.id}` || busy === 'all'}
                           onYes={() => void say(r, true)}
                           onNo={() => void say(r, false)}
+                          onVersion={r.kind === 'identify' ? () => void version(r) : undefined}
                         />
                       )}
                       {r.can_revert && open === r.id && <Compare r={r} listening={listening} busy={busy === `${r.id}`} onYes={() => setOpen(null)} onNo={() => void back(r)} />}
@@ -264,7 +275,7 @@ function useTwoFiles() {
   return { on, play, stop };
 }
 
-function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening: ReturnType<typeof useTwoFiles>; busy: boolean; onYes: () => void; onNo: () => void }) {
+function Compare({ r, listening, busy, onYes, onNo, onVersion }: { r: QualityRow; listening: ReturnType<typeof useTwoFiles>; busy: boolean; onYes: () => void; onNo: () => void; /** «is it that record?» has a third answer: another version of the same song */ onVersion?: () => void }) {
   const peaks = useAsync((s) => api.qualityPeaks(r.id, s), [r.id]);
   const done = r.state === 'replaced'; // replaced already: the file it had beside the one it has, the new one taken
   // where the two files part though they are one recording: the places a censor's cut shows as
@@ -340,8 +351,13 @@ function Compare({ r, listening, busy, onYes, onNo }: { r: QualityRow; listening
           {done ? 'Оставить новый' : r.kind === 'identify' ? 'Это она' : 'Заменить'}
         </Button>
         <Button small busy={busy && done} disabled={busy && !done} onClick={onNo}>
-          {done ? 'Вернуть мой файл' : r.kind === 'identify' ? 'Нет, другая запись' : 'Оставить мой'}
+          {done ? 'Вернуть мой файл' : r.kind === 'identify' ? 'Нет, другая песня' : 'Оставить мой'}
         </Button>
+        {onVersion && !done && (
+          <Button small disabled={busy} onClick={onVersion} title="Трек останется как есть и будет связан с записью каталога: это разные записи одной песни">
+            Другая версия той же песни
+          </Button>
+        )}
         <span className="min-w-0 truncate text-[11px] text-dim">
           {[r.provider ? `источник: ${providerLabel(r.provider)}` : null, r.duration_s ? fmtDuration(r.duration_s) : null, r.note].filter(Boolean).join(' · ')}
         </span>

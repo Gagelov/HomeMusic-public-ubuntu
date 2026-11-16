@@ -579,7 +579,11 @@ async def drop_track_name(track_id: int, name_id: int, user: User = Depends(curr
 
 
 class VersionIn(BaseModel):
-    track_id: int
+    """The track to join as a version: one of the Hub's (`track_id`), or a song of the catalog (`ref`) — which
+    becomes a track here, without a file until it is downloaded."""
+
+    track_id: int | None = None
+    ref: str | None = Field(default=None, max_length=64)
 
 
 class VersionPatchIn(BaseModel):
@@ -636,9 +640,14 @@ async def add_version(track_id: int, body: VersionIn, user: User = Depends(curre
     """Another track is a recording of the same song."""
     from app.library import versions
 
+    from app.lyrics.service import track_for
+
     t = await _version_track(s, track_id)
+    other = await _version_track(s, body.track_id) if body.track_id else (await track_for(s, ref=body.ref, user_id=user.id) if body.ref else None)
+    if other is None:
+        raise HTTPException(404, "Трек не найден")
     try:
-        await versions.link(s, user.id, t, await _version_track(s, body.track_id))
+        await versions.link(s, user.id, t, other)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     return await _versions(s, user, t)

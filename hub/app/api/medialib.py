@@ -93,6 +93,9 @@ async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
         if t is not None:
             put_right(out[-1], t)  # Navidrome learns a new name at its next scan; the Hub knows it now
     await with_files(s, out)
+    from app.library import versions
+
+    await versions.mark(s, out)  # how many recordings the song of each has
     return out
 
 

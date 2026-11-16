@@ -197,9 +197,7 @@ async def annotate_tracks(
     from app.library import versions
 
     # the song a track is may have other recordings (app/library/versions.py): a list says how many
-    many = await versions.counts(s, [o.library_track_id for o in out if o.library_track_id])
-    for o in out:
-        o.versions = many.get(o.library_track_id or 0, 0)
+    await versions.mark(s, out)
     return out
 
 

@@ -383,6 +383,15 @@ async def link_library(cands: dict[str, Cand]) -> None:
             for tid, song in (await s.execute(select(Track.id, Track.nd_song_id)
                                               .where(Track.nd_song_id.in_(list(nd))))).all():
                 nd[song].nd_song_id, nd[song].library_track_id = song, tid
+        # a song goes into what plays by itself once: of its versions (app/library/versions.py) the preferred one
+        # where it is among the candidates, else the first of them
+        from app.library import versions
+
+        keys = list(cands)
+        kept = {id(c) for c in await versions.once(s, [cands[k] for k in keys])}
+        for k in keys:
+            if id(cands[k]) not in kept:
+                del cands[k]
 
 
 def keep_reason(c: Cand, p: Profile, cfg) -> str | None:

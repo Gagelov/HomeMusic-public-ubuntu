@@ -42,6 +42,45 @@ async def counts(s: AsyncSession, track_ids: Iterable[int]) -> dict[int, int]:
     return {tid: size.get(sid, 1) for tid, sid in mine.items()}
 
 
+async def songs_of(s: AsyncSession, track_ids: Iterable[int]) -> dict[int, tuple[int, int | None]]:
+    """track -> (its song, the song's preferred track), for the tracks that are a version of something."""
+    ids = list({i for i in track_ids if i})
+    if not ids:
+        return {}
+    rows = (await s.execute(select(SongTrack.track_id, SongTrack.song_id, Song.preferred_track_id)
+                            .join(Song, Song.id == SongTrack.song_id).where(SongTrack.track_id.in_(ids)))).all()
+    return {tid: (sid, pref) for tid, sid, pref in rows}
+
+
+async def mark(s: AsyncSession, outs: list[Any]) -> None:
+    """Say on each track of a list how many versions its song has (`versions`; 0: it is nobody's version)."""
+    many = await counts(s, [o.library_track_id for o in outs if getattr(o, "library_track_id", None)])
+    for o in outs:
+        o.versions = many.get(getattr(o, "library_track_id", None) or 0, 0)
+
+
+async def once(s: AsyncSession, outs: list[Any], track_id=lambda o: getattr(o, "library_track_id", None)) -> list[Any]:
+    """A list that shows a song once (a search, an artist's most listened, what plays by itself): of the versions
+    of one song that are in it only one stays — the preferred one where it is among them, else the first — in the
+    place of the first of them. Tracks that are nobody's version stay as they are."""
+    told = await songs_of(s, [track_id(o) for o in outs if track_id(o)])
+    if not told:
+        return outs
+    at: dict[int, int] = {}  # a song -> where its one row stands
+    out: list[Any] = []
+    for o in outs:
+        tid = track_id(o)
+        hit = told.get(tid) if tid else None
+        if hit is None:
+            out.append(o)
+        elif hit[0] not in at:
+            at[hit[0]] = len(out)
+            out.append(o)
+        elif tid == hit[1]:
+            out[at[hit[0]]] = o
+    return out
+
+
 def _guess(title: str) -> str | None:
     """A word for what a recording is, where its own name says so: «(Deluxe)», «- Live», «(Remix)»."""
     try:

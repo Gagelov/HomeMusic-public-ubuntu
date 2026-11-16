@@ -430,6 +430,29 @@ async def decline(s: AsyncSession, row: Upgrade) -> None:
     row.state, row.staged_path = "kept", None
 
 
+async def other_version(s: AsyncSession, user_id: int, row: Upgrade) -> None:
+    """Neither «it is that record» nor «another song»: the track is another recording of the song the catalog's
+    record is. The track keeps its file and its names, and the two are versions of one song from now on
+    (app/library/versions.py) — the catalog's record the preferred one, as the one the other was joined to."""
+    from app.library import versions
+    from app.lyrics.service import track_for
+
+    if row.kind != "identify":
+        raise ValueError("Это не вопрос о записи каталога")
+    ref = str((row.meta_json or {}).get("track_ref") or "")
+    track = await s.get(Track, row.track_id)
+    theirs = await track_for(s, ref=ref, user_id=user_id) if ref else None
+    if track is None or theirs is None:
+        raise ValueError("Каталог не отдаёт эту запись")
+    if row.state == "found":
+        await decline(s, row)
+    else:
+        row.state = "kept"
+    if theirs.id != track.id:
+        await versions.link(s, user_id, theirs, track)
+    row.note = "другая версия той же песни"
+
+
 _peaks: dict[tuple[str, float], list[int]] = {}
 
 
