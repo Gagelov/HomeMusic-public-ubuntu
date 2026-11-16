@@ -4,40 +4,54 @@ import type { CatalogArtist } from '../api/types';
 import { Icon } from '../components/Icon';
 import { Button, Cover, ErrorState, PageHeader, SkeletonRows, cx } from '../components/ui';
 import { useAsync, useDebounced } from '../lib/hooks';
-import { Link, navigate } from '../lib/router';
+import { navigate, useRoute } from '../lib/router';
+import { tastePicked } from '../lib/taste';
 import { attempt, toast } from '../lib/ui';
+import { startWave } from '../lib/wave';
 
-/** «Что вы слушаете?» (MIXES.md 6.4): for a user the Hub knows nothing about yet — the prompt on «Главная» and the
- * page where a few artists are picked. The page of «Микс дня» itself is a list of «Для вас» (`pages/ForYou.tsx`). */
+/** «Кого вы слушаете?» (MIXES.md 6.4): the page where a listener says whom they listen to. A newcomer comes here from
+ * the button of «Моя волна» and from «Микс дня» — neither has anything to start from until a few artists are picked
+ * (`lib/taste.ts`); anyone may come back and change the picks. The page of «Микс дня» itself is a list of «Для вас»
+ * (`pages/ForYou.tsx`). */
 
 const PICK_MIN = 3;
-const PICK_MAX = 5;
+/** How many rows «Похожие на …» stand at once: those of the latest picks. */
+const ROWS = 3;
 
-/** «Что вы слушаете?» on «Главная» of an account the Hub knows nothing about yet: without a few artists picked there
- * is nothing to make «Микс дня» and «Моя волна» of. Nothing for everybody else. */
-export function TastePrompt() {
-  const res = useAsync((s) => api.mixToday(s), []);
-  if (!res.data?.onboarding || res.data.mix || res.data.building) return null;
+interface Alike {
+  ref: string;
+  name: string;
+  /** not known yet: asked */
+  artists?: CatalogArtist[];
+}
+
+/** An artist to pick: the round photo with a check on it once picked, the name under it. */
+function ArtistTile({ a, on, onToggle, className }: { a: CatalogArtist; on: boolean; onToggle: () => void; className?: string }) {
   return (
-    <Link to="/taste" className="mx-4 mt-3 flex items-center gap-3 rounded-xl bg-accent/15 p-4 transition hover:bg-accent/20">
-      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent">
-        <Icon name="sparkle" size={24} />
+    <button type="button" onClick={onToggle} aria-pressed={on} className={cx('flex flex-col items-center gap-2 text-center', className)}>
+      <span className="relative">
+        <Cover src={a.picture_small_url || a.picture_url} size={88} round icon="user" alt="" className={cx('transition', on && 'ring-4 ring-accent')} />
+        {on && (
+          <span className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full bg-accent text-on-accent ring-2 ring-bg">
+            <Icon name="check" size={16} stroke={3} />
+          </span>
+        )}
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="font-bold">Что вы слушаете?</div>
-        <div className="text-[13px] text-muted">Выберите 3–5 исполнителей — соберём для вас «Микс дня»</div>
-      </div>
-      <Icon name="chevron" size={20} className="shrink-0 text-dim" />
-    </Link>
+      <span className={cx('line-clamp-2 w-full text-sm leading-tight', on && 'font-semibold text-accent')}>{a.name}</span>
+    </button>
   );
 }
 
-/** «Что вы слушаете?»: 3–5 artists for a user without history; the first pick builds the first mix at once. */
+/** The artists start from those this server listens to; every pick brings a row of artists like the picked one, so
+ * the choice widens from what is already chosen. A pick is a follow too (the Hub makes it one). At least three; as
+ * many as one likes. `?then=wave` — the wave starts once they are picked, `?then=mix` — the mix's page opens. */
 export function TastePage() {
+  const then = useRoute().query.get('then');
   const [q, setQ] = useState('');
   const dq = useDebounced(q.trim(), 400);
   const res = useAsync((s) => api.tasteOnboarding(dq || undefined, s), [dq]);
   const [picked, setPicked] = useState<Map<string, string>>(new Map());
+  const [alike, setAlike] = useState<Alike[]>([]);
   const [busy, setBusy] = useState(false);
   const [seeded, setSeeded] = useState(false);
 
@@ -48,30 +62,52 @@ export function TastePage() {
     if (res.data.selected.length) setPicked(new Map(res.data.selected.map((a) => [a.ref, a.name])));
   }, [res.data, seeded]);
 
-  const toggle = (a: CatalogArtist) =>
-    setPicked((prev) => {
-      const next = new Map(prev);
-      if (next.has(a.ref)) next.delete(a.ref);
-      else if (next.size >= PICK_MAX) toast(`Не больше ${PICK_MAX} исполнителей`, 'info');
-      else next.set(a.ref, a.name);
-      return next;
-    });
+  const toggle = (a: { ref: string; name: string }) => {
+    if (picked.has(a.ref)) {
+      setPicked((prev) => {
+        const next = new Map(prev);
+        next.delete(a.ref);
+        return next;
+      });
+      setAlike((rows) => rows.filter((r) => r.ref !== a.ref));
+      return;
+    }
+    setPicked((prev) => new Map(prev).set(a.ref, a.name));
+    setAlike((rows) => [{ ref: a.ref, name: a.name }, ...rows.filter((r) => r.ref !== a.ref)]);
+    // a row that the catalog has nobody for, or did not answer about, is not shown — the pick itself stands
+    api.tasteSimilar(a.ref).then(
+      (artists) => setAlike((rows) => rows.map((r) => (r.ref === a.ref ? { ...r, artists } : r))),
+      () => setAlike((rows) => rows.filter((r) => r.ref !== a.ref)),
+    );
+  };
 
   const submit = async () => {
     setBusy(true);
     const st = await attempt(() => api.pickArtists([...picked.keys()]));
     setBusy(false);
     if (!st) return;
-    toast('Собираем ваш «Микс дня» — пара минут', 'success');
-    navigate('/search', { replace: true });
+    tastePicked();
+    if (then === 'wave') {
+      navigate('/home', { replace: true });
+      void startWave(null, 'home_card');
+    } else if (then === 'mix') {
+      toast('Собираем ваш «Микс дня» — пара минут', 'success');
+      navigate('/mix', { replace: true });
+    } else {
+      toast('Сохранено', 'success');
+      navigate('/home', { replace: true });
+    }
   };
 
   const left = PICK_MIN - picked.size;
+  const rows = dq ? [] : alike.filter((r) => r.artists?.length).slice(0, ROWS);
+  const title = res.data?.source === 'server' ? 'Слушают на этом сервере' : res.data?.source === 'chart' ? 'Популярное' : null;
   return (
     <div>
-      <PageHeader title="Что вы слушаете?" back="/search" />
+      <PageHeader title="Кого вы слушаете?" back="/home" />
       <p className="px-4 text-sm text-muted">
-        Выберите {PICK_MIN}–{PICK_MAX} исполнителей — по ним соберём ваш первый «Микс дня». Дальше он будет учиться на том, что вы слушаете.
+        Отметьте хотя бы {PICK_MIN} исполнителей — с них начнутся «Моя волна» и «Микс дня», а об их новых релизах вы узнаете первыми. Дальше всё подстроится под то, что
+        вы слушаете.
       </p>
       <div className="relative px-4 pt-3">
         <Icon name="search" size={20} className="pointer-events-none absolute left-7 top-1/2 mt-1.5 -translate-y-1/2 text-dim" />
@@ -92,7 +128,7 @@ export function TastePage() {
             <button
               key={ref}
               type="button"
-              onClick={() => toggle({ ref, name, source: 'dz', id: ref.slice(3) })}
+              onClick={() => toggle({ ref, name })}
               className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-accent px-3.5 text-sm font-semibold text-on-accent"
               aria-label={`Убрать ${name}`}
             >
@@ -103,38 +139,41 @@ export function TastePage() {
         </div>
       )}
 
+      {rows.map((r) => (
+        <section key={r.ref} aria-label={`Похожие на ${r.name}`} className="pt-5">
+          <h2 className="px-4 text-sm font-semibold text-muted">
+            Похожие на <span className="text-fg">{r.name}</span>
+          </h2>
+          <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-1 pt-3">
+            {r.artists!.map((a) => (
+              <ArtistTile key={a.ref} a={a} on={picked.has(a.ref)} onToggle={() => toggle(a)} className="w-24 shrink-0" />
+            ))}
+          </div>
+        </section>
+      ))}
+
       {res.loading && !res.data ? (
         <SkeletonRows n={6} />
       ) : res.error ? (
         <ErrorState text={res.error} onRetry={() => res.reload()} />
       ) : !res.data?.suggestions.length ? (
-        <p className="px-4 py-8 text-center text-muted">Никого не нашли — попробуйте другое написание</p>
+        <p className="px-4 py-8 text-center text-muted">{dq ? 'Никого не нашли — попробуйте другое написание' : 'Найдите исполнителя по имени — строка поиска выше'}</p>
       ) : (
-        <ul className="grid grid-cols-3 gap-x-2 gap-y-4 px-4 pb-4 pt-4">
-          {res.data.suggestions.map((a) => {
-            const on = picked.has(a.ref);
-            return (
+        <section aria-label={title ?? 'Найденные исполнители'} className="pt-5">
+          {title && <h2 className="px-4 text-sm font-semibold text-muted">{title}</h2>}
+          <ul className="grid grid-cols-3 gap-x-2 gap-y-4 px-4 pb-4 pt-3 min-[560px]:grid-cols-4 min-[800px]:grid-cols-5 min-[1100px]:grid-cols-7">
+            {res.data.suggestions.map((a) => (
               <li key={a.ref}>
-                <button type="button" onClick={() => toggle(a)} aria-pressed={on} className="flex w-full flex-col items-center gap-2 text-center">
-                  <span className="relative">
-                    <Cover src={a.picture_small_url || a.picture_url} size={88} round icon="user" alt={a.name} className={cx('transition', on && 'ring-4 ring-accent')} />
-                    {on && (
-                      <span className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full bg-accent text-on-accent ring-2 ring-bg">
-                        <Icon name="check" size={16} stroke={3} />
-                      </span>
-                    )}
-                  </span>
-                  <span className={cx('line-clamp-2 text-sm leading-tight', on && 'font-semibold text-accent')}>{a.name}</span>
-                </button>
+                <ArtistTile a={a} on={picked.has(a.ref)} onToggle={() => toggle(a)} className="w-full" />
               </li>
-            );
-          })}
-        </ul>
+            ))}
+          </ul>
+        </section>
       )}
 
       <div className="sticky bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+env(safe-area-inset-bottom))] z-10 bg-gradient-to-t from-bg via-bg to-transparent px-4 pb-3 pt-6">
         <Button variant="primary" block busy={busy} disabled={left > 0} onClick={submit}>
-          {left > 0 ? `Выберите ещё ${left}` : 'Собрать микс'}
+          {left > 1 ? `Выберите ещё ${left}` : left === 1 ? 'Ещё один, и можно начинать' : then === 'wave' ? 'Начать' : then === 'mix' ? 'Собрать микс' : 'Сохранить'}
         </Button>
       </div>
     </div>

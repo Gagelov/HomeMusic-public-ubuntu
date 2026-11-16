@@ -1,4 +1,6 @@
 import { toggle, useListen } from '../lib/listen';
+import { navigate } from '../lib/router';
+import { tastePath, useNewcomer } from '../lib/taste';
 import { canWave, startWave, useWave } from '../lib/wave';
 import { Icon } from './Icon';
 import { Spinner } from './ui';
@@ -8,12 +10,16 @@ import { WaveGlow } from './WaveGlow';
  * on the page background (a canvas wider than the column, its edges fade out); the title and the state line stand
  * over the round play button, which is the middle of the glow. The blob's colors come from the current track's cover;
  * it is bigger while the wave plays and shrinks (slowly) on pause. Only a computer has it move with the loudness of
- * the sound (`lib/waveAudio.ts`): a phone's player is not to be touched for it. */
+ * the sound (`lib/waveAudio.ts`): a phone's player is not to be touched for it.
+ *
+ * A newcomer's wave has nothing to start from: the button says so and leads to «Кого вы слушаете?» — the wave
+ * starts from there, once the artists are picked. */
 export function WaveHero() {
   const { title, starting } = useWave();
   const wave = useListen((s) => !!s.track && s.context.startsWith('wave:'));
   const phase = useListen((s) => s.phase);
   const cover = useListen((s) => s.track?.cover_small_url ?? s.track?.cover_url ?? null);
+  const newcomer = useNewcomer();
   if (!canWave()) return null;
   const busy = starting === '';
   const on = wave && title === 'Моя волна';
@@ -22,14 +28,16 @@ export function WaveHero() {
   const running = on && (playing || phase === 'loading' || phase === 'resolving');
   // The mask fades the canvas out toward its edges, whatever the blob does there.
   const fade = 'radial-gradient(closest-side, #000 72%, transparent 100%)';
-  const caption = busy ? 'busy' : running ? 'playing' : on ? 'paused' : 'idle';
+  const pick = newcomer && !on && !busy; // nothing to start from yet
+  const caption = busy ? 'busy' : running ? 'playing' : on ? 'paused' : pick ? 'pick' : 'idle';
   const captions: Array<[string, string]> = [
     ['idle', 'Бесконечный поток под ваш вкус'],
+    ['pick', 'Выберите исполнителей, чтобы начать'],
     ['busy', 'Подбираем первые треки…'],
     ['playing', 'Играет — подстраивается под каждый пропуск и ♥'],
     ['paused', 'На паузе — продолжим с того же места'],
   ];
-  const label = busy ? 'Моя волна: запускаем' : running ? 'Моя волна: пауза' : on ? 'Моя волна: продолжить' : 'Моя волна: слушать';
+  const label = busy ? 'Моя волна: запускаем' : running ? 'Моя волна: пауза' : on ? 'Моя волна: продолжить' : pick ? 'Моя волна: выбрать исполнителей' : 'Моя волна: слушать';
 
   return (
     <div className="relative mt-1 h-[300px] lg:h-[360px]">
@@ -55,7 +63,7 @@ export function WaveHero() {
       </div>
       <button
           type="button"
-          onClick={() => (on ? toggle() : void startWave(null, 'home_card'))}
+          onClick={() => (on ? toggle() : pick ? navigate(tastePath('wave')) : void startWave(null, 'home_card'))}
           disabled={starting !== null}
           aria-label={label}
           className="absolute left-1/2 top-1/2 inline-flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-fg text-bg shadow-lg transition hover:scale-105 active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white disabled:opacity-90"

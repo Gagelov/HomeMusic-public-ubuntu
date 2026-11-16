@@ -5,6 +5,8 @@ import { EMBEDDED } from './embedded';
 import { getListenState, listenAll, replaceUpcoming, type ListenTrack } from './listen';
 import { canPlayAll, canPlayWave, playWave } from './player';
 import { onPlayEvent } from './plays';
+import { navigate } from './router';
+import { tastePath } from './taste';
 import { toast, toastError } from './ui';
 
 /** «Моя волна» (MIXES.md 7): an endless stream the Hub picks for the user, 5 tracks at a time
@@ -162,7 +164,9 @@ export async function startWave(seed: WaveSeedIn | null | undefined, origin: Wav
     session = s;
     return true;
   } catch (e) {
-    toastError(e);
+    // the user's own wave has nothing to start from: the artists are picked first, and the wave starts from there
+    if (!seed && e instanceof ApiError && e.status === 409) navigate(tastePath('wave'));
+    else toastError(e);
     return false;
   } finally {
     starting = null;

@@ -10,7 +10,6 @@ import { useHubEvent } from '../lib/events';
 import { useAsync } from '../lib/hooks';
 import { useUnseenReleases } from '../lib/releases';
 import { Link } from '../lib/router';
-import { TastePrompt } from './Mix';
 
 /** «Главная» of the PWA in a plain browser (`STANDALONE`), four things and no more: «Моя волна» — play something;
  * «Продолжить» — the lists last played from; «Новые релизы» — what the followed artists released, as tracks (the
@@ -27,7 +26,6 @@ export function HomePage() {
         </span>
       </Link>
       <WaveHero />
-      <TastePrompt />
       <Continue />
       <NewReleases />
       <section aria-label="Для вас">

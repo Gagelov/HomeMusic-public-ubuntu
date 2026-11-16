@@ -259,8 +259,9 @@ must publish the exact schema together with server support. This extension does 
 | GET | `/api/mixes/settings` | `MixSettingsOut` `{mode, mix_hour, timezone, next_build_at, nd_playlist_id, artists}` |
 | PUT | `/api/mixes/settings` | `MixSettingsIn` `{mode?: normal\|favorites\|discover, mix_hour?: 0…23}` → `MixSettingsOut` (else `422`). A new mode makes the next mix, a new hour — from the next day |
 | POST | `/api/mixes/rebuild` | `{user_id?}` → `{queued}` — build the mix again now (admin only, else `403`; `user_id` — another user's). `queued: false` — a build is under way already. The new mix replaces the current one when ready |
-| GET | `/api/taste/onboarding?q=` | `TasteOnboardingOut` `{needed, selected: [{ref, name}], suggestions: CatalogArtist[]}` — artists to pick: the library's most present ones and Deezer's chart, or found by `q` |
-| POST | `/api/taste/artists` | `{artist_refs: ["dz:…"]}` (1…20) → `MixSettingsOut`; not a Deezer artist → `400`, unknown → `404`. The user's first pick queues the first build at once |
+| GET | `/api/taste/onboarding?q=` | `TasteOnboardingOut` `{needed, selected: [{ref, name}], suggestions: CatalogArtist[], source}` — artists to pick, under the names they have here: found by `q` (`source` "search"), else those this server listens to — by everyone's finished listens, then by tracks in the library ("server"); a server without music shows Deezer's chart ("chart") |
+| GET | `/api/taste/similar?ref=dz:…` | `CatalogArtist[]` — the artists Deezer holds to be like this one, closest first (the row «Похожие на …» after a pick) |
+| POST | `/api/taste/artists` | `{artist_refs: ["dz:…"]}` (1…50) → `MixSettingsOut`; not a Deezer artist → `400`, unknown → `404`. «Микс дня» and «Моя волна» start from them; each becomes a follow (one not followed yet). The user's first pick queues the first build at once |
 
 `MixOut`: `{id, title, description, mode, mode_title, created_at, nd_playlist_id, ready, total, tracks, generators}`.
 `tracks` — the 50 songs in order, `MixTrackOut` = `TrackOut` (`ref` `dz:…`; a song only the library has: `source`

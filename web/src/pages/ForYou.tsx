@@ -8,11 +8,12 @@ import { Icon, type IconName } from '../components/Icon';
 import { BarWindow, ListBar } from '../components/ListBar';
 import { useListSearch } from '../components/ListSearch';
 import { TagFilterChips } from '../components/Tags';
-import { Button, Cover, Empty, ErrorState, Loading, HeroSkeleton, PageHeader, Segmented, Spinner, cx } from '../components/ui';
+import { Button, Cover, Empty, ErrorState, Loading, HeroSkeleton, PageHeader, Segmented, Spinner } from '../components/ui';
 import { useHubEvent } from '../lib/events';
 import { fmtLength, tracksWord } from '../lib/format';
 import { useAsync, useInterval } from '../lib/hooks';
-import { Link } from '../lib/router';
+import { navigate } from '../lib/router';
+import { tastePath } from '../lib/taste';
 import { useSession } from '../lib/session';
 import { AUTO_PLAYLISTS } from '../lib/stats';
 import { tagKey, type TagFilter } from '../lib/tags';
@@ -186,16 +187,14 @@ export function ForYouPage({ kind, mix }: { kind: string; mix?: number }) {
         mixBuilding ? (
           <Loading text="Собираю микс — это займёт пару минут…" />
         ) : d.mix?.onboarding ? (
-          <Link to="/taste" className="mx-4 mt-3 flex items-center gap-3 rounded-2xl bg-accent/15 p-4 transition hover:bg-accent/20">
-            <span className={cx('flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent')}>
-              <Icon name="sparkle" size={24} />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block font-bold">Что вы слушаете?</span>
-              <span className="block text-[13px] text-muted">Выберите 3–5 исполнителей — соберём для вас «Микс дня»</span>
-            </span>
-            <Icon name="chevron" size={20} className="shrink-0 text-dim" />
-          </Link>
+          <div>
+            <Empty icon="sparkle" title="Микса пока нет" text="Ему не от чего оттолкнуться: отметьте исполнителей, которых слушаете, — и первый микс соберётся за пару минут." />
+            <div className="flex justify-center pt-2">
+              <Button variant="primary" icon="sparkle" onClick={() => navigate(tastePath('mix'))}>
+                Выбрать исполнителей
+              </Button>
+            </div>
+          </div>
         ) : (
           <Empty icon="sparkle" title="Микса пока нет" text={`Он собирается сам каждый день в ${d.mix?.settings.mix_hour ?? 6}:00 — из того, что вы слушаете.`} />
         )

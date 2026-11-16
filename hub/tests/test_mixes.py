@@ -630,7 +630,12 @@ async def test_onboarding_picks_artists_and_starts_a_build(env) -> None:
     client = env["client"]
     r = await client.get("/api/taste/onboarding")
     assert r.status_code == 200, r.text
+    # a server with no music yet has nobody of its own to offer: the catalog's chart
     assert r.json()["needed"] is True and [a["name"] for a in r.json()["suggestions"]] == ["Земфира", "Кино"]
+    assert r.json()["source"] == "chart"
+    r = await client.get("/api/taste/similar", params={"ref": "dz:1"})
+    assert r.status_code == 200 and [a["name"] for a in r.json()] == ["Земфира"]
+    assert (await client.get("/api/taste/similar", params={"ref": "hm:1"})).status_code == 400
 
     r = await client.post("/api/taste/artists", json={"artist_refs": ["dz:1"]})
     assert r.status_code == 200, r.text
@@ -642,6 +647,41 @@ async def test_onboarding_picks_artists_and_starts_a_build(env) -> None:
     assert [(j.payload_json, j.priority) for j in jobs] == [({"user_id": env["admin"]}, 0)]
     r = await client.get("/api/taste/onboarding")
     assert r.json()["needed"] is False and r.json()["selected"] == [{"ref": "dz:1", "name": "Кино"}]
+
+
+async def test_a_picked_artist_is_followed_once(env) -> None:
+    from app import favorites
+    from app.db import session_scope
+    from app.models import PlayEvent
+
+    client = env["client"]
+    for _ in range(2):  # picked again (the page reopened): no second follow
+        assert (await client.post("/api/taste/artists", json={"artist_refs": ["dz:1"]})).status_code == 200
+    async with session_scope() as s:
+        states = await favorites.snapshot(s, env["admin"])
+        likes = (await s.execute(select(func.count(PlayEvent.id)).where(PlayEvent.kind == "like"))).scalar_one()
+    assert [(x.target_type, x.ref, x.liked, (x.data or {}).get("name")) for x in states.values()] == [("artist", "dz:1", True, "Кино")]
+    assert likes == 1
+
+
+async def test_the_picker_offers_whom_this_server_listens_to(env) -> None:
+    """The most listened to first, then those the library has most of — and only artists with a catalog record."""
+    from app.db import session_scope
+    from app.models import Artist, ArtistRef, TrackArtist
+
+    ids = [await add_track(n) for n in (1, 2, 3)]
+    async with session_scope() as s:
+        kino, other = Artist(name="КИНО"), Artist(name="Без записи в каталоге")
+        s.add_all([kino, other])
+        await s.flush()
+        s.add(ArtistRef(ref="dz:1", artist_id=kino.id))
+        s.add_all([TrackArtist(track_id=ids[0], position=0, artist_id=kino.id),
+                   TrackArtist(track_id=ids[1], position=0, artist_id=other.id),
+                   TrackArtist(track_id=ids[2], position=0, artist_id=other.id)])
+    r = await env["client"].get("/api/taste/onboarding")
+    assert r.status_code == 200, r.text
+    # under the name the artist has here, not the catalog's
+    assert r.json()["source"] == "server" and [(a["ref"], a["name"]) for a in r.json()["suggestions"]] == [("dz:1", "КИНО")]
 
 
 # --- the schedule ------------------------------------------------------------------------------------------------------

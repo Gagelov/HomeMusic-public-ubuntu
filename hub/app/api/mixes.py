@@ -8,7 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import favorites
 from app.api.schemas import (
+    FavoriteTarget,
     MixOut,
     MixRebuildIn,
     MixSettingsIn,
@@ -23,10 +25,11 @@ from app.catalog.models import CatalogArtist, CatalogTrack, split_ref
 from app.config import get_settings
 from app.db import get_session
 from app.jobs.queue import notify
+from app.library import artists
 from app.library.owned import annotate_tracks
 from app.mixes import core
 from app.mixes.build import GENERATOR_TITLES, MODE_TITLES
-from app.models import Job, Mix, MixItem, Track, User
+from app.models import ArtistRef, Job, Mix, MixItem, PlayEvent, TrackArtist, User
 from app.services import svc
 
 router = APIRouter(tags=["mixes"])
@@ -121,49 +124,85 @@ async def get_mix(mix_id: int, user: User = Depends(current_user),
     return await mix_out(s, mix, mix.user_id)
 
 
-async def library_artists(s: AsyncSession, limit: int = 20) -> list[CatalogArtist]:
-    """The artists the library has most songs of (everyone's music), as catalog artists."""
-    rows = (await s.execute(select(Track.artist, func.max(func.substr(Track.ref, 4))).where(
-        Track.ref.like("dz:%")).group_by(Track.artist).order_by(func.count(Track.id).desc())
-        .limit(limit))).all()
+async def server_artists(s: AsyncSession, limit: int = 30) -> list[CatalogArtist]:
+    """The artists of this server as catalog cards: the most listened to first (everyone's finished listens), then
+    those the library has most tracks of. Only artists a Deezer record is tied to — a pick is such a record."""
+    heard = (await s.execute(select(TrackArtist.artist_id).join(PlayEvent, PlayEvent.track_id == TrackArtist.track_id)
+                             .where(PlayEvent.kind == "finish").group_by(TrackArtist.artist_id)
+                             .order_by(func.count(PlayEvent.id).desc()).limit(limit))).scalars().all()
+    kept = (await s.execute(select(TrackArtist.artist_id).group_by(TrackArtist.artist_id)
+                            .order_by(func.count().desc()).limit(limit))).scalars().all()
+    place = {id_: i for i, id_ in enumerate(dict.fromkeys([*heard, *kept]))}
+    if not place:
+        return []
+    tied = (await s.execute(select(ArtistRef.ref, ArtistRef.artist_id).where(
+        ArtistRef.artist_id.in_(place), ArtistRef.ref.like("dz:%")))).all()
+    tied = sorted(tied, key=lambda x: place[x[1]])[:limit * 2]
     assert svc.deezer is not None
 
-    async def one(track_id: str) -> CatalogArtist | None:
+    async def one(ref: str) -> CatalogArtist | None:
         try:
-            t = await svc.deezer.get_track(track_id)
-            return await svc.deezer.get_artist(split_ref(t.artist_ref)[1]) if t.artist_ref else None
+            return await svc.deezer.get_artist(split_ref(ref)[1])
         except Exception:
             return None
 
-    found = await asyncio.gather(*(one(tid) for _, tid in rows))
-    return [a for a in found if a is not None]
+    cards = [a for a in await asyncio.gather(*(one(ref) for ref, _ in tied)) if a is not None]
+    return (await artists.shown(s, cards))[:limit]  # the several records of one artist are one card
+
+
+def _catalog() -> None:
+    if svc.deezer is None:
+        raise HTTPException(503, "Каталог недоступен")
 
 
 @router.get("/api/taste/onboarding", response_model=TasteOnboardingOut)
 async def onboarding(q: str | None = Query(None, max_length=100), user: User = Depends(current_user),
                      s: AsyncSession = Depends(get_session, scope="function")):
-    """«Что вы слушаете?»: artists to pick from — the library's most present ones and the chart, or found by `q`."""
+    """«Кого вы слушаете?»: artists to pick from — found by `q`, else those this server listens to (`source`
+    "server"); a server with no music yet shows the catalog's chart ("chart")."""
     st = await core.settings_of(s, user.id)
-    suggestions = []
+    suggestions, source = [], "server"
     if svc.deezer is not None:
         try:
             if q and q.strip():
-                suggestions = (await svc.deezer.search(q.strip(), kinds=("artist",), limit=20)).artists
+                source = "search"
+                suggestions = await artists.shown(s, (await svc.deezer.search(q.strip(), kinds=("artist",), limit=20)).artists)
             else:
-                found = await library_artists(s) + await svc.deezer.chart_artists(30)
-                suggestions = list({a.ref: a for a in found}.values())  # an artist once, at its first place
+                suggestions = await server_artists(s)
+                if not suggestions:
+                    source = "chart"
+                    suggestions = await artists.shown(s, await svc.deezer.chart_artists(30))
         except Exception as e:
             raise HTTPException(502, f"Каталог не ответил: {e}") from e
     needed = not st.artists_json and not await core.has_history(s, user.id)
-    return TasteOnboardingOut(needed=needed, selected=list(st.artists_json or []), suggestions=suggestions)
+    return TasteOnboardingOut(needed=needed, selected=list(st.artists_json or []), suggestions=suggestions, source=source)
+
+
+@router.get("/api/taste/similar", response_model=list[CatalogArtist])
+async def similar(ref: str = Query(max_length=64), user: User = Depends(current_user),
+                  s: AsyncSession = Depends(get_session, scope="function")):
+    """The artists the catalog holds to be like `ref` (a Deezer artist), closest first: the row «Похожие на …» that
+    follows a pick."""
+    _catalog()
+    try:
+        src, id_ = split_ref(ref)
+    except ValueError as e:
+        raise HTTPException(400, f"Неверный исполнитель: {ref}") from e
+    if src != "dz":
+        raise HTTPException(400, f"Неверный исполнитель: {ref}")
+    try:
+        found = await svc.deezer.get_artist_related(id_)  # type: ignore[union-attr]
+    except Exception as e:
+        raise HTTPException(502, f"Каталог не ответил: {e}") from e
+    return await artists.shown(s, found)
 
 
 @router.post("/api/taste/artists", response_model=MixSettingsOut)
 async def pick_artists(body: TasteArtistsIn, user: User = Depends(current_user),
                        s: AsyncSession = Depends(get_session, scope="function")):
-    """The artists a new user listens to (Deezer refs): the mix starts from them; the first one is built now."""
-    if svc.deezer is None:
-        raise HTTPException(503, "Каталог недоступен")
+    """The artists a user says they listen to (Deezer refs): «Микс дня» and «Моя волна» start from them, each is
+    followed; the first mix is built now."""
+    _catalog()
     picked = []
     for ref in dict.fromkeys(body.artist_refs):
         try:
@@ -173,13 +212,21 @@ async def pick_artists(body: TasteArtistsIn, user: User = Depends(current_user),
         if src != "dz":
             raise HTTPException(400, f"Неверный исполнитель: {ref}")
         try:
-            a = await svc.deezer.get_artist(id_)
+            a = await svc.deezer.get_artist(id_)  # type: ignore[union-attr]
         except Exception as e:
             raise HTTPException(404, f"Исполнитель не найден: {ref}") from e
         picked.append({"ref": a.ref, "name": a.name})
     st = await core.settings_of(s, user.id)
     first = not st.artists_json and await core.current_mix(s, user.id) is None
     st.artists_json = picked
+    # a pick is a follow: who one says one listens to is whose releases one is told of. Those followed already stay
+    # as they are; taking an artist off the picks later does not unfollow them
+    states = await favorites.snapshot(s, user.id)
+    followed = {x.ref for x in states.values() if x.target_type == "artist" and x.liked and x.ref}
+    new = [FavoriteTarget(target_type="artist", ref=a["ref"], target_data={"name": a["name"]})
+           for a in picked if a["ref"] not in followed]
+    if new:
+        await favorites.command(s, user, new, liked=True, context="taste")
     if first:
         await core.enqueue_build(s, user.id, priority=0)
     await s.commit()

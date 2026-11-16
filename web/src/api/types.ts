@@ -1631,6 +1631,8 @@ export interface TasteOnboardingOut {
   needed: boolean;
   selected: Array<{ ref: string; name: string }>;
   suggestions: CatalogArtist[];
+  /** what the suggestions are: those this server listens to, the catalog's chart (a server without music), the search */
+  source: 'server' | 'chart' | 'search';
 }
 
 // «Моя волна» (MIXES.md 7, hub/API.md «Моя волна»)

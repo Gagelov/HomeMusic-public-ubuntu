@@ -1307,11 +1307,13 @@ class MixRebuildIn(BaseModel):
 class TasteOnboardingOut(BaseModel):
     needed: bool  # no history and no picked artists: the mix can't be made yet
     selected: list[dict[str, Any]] = []  # [{ref, name}]
-    suggestions: list[CatalogArtist] = []  # the chart, or the search by `q`
+    suggestions: list[CatalogArtist] = []
+    # what `suggestions` are: those this server listens to, the catalog's chart (a server without music), the search
+    source: Literal["server", "chart", "search"] = "server"
 
 
 class TasteArtistsIn(BaseModel):
-    artist_refs: list[str] = Field(min_length=1, max_length=20)
+    artist_refs: list[str] = Field(min_length=1, max_length=50)
 
 
 # --- «Моя волна» (MIXES.md 7) ---------------------------------------------------------------------------------------

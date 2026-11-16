@@ -181,6 +181,9 @@ class FakeDeezer:
     async def chart_artists(self, limit=30):
         return [self.artist("2", "Земфира"), self.artist("1", "Кино")]
 
+    async def get_artist_related(self, id_):
+        return [self.artist("2", "Земфира")] if str(id_) == "1" else []
+
     async def get_artist_top(self, id_, limit=10):
         return [self.track.model_copy(update={"artist_ref": "dz:1"})] if str(id_) == "1" else []
 
