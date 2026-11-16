@@ -12,7 +12,7 @@ import { SaveSelection, TagFilterChips } from '../components/Tags';
 import { ArtistLooksWindow } from '../components/ArtistLooks';
 import { ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, Cover, Empty, ErrorState, HeroSkeleton, IconButton, PageHeader, Sheet, SkeletonRows, Spinner, cx } from '../components/ui';
-import { fmtLength, plural, tracksWord } from '../lib/format';
+import { fmtLength, tracksWord } from '../lib/format';
 import { playCount, usePlayCounts } from '../lib/stats';
 import { useDesktop } from '../lib/desktop';
 import { useHubEvent } from '../lib/events';
@@ -21,6 +21,7 @@ import { useAsync, useRememberScrollX } from '../lib/hooks';
 import { Link, enc, navigate, useRoute } from '../lib/router';
 import { filterActive, filterOfQuery, filterWords, passes, selectionsChanged, tagKey, useTags, type TagFilter } from '../lib/tags';
 import { attempt, confirmDialog } from '../lib/ui';
+import { openPlaylistMenu } from '../lib/playlistMenu';
 import { useSmartForPage, useSmartPage, useSmartPossible } from '../lib/smartShuffle';
 import { toggleLike, useLiked } from '../lib/stars';
 import { canWave, seedKey, startWave, useWave } from '../lib/wave';
@@ -218,12 +219,6 @@ export function Hero({ cover, round, title, sub, right, kicker, art, tracks, con
   );
 }
 
-/** «3 не найдено» for the head of a list: its tracks known by their names alone — no file, no record of the catalog. */
-function notFound(tracks: readonly TrackOut[]): string | null {
-    const n = tracks.filter((t) => t.unknown).length;
-    return n ? `${n} не ${plural(n, ['найден', 'найдено', 'найдено'])}` : null;
-}
-
 const plays = <T extends TrackOut>(tracks: readonly T[]): T[] => tracks.filter((t) => !t.unknown);
 
 // --- pages -------------------------------------------------------------------------------------------------
@@ -281,7 +276,7 @@ export function LikedPage() {
               <Icon name="heart" size={84} filled />
             </div>
           }
-          sub={[tracksWord(songs.length), length ? fmtLength(length) : null, notFound(songs)].filter(Boolean).join(' · ')}
+          sub={[tracksWord(songs.length), length ? fmtLength(length) : null].filter(Boolean).join(' · ')}
           tracks={playing}
           context="liked"
         />
@@ -395,6 +390,7 @@ export function PlaylistPage({ id }: { id: string }) {
   const res = useAsync((s) => api.playlist(id, s), [id], true, `playlist:${id}`);
   const p = res.data;
   useSmartPage(`playlist:${id}`, p?.name ?? null);
+  const desktop = useDesktop();
   // the playlist is the Hub's: every track stands in its place, whether the library has its file yet or not
   const all = useMemo(() => p?.tracks ?? [], [p]);
   const search = useListSearch(all);
@@ -420,14 +416,17 @@ export function PlaylistPage({ id }: { id: string }) {
   const playing = plays(inOrder(shown ? shown.map((f) => all[f.index]) : all, sort));
   return (
     <div>
-      <ListBar title={p.name} back="/library" tracks={playing} context="playlist" offline={{ key: `playlist:${id}`, to: `/playlist/${id}`, tracks: plays(all) }} search={all.length ? search : undefined} tags={all.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : all.length } : undefined} />
+      <ListBar title={p.name} back="/library" tracks={playing} context="playlist"
+        // the playlist's own menu — its name, its picture, deleting it — here as where the playlists are listed
+        extra={<IconButton icon="more" label="Плейлист: переименовать, обложка, удалить" onClick={(e) => openPlaylistMenu({ id, name: p.name, cover_url: p.cover_url }, desktop ? { x: e.clientX, y: e.clientY } : undefined)} />}
+        offline={{ key: `playlist:${id}`, to: `/playlist/${id}`, tracks: plays(all) }} search={all.length ? search : undefined} tags={all.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : all.length } : undefined} />
       {viewing && <CoverView src={cover} title={p.name} playlistId={id} own={ownCover(p.cover_url)} onClose={closeCover} />}
       {!search.alone && <Hero
         kicker="Плейлист"
         onCover={() => setViewing(true)}
         cover={cover}
         title={p.name}
-        sub={[tracksWord(all.length), p.duration_s ? fmtLength(p.duration_s) : null, notFound(all)].filter(Boolean).join(' · ')}
+        sub={[tracksWord(all.length), p.duration_s ? fmtLength(p.duration_s) : null].filter(Boolean).join(' · ')}
         tracks={playing}
         context="playlist"
       />}

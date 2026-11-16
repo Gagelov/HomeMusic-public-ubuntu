@@ -1,8 +1,8 @@
 import { useSyncExternalStore, type MouseEvent as RMouse, type PointerEvent as RPointer } from 'react';
 
 /** The menu of a playlist one keeps — «Переименовать», «Сменить обложку», «Удалить» (`components/PlaylistMenu.tsx`).
- * It is asked for where the playlists are listed, not on the playlist's own page: a long press on a phone, the right
- * button of the mouse on a computer. */
+ * It is asked for where the playlists are listed — a long press on a phone, the right button of the mouse on a
+ * computer — and by the ⋯ at the top of the playlist's own page. */
 export interface MenuPlaylist {
   id: string;
   name: string;
