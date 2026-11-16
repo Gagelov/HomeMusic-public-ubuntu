@@ -152,7 +152,21 @@ async def search(q: str = Query(min_length=1), user: User = Depends(current_user
         out.artists = await artist_names.shown(s, res.artists)  # under the names they have here
         out.albums = await annotate_albums(s, res.albums, user.id)
         out.tracks = await versions.once(s, await annotate_tracks(s, _unique(res.tracks), user.id))
+    # The library's own songs that match are tracks among the tracks — the first of them, since the listener has
+    # them — each as any list shows it (its cover, its file); the catalog's record of the same song is not shown
+    # beside it
+    if owned:
+        from app.api.playlists import tracks_out
+
+        mine = await tracks_out(s, user, [t for t, _ in owned[:OWN_FIRST]])
+        refs, songs = {x.ref for x in mine}, {x.nd_song_id for x in mine if x.nd_song_id}
+        ids = {x.library_track_id for x in mine if x.library_track_id}
+        out.tracks = [*mine, *(t for t in out.tracks if t.ref not in refs and t.nd_song_id not in songs
+                               and getattr(t, "library_track_id", None) not in ids)]
     return out
+
+
+OWN_FIRST = 5  # of the library's own songs that match, at the head of the tracks
 
 
 def _with(res: SearchResults | None, more: SearchResults) -> SearchResults:

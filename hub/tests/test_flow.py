@@ -745,6 +745,10 @@ async def test_search_finds_what_the_library_has(env):
         (own,) = r.json()["library"]
         assert (own["title"], own["nd_song_id"], own["source"]) == ("Группа крови", "nd0", "hitmoz")
         assert own["path"].endswith("1-01 - Группа крови.mp3") and own["bitrate_kbps"]
+        # it is a track among the tracks — the first of them — and the catalog's record of the same song is not beside it
+        first, *rest = r.json()["tracks"]
+        assert (first["title"], first["owned"], first["nd_song_id"]) == ("Группа крови", True, "nd0")
+        assert all(x.get("nd_song_id") != "nd0" for x in rest)
 
 
 async def test_a_file_tells_how_it_came(env):

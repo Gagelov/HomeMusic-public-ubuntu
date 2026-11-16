@@ -1,22 +1,17 @@
-import { openVersions } from '../lib/versions';
-import { plural } from '../lib/format';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, errorMessage, isAbort, peekCache, withQuery } from '../api/client';
-import type { Candidate, LibTrackOut, ProviderSearchOut, SearchOut, SearchRecent, SearchTracksOut, TrackOut } from '../api/types';
+import type { Candidate, ProviderSearchOut, SearchOut, SearchRecent, SearchTracksOut, TrackOut } from '../api/types';
 import { ArtistBubble, ReleaseCard, TrackRow, TrackTableHeader, listenTrack } from '../components/catalog';
-import { TrackMenuButton } from '../components/TrackMenu';
 import { CandidateRow, fileRef } from '../components/candidate';
 import { Icon } from '../components/Icon';
-import { SaveButton } from '../components/PlaylistsButton';
 import { Button, Cover, Empty, ErrorState, IconButton, Notice, SectionTitle, Segmented, SkeletonRows, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
 import { STANDALONE } from '../lib/embedded';
 import { useHubEvent } from '../lib/events';
-import { fmtDuration } from '../lib/format';
 import { useAsync, useDebounced, useRememberScrollX, type AsyncState } from '../lib/hooks';
 import { extendQueue, markQueued, useListen } from '../lib/listen';
-import { canPlay, canPlayAll, playList } from '../lib/player';
-import { Link, enc, navigate } from '../lib/router';
+import { canPlayAll } from '../lib/player';
+import { enc, navigate } from '../lib/router';
 import { FOCUS_SEARCH } from '../components/TabBar';
 import { startChatWith } from './AssistantChat';
 
@@ -374,17 +369,6 @@ function CatalogResults({ q, onNothing }: { q: string; onNothing: (nothing: bool
       )}
       {empty && <Empty icon="search" title="Ничего не найдено" text="Попробуйте другое написание или поищите среди файлов в источниках." />}
 
-      {data.library.length > 0 && (
-        <section aria-label="В библиотеке">
-          <SectionTitle>В библиотеке</SectionTitle>
-          {data.library.slice(0, 5).map((t, _, shown) => (
-            <Opened key={t.id} item={{ kind: 'track', ref: `lib:${t.id}`, title: t.title, subtitle: t.artist, link: t.album_id ? `/library/album/${t.album_id}` : null }}>
-              <LibraryTrackRow t={t} onPlay={canPlay() && t.nd_song_id ? () => playList(shown, (x) => x.nd_song_id, t) : undefined} />
-            </Opened>
-          ))}
-        </section>
-      )}
-
       {data.artists.length > 0 && (
         <section aria-label="Исполнители">
           <SectionTitle>Исполнители</SectionTitle>
@@ -449,49 +433,6 @@ function Opened({ item, className, children }: { item: Omit<SearchRecent, 'key'>
   );
 }
 
-function LibraryTrackRow({ t, onPlay }: { t: LibTrackOut; onPlay?: () => void }) {
-  const inner = (
-    <>
-      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
-        <Icon name="check" size={20} stroke={2.6} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-[15px]">{t.title}</span>
-          {/* the song has other recordings here; the one shown is the preferred */}
-          {(t.versions ?? 0) > 1 && (
-            <button type="button" title="Другие версии этой песни" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openVersions({ title: t.title, library_track_id: t.id }); }} className="shrink-0 rounded-full bg-info/20 px-1.5 text-[11px] leading-[1.35] text-info hover:bg-info/30">
-              {t.versions} {plural(t.versions ?? 0, ['версия', 'версии', 'версий'])}
-            </button>
-          )}
-        </div>
-        <div className="truncate text-[13px] text-muted">
-          {[t.artist, t.album].filter(Boolean).join(' · ')}
-          {/* found by another name of the track, or another spelling of its artist: said, so the row is no riddle */}
-          {(t.found_by?.length ?? 0) > 0 && <span className="text-info"> · также: {(t.found_by ?? []).join(', ')}</span>}
-        </div>
-      </div>
-      <span className="shrink-0 text-xs tabular-nums text-dim">{fmtDuration(t.duration_s)}</span>
-    </>
-  );
-  const row = t.album_id ? (
-    <Link to={`/library/album/${t.album_id}`} className="flex min-h-16 min-w-0 flex-1 items-center gap-3 py-2 pl-4 hover:bg-fg/5">
-      {inner}
-    </Link>
-  ) : (
-    <div className="flex min-h-16 min-w-0 flex-1 items-center gap-3 py-2 pl-4">{inner}</div>
-  );
-  return (
-    <div className="flex items-center pr-1">
-      {row}
-      {t.nd_song_id && <TrackMenuButton track={{ title: t.title, artist: t.artist, nd_song_id: t.nd_song_id, library_track_id: t.id }} />}
-      <SaveButton songId={t.nd_song_id} listKey={String(t.id)} title={t.title} className={cx('!w-10', !onPlay && 'mr-1')} />
-      {onPlay && <IconButton icon="play" label={`Слушать «${t.title}»`} onClick={onPlay} className="!text-accent" />}
-    </div>
-  );
-}
-
-/** Raw files from the regular sources. */
 function ProviderResults({ q, onNothing }: { q: string; onNothing: (nothing: boolean) => void }) {
   const res = useAsync<ProviderSearchOut>((s) => api.searchProviders(q, s, 'sources'), [q]);
   useNothing(!res.loading && !!res.data && !res.data.candidates.length, onNothing);
