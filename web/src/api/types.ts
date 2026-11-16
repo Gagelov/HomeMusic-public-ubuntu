@@ -656,6 +656,8 @@ export interface UploadTrackIn {
   /** the file is another recording of the song the catalog took it for: filed under its own names, tied to that
    * record as a version */
   version_of_match?: boolean;
+  /** a record only like the file is not to be weighed against it by the sound afterwards */
+  no_check?: boolean;
   title?: string;
   artist?: string;
   album?: string | null;

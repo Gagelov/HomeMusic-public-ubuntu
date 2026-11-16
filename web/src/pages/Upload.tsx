@@ -86,6 +86,8 @@ interface RowState {
   also?: boolean;
   /** another recording of the song the catalog took the file for: filed under its own names, tied to it as a version */
   version?: boolean;
+  /** a record only like the file: not to be weighed against it by the sound on the second step */
+  skip?: boolean;
 }
 
 /** The columns of the table that say what the file itself is: they can be hidden (the choice stays on the device). */
@@ -191,7 +193,7 @@ const catAlbum = (u: UploadOut): string | null => (u.match?.record_type === 'sin
 const usesCatalog = (u: UploadOut, r: RowState) => r.catalog && !!u.match?.ref;
 const valid = (u: UploadOut, r: RowState) => usesCatalog(u, r) || (!!r.title.trim() && !!r.artist.trim());
 /** A record only like the file, not taken by hand: the second step settles it by the sound. */
-const unsure = (u: UploadOut, r: RowState) => u.match?.state === 'doubt' && !usesCatalog(u, r) && !r.version;
+const unsure = (u: UploadOut, r: RowState) => u.match?.state === 'doubt' && !usesCatalog(u, r) && !r.version && !r.skip;
 /** Said to be another version of the song the catalog took it for (and so not filed by the catalog's record). */
 const isVersion = (u: UploadOut, r: RowState) => !!r.version && !!u.match?.ref && !usesCatalog(u, r);
 
@@ -705,7 +707,7 @@ export function UploadPage() {
   const trackIn = (u: UploadOut): UploadTrackIn => {
     const r = rowOf(u);
     return {
-      upload_id: u.id, catalog: usesCatalog(u, r), also_title: r.also && usesCatalog(u, r) && !same(u.title, u.match?.title) ? u.title : null, version_of_match: isVersion(u, r), title: r.title.trim(), artist: r.artist.trim(), album: r.album.trim() || null, year: toIntOrNull(r.year),
+      upload_id: u.id, catalog: usesCatalog(u, r), also_title: r.also && usesCatalog(u, r) && !same(u.title, u.match?.title) ? u.title : null, version_of_match: isVersion(u, r), no_check: !!r.skip && !usesCatalog(u, r), title: r.title.trim(), artist: r.artist.trim(), album: r.album.trim() || null, year: toIntOrNull(r.year),
       album_key: all.keys.get(u.id) ?? null, cover: r.cover, replace_track_id: r.replace && u.twin ? u.twin.track_id : null,
     };
   };
@@ -1206,8 +1208,64 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   // what the catalog says is in a pill, what the file said in its place is struck out beside it
   const pill = (text: ReactNode, key?: string | number) => <span key={key} className="rounded-full bg-info/20 px-1.5 text-info" title="Из каталога">{text}</span>;
   const was = (text: ReactNode) => <span className="text-dim line-through" title="Было в файле">{text}</span>;
-  const doubt = unsure(u, r) && (
-    <span title={`В каталоге похожая запись: «${m?.title}» — ${m?.artist}. ${m?.why ?? ''}`} className="ml-2 rounded-full bg-warn/15 px-2 py-0.5 align-middle text-[11px] text-warn">уточню по звуку на следующем шаге</span>
+  // what stands with the row — said by a mark of its own beside the name, which the name is cut before: a sign and
+  // one word (the sign alone where the row is narrow). A tap lays out under the row what it means, and what to do
+  const [tip, setTip] = useState(false);
+  const mark: { icon: 'disc' | 'help'; word: string; tone: string } | null = isVersion(u, r)
+    ? { icon: 'disc', word: 'версия', tone: 'bg-info/20 text-info' }
+    : unsure(u, r)
+      ? { icon: 'help', word: 'уточню', tone: 'bg-warn/15 text-warn' }
+      : null;
+  const status = mark && (
+    <button
+      type="button"
+      data-own
+      aria-expanded={tip}
+      title={mark.word === 'версия' ? 'Другая версия песни из каталога — нажмите, чтобы узнать больше' : 'В каталоге есть похожая запись — нажмите, чтобы узнать больше'}
+      onClick={(e) => {
+        e.stopPropagation();
+        setTip((v) => !v);
+      }}
+      className={cx('flex h-5 shrink-0 items-center gap-1 rounded-full px-1 text-[11px] @[15rem]:px-2', mark.tone, tip && 'ring-1 ring-current')}
+    >
+      <Icon name={mark.icon} size={13} />
+      <span className="hidden @[15rem]:inline">{mark.word}</span>
+    </button>
+  );
+  const record = [m?.title ? `«${m.title}»` : null, m?.artist, m?.album, m?.duration_s ? fmtDuration(m.duration_s) : null].filter(Boolean).join(' · ');
+  const say = (patch: Partial<RowState>) => {
+    setTip(false);
+    onChange(patch);
+  };
+  const act = 'text-info hover:underline';
+  const tipBox = tip && mark && (
+    <div className="pb-2 pl-12 pr-4 md:pl-[5.75rem]" data-own>
+      <div className="max-w-xl rounded-xl bg-fg/[0.06] px-3 py-2 text-xs text-muted">
+        {mark.word === 'версия' ? (
+          <>
+            <p className="font-semibold text-fg">Другая версия песни из каталога</p>
+            <p>{record}</p>
+            <p>Ваш файл ляжет отдельным треком под своими данными и будет связан с ней как версия.</p>
+            <p className="flex flex-wrap gap-x-3 pt-1">
+              <button type="button" className={act} onClick={() => say({ version: false })}>Не версия</button>
+              <button type="button" className={act} onClick={() => say({ catalog: true, cover: m?.cover_url ? 'catalog' : 'file', version: false })}>Это она — взять данные каталога</button>
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="font-semibold text-fg">В каталоге есть похожая запись</p>
+            <p>{record}{u.duration_s ? `, а ваш файл — ${fmtDuration(u.duration_s)}` : ''}</p>
+            {m?.why && <p>{m.why}</p>}
+            <p>После импорта хаб сравнит их по звуку и спросит в «Качестве звука».</p>
+            <p className="flex flex-wrap gap-x-3 pt-1">
+              <button type="button" className={act} onClick={() => say({ catalog: true, cover: m?.cover_url ? 'catalog' : 'file' })}>Это она — взять данные каталога</button>
+              <button type="button" className={act} onClick={() => say({ catalog: false, cover: 'file', version: true })}>Другая версия этой песни</button>
+              <button type="button" className={act} onClick={() => say({ skip: true })}>Не сравнивать</button>
+            </p>
+          </>
+        )}
+      </div>
+    </div>
   );
   const theirs = (m?.artists?.length ? m.artists : [m?.artist ?? '']).filter(Boolean);
   const mine = (u.artists ?? []).map(low);
@@ -1230,36 +1288,33 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
       <input className={cx('input !h-8 !py-1 text-sm', !r.artist.trim() && '!border-danger')} placeholder="Исполнитель" aria-label="Исполнитель" value={r.artist} onChange={(e) => onChange({ artist: e.target.value })} />
     </span>
   ) : (
-    <span className="min-w-0">
-      <span className={cx('block truncate text-[15px]', phase && 'text-accent')}>
-        {by && !same(u.title, m?.title) ? (
-          <>
-            {/* the name the file had: a tap keeps it as a second name of the song — the search finds it by that too */}
-            <button
-              type="button"
-              data-own
-              aria-pressed={!!r.also}
-              title={r.also ? 'Останется вторым названием песни — нажмите, чтобы не сохранять' : 'Было в файле. Нажмите, чтобы оставить вторым названием песни'}
-              onClick={(e) => {
-                e.stopPropagation();
-                onChange({ also: !r.also });
-              }}
-              className={cx('transition hover:text-fg', r.also ? 'rounded-full bg-fg/10 px-1.5 text-muted' : 'text-dim line-through')}
-            >
-              {r.also && <span className="text-dim">также: </span>}
-              {u.title}
-            </button>{' '}
-            {pill(m?.title)}
-          </>
-        ) : (
-          title
-        )}
-        {doubt}
-        {isVersion(u, r) && (
-          <span title={`Другая запись песни «${m?.title}» — ${m?.artist}. Трек останется под своими названием и исполнителями и будет связан с ней как версия`} className="ml-2 rounded-full bg-info/15 px-2 py-0.5 align-middle text-[11px] text-info">
-            версия: {m?.title}
-          </span>
-        )}
+    <span className="@container min-w-0">
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className={cx('min-w-0 truncate text-[15px]', phase && 'text-accent')}>
+          {by && !same(u.title, m?.title) ? (
+            <>
+              {/* the name the file had: a tap keeps it as a second name of the song — the search finds it by that too */}
+              <button
+                type="button"
+                data-own
+                aria-pressed={!!r.also}
+                title={r.also ? 'Останется вторым названием песни — нажмите, чтобы не сохранять' : 'Было в файле. Нажмите, чтобы оставить вторым названием песни'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChange({ also: !r.also });
+                }}
+                className={cx('transition hover:text-fg', r.also ? 'rounded-full bg-fg/10 px-1.5 text-muted' : 'text-dim line-through')}
+              >
+                {r.also && <span className="text-dim">также: </span>}
+                {u.title}
+              </button>{' '}
+              {pill(m?.title)}
+            </>
+          ) : (
+            title
+          )}
+        </span>
+        {status}
       </span>
       <span className="block truncate text-[13px] text-muted">
         {!by || sameArtists ? artists : kept ? [...theirs].sort((a, b) => Number(!mine.includes(low(a))) - Number(!mine.includes(low(b))) || mine.indexOf(low(a)) - mine.indexOf(low(b))).map((a, i) => <span key={a}>{i > 0 && ' '}{mine.includes(low(a)) ? a : pill(a)}</span>) : <>{was(u.artist)} {theirs.map((a, i) => <span key={a}>{i > 0 && ' '}{pill(a)}</span>)}</>}
@@ -1275,7 +1330,7 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
   const items = (
     <>
       {item('edit', 'Изменить название и исполнителей', onEdit)}
-      {has && item('note', by ? 'Не та запись — оставить как в файле' : m?.state === 'doubt' ? 'Это она — взять данные каталога' : 'Взять данные каталога', () => onChange({ catalog: !by, cover: !by && m?.cover_url ? 'catalog' : 'file', version: false }))}
+      {has && item('note', by ? 'Не та запись — оставить как в файле' : m?.state === 'doubt' ? 'Это она — взять данные каталога' : 'Взять данные каталога', () => onChange({ catalog: !by, cover: !by && m?.cover_url ? 'catalog' : 'file', version: false, skip: false }))}
       {/* neither that record nor another song: another recording of the same song — its own names, tied as a version */}
       {has && item('disc', isVersion(u, r) ? 'Не версия этой песни' : 'Это другая версия этой песни', () => onChange(isVersion(u, r) ? { version: false } : { catalog: false, cover: 'file', version: true }))}
       {item('search', has ? 'Другая запись каталога…' : 'Найти в каталоге вручную', onFind)}
@@ -1379,6 +1434,7 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
         {desktop && <span className="text-right text-xs tabular-nums text-dim">{fmtDuration(u.duration_s)}</span>}
         {dots}
       </div>
+      {tipBox}
       {u.twin && <div className="pb-2 pl-12 pr-4 md:pl-[5.75rem]" data-own><TwinNote u={u} r={r} onChange={onChange} /></div>}
       {menu && desktop && (
         <div ref={ref} role="menu" aria-label={`Меню: ${title}`} className={cx('anim-up absolute right-2 z-30 w-80 rounded-2xl bg-raised p-1.5 shadow-2xl', up ? 'bottom-12' : 'top-12')}>

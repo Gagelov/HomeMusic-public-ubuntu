@@ -470,7 +470,7 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
         record = str((matched.get("meta") or {}).get("track_ref") or "")
         if tr.version_of_match and not tr.catalog and record:
             versions_of.append((track.id, record))  # tied once the import is written down (below)
-        elif not tr.catalog and matched.get("state") == "doubt" and matched.get("meta"):
+        elif not tr.catalog and not tr.no_check and matched.get("state") == "doubt" and matched.get("meta"):
             await upgrade.start_identify(s, user.id, track, matched["meta"])  # is the record its own: by the sound
             unsure += 1
     for album_id, url in owed.items():
