@@ -5,11 +5,10 @@ import { ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
 import { ArtistLooksWindow } from '../components/ArtistLooks';
-import { ArtistSourceButtons, ArtistSources } from '../components/ArtistSources';
+import { ArtistServiceButtons } from '../components/ArtistSources';
 import { ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
 import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
-import { useDesktop } from '../lib/desktop';
 import { setDisliked, useDisliked } from '../lib/dislikes';
 import { plural, tracksWord } from '../lib/format';
 import { useAsync, useRememberScrollX } from '../lib/hooks';
@@ -69,7 +68,6 @@ export function ArtistNamedPage({ name }: { name: string }) {
 export function ArtistPage({ refId }: { refId: string }) {
   const res = useAsync((s) => api.artist(refId, s), [refId], true, `artist:${refId}`);
   const [menu, setMenu] = useState(false);
-  const desktop = useDesktop();
   const [naming, setNaming] = useState<'names' | 'projects' | 'looks' | null>(null); // a window of the artist's ⋯
   const [busy, setBusy] = useState<string | null>(null);
   const d: ArtistPageOut | undefined = res.data;
@@ -154,7 +152,6 @@ export function ArtistPage({ refId }: { refId: string }) {
 
   const shownName = names.card?.name ?? artist.name;
   const photo = imageUrl(artist.picture_url);
-  const facts = <ArtistSources sources={d.sources ?? []} />;
 
   return (
     <div className={hidden ? 'grayscale' : undefined}>
@@ -175,8 +172,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           </button>
         }
       />
-      {/* on a phone what is known of the artist is a line under the name; on a computer — buttons of the row below */}
-      <Banner name={shownName} followed={followed} photo={d.banner_url ? undefined : (photo ?? null)} sub={desktop ? undefined : facts} />
+      <Banner name={shownName} followed={followed} photo={d.banner_url ? undefined : (photo ?? null)} />
 
       {/* what goes up over the picture has the page's own colour under it */}
       <div className="relative z-[1] bg-bg">
@@ -221,7 +217,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           )}
           {/* the other projects of who it is: each leads to its own page */}
           <ArtistProjects card={names.card} />
-          {desktop && <ArtistSourceButtons sources={d.sources ?? []} />}
+          <ArtistServiceButtons sources={d.sources ?? []} />
           </div>
           {top.length > 0 && <PlayPair tracks={top} context="artist" />}
         </div>
@@ -350,8 +346,8 @@ function useOneLine(what: string) {
  * picture the head is as tall as the picture, and the round photo is not shown — it is the same person twice. Where
  * there is no wide picture (`photo` given: the address, or null for no photo at all) the head is as tall as the
  * round photo, which stands before the name — on a phone and on a computer alike — on the ground made of it.
- * `sub`: a line under the name (a phone: what is known of the artist). */
-function Banner({ name, followed, photo, sub }: { name: string; /** the listener follows the artist: a mark by the name */ followed?: boolean; photo?: string | null; sub?: ReactNode }) {
+ */
+function Banner({ name, followed, photo }: { name: string; /** the listener follows the artist: a mark by the name */ followed?: boolean; photo?: string | null }) {
   const round = 'h-32 w-32 shrink-0 rounded-full shadow-xl sm:h-44 sm:w-44 lg:h-56 lg:w-56';
   const wide = photo === undefined;
   const title = useOneLine(`${name}:${!!followed}`);
@@ -377,7 +373,6 @@ function Banner({ name, followed, photo, sub }: { name: string; /** the listener
               </span>
             )}
           </h2>
-          {sub && <div className="mt-2 text-sm text-fg/85 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)]">{sub}</div>}
         </div>
       </div>
     </div>
