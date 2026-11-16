@@ -250,10 +250,24 @@ export function uploadWithProgress<T>(
   });
 }
 
+/** What went wrong, in words to show. An error's own words where it has them — the Hub's answer (`ApiError`), a
+ * text handed over as it is, a browser's error by its message or, lacking one, its name. «Неизвестная ошибка» is
+ * said only of what says nothing at all of itself, and then with whatever it is, so that it can be looked for. */
 export function errorMessage(e: unknown): string {
   if (e instanceof ApiError) return e.message;
-  if (e instanceof Error) return e.message || 'Неизвестная ошибка';
-  return 'Неизвестная ошибка';
+  if (typeof e === 'string' && e.trim()) return e;
+  if (e instanceof Error) return e.message || (e.name && e.name !== 'Error' ? `Ошибка браузера: ${e.name}` : 'Неизвестная ошибка');
+  if (e && typeof e === 'object') {
+    const o = e as { message?: unknown; detail?: unknown; error?: unknown };
+    for (const v of [o.message, o.detail, o.error]) if (typeof v === 'string' && v.trim()) return v;
+  }
+  let what = '';
+  try {
+    what = e === undefined || e === null ? '' : (JSON.stringify(e) ?? String(e));
+  } catch {
+    what = String(e);
+  }
+  return what && what !== '{}' ? `Неизвестная ошибка: ${what.slice(0, 200)}` : 'Неизвестная ошибка';
 }
 
 export const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortError';

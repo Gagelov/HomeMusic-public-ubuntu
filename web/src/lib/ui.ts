@@ -33,7 +33,24 @@ export interface Toast {
 const toastStore = createStore<Toast[]>([]);
 let toastSeq = 0;
 
+/** An error shown to a listener is told to the Hub too (its log): what was said and on which page — so that «у меня
+ * не работает» can be looked up, not guessed at. Nothing waits for it, and nothing comes of its failing. */
+function report(text: string) {
+  try {
+    void fetch('/api/system/client-error', {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.slice(0, 500), page: window.location.hash.slice(0, 200) }),
+    }).catch(() => undefined);
+  } catch {
+    /* no network, no matter */
+  }
+}
+
 export function toast(text: string, kind: Toast['kind'] = 'info', link?: Toast['link']) {
+  if (kind === 'error') report(text);
   const t: Toast = { id: ++toastSeq, text, kind, link };
   toastStore.set([...toastStore.get().slice(-2), t]);
   window.setTimeout(() => dismissToast(t.id), kind === 'error' ? 6000 : 3500);
