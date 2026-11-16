@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import type { AlbumOut, ArtistPageOut } from '../api/types';
 import { ReleaseCard, TrackRow } from '../components/catalog';
@@ -316,6 +316,35 @@ function BannerPicture({ src, blurred }: { src: string; /** not a wide picture b
   );
 }
 
+/** A name kept to one line where it can be: as large as the page's style makes it, and where that does not fit —
+ * smaller, down to half of that (never under 26 px); a name too long even so takes its lines at that least size.
+ * Measured anew when the name or the width of its place changes, and once the page's letters have come. */
+function useOneLine(what: string) {
+  const ref = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      el.style.fontSize = '';
+      el.style.whiteSpace = 'nowrap';
+      const full = parseFloat(getComputedStyle(el).fontSize) || 0;
+      const room = el.clientWidth;
+      const need = el.scrollWidth;
+      if (!full || !room || need <= room) return;
+      const least = Math.max(26, full * 0.5);
+      const size = Math.floor((full * room) / need);
+      el.style.fontSize = `${Math.max(least, size)}px`;
+      if (size < least) el.style.whiteSpace = '';
+    };
+    fit();
+    const watch = new ResizeObserver(fit);
+    if (el.parentElement) watch.observe(el.parentElement);
+    void document.fonts?.ready.then(fit);
+    return () => watch.disconnect();
+  }, [what]);
+  return ref;
+}
+
 /** The head of the page over that picture, reaching up under the bar with «back» and the ⋯: the name in large over
  * its darkened foot — alone, with the whole width (▶ and the shuffle are of the row under the head). Over a wide
  * picture the head is as tall as the picture, and the round photo is not shown — it is the same person twice. Where
@@ -325,6 +354,7 @@ function BannerPicture({ src, blurred }: { src: string; /** not a wide picture b
 function Banner({ name, followed, photo, sub }: { name: string; /** the listener follows the artist: a mark by the name */ followed?: boolean; photo?: string | null; sub?: ReactNode }) {
   const round = 'h-32 w-32 shrink-0 rounded-full shadow-xl sm:h-44 sm:w-44 lg:h-56 lg:w-56';
   const wide = photo === undefined;
+  const title = useOneLine(`${name}:${!!followed}`);
   return (
     <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex', wide ? cx('items-end', BANNER_H) : 'items-center pt-[calc(4rem+env(safe-area-inset-top))]')}>
       <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-t from-bg via-bg/45 to-black/15" />
@@ -339,7 +369,7 @@ function Banner({ name, followed, photo, sub }: { name: string; /** the listener
           ))}
         <div className="min-w-0 flex-1">
           <div className="hidden text-sm text-fg/80 lg:block">Исполнитель</div>
-          <h2 data-list-title className={cx('line-clamp-2 break-words font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]', wide ? 'text-[clamp(2.5rem,9vw,6rem)]' : 'text-[clamp(2rem,7.5vw,6rem)]')}>
+          <h2 ref={title} data-list-title className={cx('line-clamp-2 break-words font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]', wide ? 'text-[clamp(2.5rem,9vw,6rem)]' : 'text-[clamp(2rem,7.5vw,6rem)]')}>
             {name}
             {followed && (
               <span title="Вы подписаны: новые релизы появятся в «Релизах»" aria-label="Вы подписаны" className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent align-middle text-black [text-shadow:none] sm:ml-3 sm:h-7 sm:w-7">
