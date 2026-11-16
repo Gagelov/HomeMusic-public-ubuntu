@@ -1134,7 +1134,8 @@ export interface ImportCollectionOut {
   count: number;
   owned: number;
   cover_url?: string | null;
-  nd_playlist_id?: string | null;
+  /** the Hub's playlist made of the collection */
+  playlist_id?: string | null;
 }
 
 export interface ImportOut {

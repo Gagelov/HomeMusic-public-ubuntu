@@ -1019,7 +1019,7 @@ class ImportCollectionOut(BaseModel):
     count: int
     owned: int = 0
     cover_url: str | None = None
-    nd_playlist_id: str | None = None
+    playlist_id: str | None = None  # the Hub's playlist made of the collection
 
 
 class ImportOut(BaseModel):

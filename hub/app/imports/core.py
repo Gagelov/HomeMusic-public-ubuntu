@@ -5,7 +5,7 @@ Job kinds (all below the user's work in the queue: `PRIORITY_IMPORT`):
                        user types here (`answer_auth`), only ends a sign-in nobody finished
 - `import_fetch`     — reads the collection from the service into collections and items, checks the library
 - `import_resolve`   — matches a batch of rows (`resolve.py`) and acts on them (`apply.py`), queues the next batch
-- `import_playlists` — writes the Navidrome playlists and the ♥ in the service's order (coalesced: one per import)
+- `import_playlists` — settles the Hub's playlists and the ♥ in the service's order (coalesced: one per import)
 - `import_finish`    — when the downloads are over: the last rewrite, ★ albums and artists, the token goes
 
 Modes: `economy` — playlists and ♥ at once from what the library has, the rest is listened to from the sources
@@ -59,10 +59,6 @@ ACTIVE = ("auth", "fetching", "running")
 
 
 # --- state + events --------------------------------------------------------------------------------------
-
-
-async def get_import(s: AsyncSession, import_id: int) -> Import | None:
-    return await s.get(Import, import_id)
 
 
 def _free_bytes() -> int | None:
@@ -142,7 +138,7 @@ async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
         stats=await stats(s, imp, list(colls)),
         collections=[ImportCollectionOut(id=c.id, kind=c.kind, title=c.title, selected=c.selected,
                                          count=counts.get(c.id, (0, 0))[0], owned=counts.get(c.id, (0, 0))[1],
-                                         cover_url=c.cover_url, nd_playlist_id=str(c.playlist_id) if c.playlist_id else None) for c in colls],
+                                         cover_url=c.cover_url, playlist_id=str(c.playlist_id) if c.playlist_id else None) for c in colls],
         created_at=imp.created_at, started_at=imp.started_at, finished_at=imp.finished_at,
     )
 
@@ -600,5 +596,5 @@ async def remove(s: AsyncSession, imp: Import) -> None:
     await s.delete(imp)
 
 
-__all__ = ["ACTIVE", "create", "create_from_snapshot", "download_all", "downloads_done", "get_import", "import_out", "item_out", "listened",
+__all__ = ["ACTIVE", "create", "create_from_snapshot", "download_all", "downloads_done", "import_out", "item_out", "listened",
            "remove", "start"]

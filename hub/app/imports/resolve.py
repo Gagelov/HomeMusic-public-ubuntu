@@ -18,9 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.models import CatalogTrack, make_ref, split_ref
 from app.config import get_settings
-from app.imports.sources.spotify_csv import clean_isrc
 from app.library.owned import find_owned
-from app.matching.normalize import has_cyrillic, normalize_artist, split_version
+from app.matching.normalize import clean_isrc, has_cyrillic, normalize_artist, split_version
 from app.matching.score import score
 from app.matching.select import classify_scores, match_catalog, rank_candidates
 from app.models import SourceMap, Track, utcnow

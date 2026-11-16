@@ -485,14 +485,11 @@ async def commit(body: UploadCommitIn, user: User = Depends(current_user),
     playlist_ids = list(dict.fromkeys(body.playlist_ids))
     if (playlist_ids or body.keep_in) and track_ids:  # the playlists are the Hub's: the tracks are in them at once
         from app import playlists
-        from app.playlists_mirror import enqueue_mirror
+        from app.jobs.downloads import into_playlists
 
         if body.keep_in and body.keep_in.strip():
             playlist_ids.append(str((await playlists.named(s, user.id, body.keep_in)).id))
-        for pid in playlist_ids:
-            p = await playlists.own(s, user.id, int(pid)) if str(pid).isdigit() else None
-            if p is not None and p.kind == playlists.USER and await playlists.add(s, p, track_ids):
-                await enqueue_mirror(s, p.id)
+        await into_playlists(s, user.id, playlist_ids, track_ids)
     if body.star and track_ids:
         from app.api.schemas import FavoriteTarget
         from app.favorites import command, project_liked

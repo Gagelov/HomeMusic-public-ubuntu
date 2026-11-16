@@ -1,12 +1,17 @@
-"""What a matched import row does in HomeMusic: ♥ in Navidrome, Navidrome playlists in the service's order, downloads.
+"""What a matched import row does in HomeMusic: a track of the Hub, its place in the playlists, its ♥, its download.
 
-- ♥: the Hub stars the import's liked songs itself, in the service's order (`sync_likes`): one by one from the oldest
-  like, and a song downloaded later gets its place by starring the likes newer than it again. Likes are downloaded
-  oldest first, so a new song mostly lands on top and costs one star.
-- Playlists: the whole playlist is rewritten in the service's order (`set_playlist_songs`) from what the library
-  has, at most every `core.PLAYLISTS_DELAY_S` while downloads come in — never on every track.
+- A matched row is a track of the Hub at once (`track_of`), named as the catalog names it — whether the library has
+  its file yet or not.
+- Playlists: a playlist of the service is a playlist of the Hub (`sync_playlists`), with every matched track in the
+  service's order and with the date it was added there; it is settled at most every `core.PLAYLISTS_DELAY_S` while
+  downloads come in — never on every track.
+- ♥: the liked tracks are in «Любимое» in the service's order (`favorites.project_liked`); in Navidrome the Hub stars
+  the liked songs itself, in that order (`sync_likes`): one by one from the oldest like, and a song downloaded later
+  gets its place by starring the likes newer than it again. Likes are downloaded oldest first, so a new song mostly
+  lands on top and costs one star.
 - Downloads are the Hub's own business (`DownloadItem.query_json["import"]`): low priority, not shown as downloads;
-  they carry no ♥ of their own (`star`): the import stars its likes in order.
+  each is of the catalog's track the row was matched with (`queue_track`), as a download asked for from the search.
+- «После переноса» (`apply_extras`): what the user asked for every transferred track — tags, other playlists, a ♥.
 """
 
 from __future__ import annotations
@@ -406,38 +411,28 @@ async def apply_extras(s: AsyncSession, imp: Import) -> None:
         .where(ImportItem.import_id == imp.id, ImportItem.status == "done", ImportItem.track_id.is_not(None),
                ImportCollection.kind.in_(("likes", "playlist")), ImportCollection.selected.is_(True))
         .order_by(ImportCollection.id, ImportItem.position))).scalars() if not (i.raw_json or {}).get("extra")]
-    songs = await _song_ids(s, items)
-    ready = [i for i in items if i.id in songs]  # the rest wait for the library scan
+    ready = items  # the library has them: what is asked is the track's own, as for a file the user uploaded
     user = await s.get(User, imp.user_id)
     if not ready or user is None:
         return
     track_ids = list(dict.fromkeys(i.track_id for i in ready))
-    song_ids = list(dict.fromkeys(songs[i.id] for i in ready))
     try:
         if tag_ids:
             from app import tags
 
             await tags.assign_tracks(s, imp.user_id, track_ids, tag_ids)
         if playlist_ids:
-            from app import playlists
-            from app.playlists_mirror import enqueue_mirror
+            from app.jobs.downloads import into_playlists
 
-            for pid in playlist_ids:
-                p = await playlists.own(s, imp.user_id, int(pid)) if str(pid).isdigit() else None
-                if p is not None and p.kind == playlists.USER and await playlists.add(s, p, track_ids):
-                    await enqueue_mirror(s, p.id)
+            await into_playlists(s, imp.user_id, playlist_ids, track_ids)
         if star:
-            nd = _nd(user)
-            try:
-                if star:
-                    from app.api.schemas import FavoriteTarget
-                    from app.favorites import command
+            from app.api.schemas import FavoriteTarget
+            from app.favorites import command
 
-                    # through the favorites journal, as a ♥ set by hand: «Любимое» and mixes see it the same way
-                    await command(s, user, [FavoriteTarget(nd_song_id=x) for x in song_ids], liked=True, client="hub",
-                                  context="import", nd=nd)
-            finally:
-                await nd.aclose()
+            # through the favorites journal, as a ♥ set by hand: «Любимое» and mixes see it the same way. The like is
+            # the track's own: Navidrome gets the ♥ once its scan has found the file (`deliver_pending`)
+            await command(s, user, [FavoriteTarget(track_id=t) for t in track_ids], liked=True, client="hub",
+                          context="import")
     except Exception as e:  # the next settling of the import tries these tracks again
         log.warning("import %s: extras: %r", imp.id, e)
         return

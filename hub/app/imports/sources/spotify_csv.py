@@ -12,17 +12,12 @@ import re
 from typing import Any
 
 from app.imports.sources.base import SnapCollection, SnapItem, Snapshot, SourceError
+from app.matching.normalize import clean_isrc
 
 MAX_FILES = 30
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_ROWS = 10_000
-ISRC_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}\d{7}$")
 _LIKES_RE = re.compile(r"^liked[\s_-]*songs$", re.I)
-
-
-def clean_isrc(value: str | None) -> str | None:
-    isrc = (value or "").replace("-", "").strip().upper()
-    return isrc if ISRC_RE.match(isrc) else None
 
 
 def _title(filename: str) -> str:
