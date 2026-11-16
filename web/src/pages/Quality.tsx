@@ -281,6 +281,9 @@ function Compare({ r, listening, busy, onYes, onNo, onVersion, onTake }: { r: Qu
   const peaks = useAsync((s) => api.qualityPeaks(r.id, s), [r.id]);
   const done = r.state === 'replaced'; // replaced already: the file it had beside the one it has, the new one taken
   const [more, setMore] = useState(false); // the answers that are hardly the case, where the sound says «the same recording»
+  // the second file: one that may take the place of the track's own — or, where it is no better and the question
+  // is of the record, one fetched only to compare the sound by
+  const foundWord = r.kind === 'identify' && !r.better ? 'Для сверки' : 'Найден';
   // where the two files part though they are one recording
   const gaps = peaks.data?.gaps ?? [];
   type Which = 'current' | 'found' | 'was';
@@ -303,7 +306,7 @@ function Compare({ r, listening, busy, onYes, onNo, onVersion, onTake }: { r: Qu
     };
     return (
       <div className="flex items-center gap-3 py-1">
-        <span className="w-14 shrink-0 text-[11px] text-dim">{label}</span>
+        <span className="w-[4.5rem] shrink-0 text-[11px] text-dim">{label}</span>
         <button type="button" aria-label={playing ? 'Пауза' : `Слушать: ${label.toLowerCase()}`} onClick={() => listening.play(key, src)} className={cx('flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition hover:scale-105', playing ? 'border-accent text-accent' : 'border-line text-fg')}>
           <Icon name={playing ? 'pause' : 'play'} size={14} filled className={playing ? '' : 'translate-x-px'} />
         </button>
@@ -332,11 +335,14 @@ function Compare({ r, listening, busy, onYes, onNo, onVersion, onTake }: { r: Qu
     <div className="pt-2 md:pl-[3.25rem]">
       {r.kind === 'identify' && !done && (
         <p className="pb-1 text-xs text-muted">
-          Каталог считает, что это «{r.record}». «Это она» — трек получит её название, альбом и обложку. {r.better ? 'Файл останется ваш, если не сказать иначе.' : 'Файл останется ваш: найденный не лучше.'}
+          Каталог считает, что это «{r.record}».{' '}
+          {r.better
+            ? `Найденный файл${r.provider ? ` (${providerLabel(r.provider)})` : ''} лучше вашего по качеству — взять его можно отдельной кнопкой.`
+            : `Файл для сверки скачан${r.provider ? ` с ${providerLabel(r.provider)}` : ''}: он нужен только для этого сравнения, ваш файл останется.`}
         </p>
       )}
       {done ? lane('was', 'Был', fileWords(r.was_codec, r.was_kbps), false) : lane('current', 'Сейчас', fileWords(r.was_codec, r.was_kbps), false)}
-      {done ? lane('current', 'Стал', fileWords(r.codec, r.bitrate_kbps), true, true) : lane('found', 'Найден', fileWords(r.codec, r.bitrate_kbps), !!r.better)}
+      {done ? lane('current', 'Стал', fileWords(r.codec, r.bitrate_kbps), true, true) : lane('found', foundWord, fileWords(r.codec, r.bitrate_kbps), !!r.better)}
       {gaps.length > 0 && (
         <div className="pt-1 text-xs">
           <p className="pb-1 text-danger">Файлы расходятся в {gaps.length === 1 ? 'одном месте' : `${gaps.length} местах`}. Что там, слышно только на слух — послушайте оба:</p>
@@ -345,8 +351,8 @@ function Compare({ r, listening, busy, onYes, onNo, onVersion, onTake }: { r: Qu
               <li key={g.at} className="flex flex-wrap items-center gap-2">
                 <span className="w-24 tabular-nums text-fg">{clock(g.at)}–{clock(g.to)}</span>
                 <button type="button" onClick={() => hear(upper, g.at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ {done ? 'был' : 'сейчас'}</button>
-                <button type="button" onClick={() => hear(lower, g.other_at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ {done ? 'стал' : 'найден'}</button>
-                {g.quieter && <span className="text-muted">здесь тише файл «{g.quieter === 'upper' ? (done ? 'был' : 'сейчас') : done ? 'стал' : 'найден'}»</span>}
+                <button type="button" onClick={() => hear(lower, g.other_at)} className="rounded-full bg-fg/10 px-2 py-0.5 hover:bg-fg/20">▶ {done ? 'стал' : foundWord.toLowerCase()}</button>
+                {g.quieter && <span className="text-muted">здесь тише файл «{g.quieter === 'upper' ? (done ? 'был' : 'сейчас') : done ? 'стал' : foundWord.toLowerCase()}»</span>}
               </li>
             ))}
           </ul>
@@ -369,7 +375,7 @@ function Compare({ r, listening, busy, onYes, onNo, onVersion, onTake }: { r: Qu
                 offered only where the file found is the better one. Where the sound says «the same recording» the
                 yes stands out, and the other answers are put away: they are hardly the case */}
             <Button small variant={r.sure ? 'primary' : undefined} busy={busy} onClick={onYes}>
-              {onTake ? 'Это она · оставить мой файл' : 'Это она'}
+              Это она · файл оставить мой
             </Button>
             {onTake && (
               <Button small disabled={busy} onClick={onTake} className="!border !border-danger/60 !text-danger" title="Трек получит данные каталога, а его файл заменится найденным. Прежний хранится 30 дней">
