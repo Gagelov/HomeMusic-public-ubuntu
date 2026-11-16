@@ -2,6 +2,7 @@ import { useState, type MouseEvent, type ReactNode } from 'react';
 import { deleteFile } from '../lib/deleteFile';
 import { openFindFile } from '../lib/findFile';
 import { openTrackEdit } from '../lib/trackEdit';
+import { openVersions } from '../lib/versions';
 import { createPortal } from 'react-dom';
 import { setDisliked, useDisliked, type DislikeTarget } from '../lib/dislikes';
 import { STANDALONE } from '../lib/embedded';
@@ -178,6 +179,17 @@ function TrackMenu({ track, extra, inPlayer, lean, noTags, onClose }: { track: M
             onClick={() => {
               onClose();
               openTrackEdit({ title: track.title, artist: track.artist, library_track_id: track.library_track_id, ref: track.ref, nd_song_id: track.nd_song_id });
+            }}
+          />
+        )}
+        {(track.library_track_id || track.ref || track.nd_song_id) && (
+          <MenuItem
+            icon="disc"
+            label="Версии песни"
+            hint="Другие записи той же песни: старая, remix, live"
+            onClick={() => {
+              onClose();
+              openVersions({ title: track.title, library_track_id: track.library_track_id, ref: track.ref, nd_song_id: track.nd_song_id });
             }}
           />
         )}

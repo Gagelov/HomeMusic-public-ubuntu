@@ -77,6 +77,8 @@ import type {
   TasteOnboardingOut,
   CoverInfo,
   FileRowOut,
+  VersionOut,
+  VersionsOut,
   ArtistCardOut,
   ArtistLooksOut,
   ArtistOtherIn,
@@ -354,6 +356,12 @@ export const api = {
   /** A track's names and cover as they are, for the window that puts them right; a catalog song the Hub has not
    * met becomes a track by this. */
   trackEdit: (q: { track_id?: number; ref?: string; nd_song_id?: string }) => request<TrackEditOut>('GET', withQuery('/api/library/track-edit', q)),
+  /** A song and its versions (the Hub's `app/library/versions.py`). */
+  versions: (q: { track_id?: number; ref?: string; nd_song_id?: string }, signal?: AbortSignal) => request<VersionsOut>('GET', withQuery('/api/library/versions', q), { signal }),
+  versionsFind: (id: number, q: string, signal?: AbortSignal) => request<VersionOut[]>('GET', withQuery(`/api/library/tracks/${id}/versions/find`, { q }), { signal }),
+  versionAdd: (id: number, track_id: number) => request<VersionsOut>('POST', `/api/library/tracks/${id}/versions`, { json: { track_id } }),
+  versionPatch: (id: number, body: { label?: string; preferred?: boolean }) => request<VersionsOut>('PATCH', `/api/library/tracks/${id}/version`, { json: body }),
+  versionDrop: (id: number, of?: number) => request<VersionsOut>('DELETE', withQuery(`/api/library/tracks/${id}/version`, { of })),
   addTrackName: (id: number, name: string) => request<TrackEditOut>('POST', `/api/library/tracks/${id}/names`, { json: { name } }),
   dropTrackName: (id: number, nameId: number) => request<TrackEditOut>('DELETE', `/api/library/tracks/${id}/names/${nameId}`),
   /** An artist's name, spellings and projects (the Hub's `app/library/artists.py`): by the catalog's own or by a name. */

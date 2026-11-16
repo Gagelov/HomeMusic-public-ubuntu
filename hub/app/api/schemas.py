@@ -283,6 +283,33 @@ class TracksMoveIn(BaseModel):
     album_id: int
 
 
+class VersionOut(BaseModel):
+    """A recording of a song (app/library/versions.py): a track of its own, and what it is among the others."""
+
+    track_id: int
+    title: str
+    artist: str
+    album: str | None = None
+    duration_s: int | None = None
+    label: str | None = None  # what it is, in a word: «старая версия», «Deluxe»
+    preferred: bool = False
+    cover_url: str | None = None
+    ref: str | None = None
+    nd_song_id: str | None = None
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    has_file: bool = False
+
+
+class VersionsOut(BaseModel):
+    """The song a track is: every version of it, the preferred one first (one alone: the track is nobody's version)."""
+
+    track_id: int
+    song_id: int | None = None
+    title: str
+    versions: list[VersionOut] = []
+
+
 class TrackNameOut(BaseModel):
     id: int | None = None
     name: str
@@ -401,6 +428,7 @@ class FileJournalOut(BaseModel):
 
 class TrackOut(CatalogTrack):
     owned: bool = False
+    versions: int = 0  # how many recordings the song it is has here, itself among them (0: it is nobody's version)
     file: FileOut | None = None  # an owned track: its file
     library_track_id: int | None = None
     nd_song_id: str | None = None

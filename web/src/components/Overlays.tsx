@@ -8,6 +8,7 @@ import { tracksWord } from '../lib/format';
 import { closePlaylistsSheet, usePlaylistsSheet } from '../lib/playlistsSheet';
 import { BulkPlaylists } from './PlaylistsButton';
 import { FindFile } from './FindFile';
+import { Versions } from './Versions';
 import { ShareSheet } from './ShareSheet';
 import { OfflineBanner } from './Offline';
 import { PlaylistMenu } from './PlaylistMenu';
@@ -58,6 +59,7 @@ export function Overlays() {
       <PlaylistMenu />
       <TrackEdit />
       <FindFile />
+      <Versions />
       <TelegramSetup />
       <ShareSheet />
       <PlaylistsSheet />

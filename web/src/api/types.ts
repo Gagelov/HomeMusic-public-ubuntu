@@ -212,6 +212,8 @@ export interface FileJournalOut {
 
 export interface TrackOut extends CatalogTrack {
   owned: boolean;
+  /** how many recordings the song it is has here, itself among them (0: it is nobody's version) */
+  versions?: number;
   /** an owned track: its file */
   file?: FileOut | null;
   library_track_id?: number | null;
@@ -1223,6 +1225,32 @@ export interface TrackEditOut {
   has_file: boolean;
   /** the other names it is known by — the search reads them (`id` null: the catalog's, which cannot be dropped) */
   names?: TrackNameOut[];
+}
+
+/** A recording of a song: a track of its own, and what it is among the others (`components/Versions.tsx`). */
+export interface VersionOut {
+  track_id: number;
+  title: string;
+  artist: string;
+  album?: string | null;
+  duration_s?: number | null;
+  /** what it is, in a word: «старая версия», «Deluxe» */
+  label?: string | null;
+  preferred: boolean;
+  cover_url?: string | null;
+  ref?: string | null;
+  nd_song_id?: string | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  has_file: boolean;
+}
+
+/** The song a track is: every version of it, the preferred one first (one alone: the track is nobody's version). */
+export interface VersionsOut {
+  track_id: number;
+  song_id?: number | null;
+  title: string;
+  versions: VersionOut[];
 }
 
 export interface TrackNameOut {

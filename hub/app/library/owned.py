@@ -194,6 +194,12 @@ async def annotate_tracks(
             o.downloading = t.ref in downloading_refs or fp in downloading_fps
         out.append(o)
     await with_files(s, out)
+    from app.library import versions
+
+    # the song a track is may have other recordings (app/library/versions.py): a list says how many
+    many = await versions.counts(s, [o.library_track_id for o in out if o.library_track_id])
+    for o in out:
+        o.versions = many.get(o.library_track_id or 0, 0)
     return out
 
 

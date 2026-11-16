@@ -16,6 +16,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
+    VersionOut,
+    VersionsOut,
     TrackEditOut,
     AlbumCreateIn,
     AlbumMergeIn,
@@ -571,3 +573,101 @@ async def drop_track_name(track_id: int, name_id: int, user: User = Depends(curr
     out = await edits.info(s, t)
     await s.commit()
     return out
+
+
+# --- a song and its versions (app/library/versions.py) -----------------------------------------------------------
+
+
+class VersionIn(BaseModel):
+    track_id: int
+
+
+class VersionPatchIn(BaseModel):
+    """What to say of a version: a word for what it is (`label`; "" takes the word away), or that it is the
+    preferred one."""
+
+    label: str | None = Field(default=None, max_length=64)
+    preferred: bool | None = None
+
+
+async def _version_track(s: AsyncSession, track_id: int) -> Track:
+    t = await s.get(Track, track_id)
+    if t is None:
+        raise HTTPException(404, "Трек не найден")
+    return t
+
+
+async def _versions(s: AsyncSession, user: User, t: Track) -> dict:
+    from app.library import versions
+
+    out = await versions.card(s, t)
+    await s.commit()
+    bus.publish(user.id, "library", {"kind": "changed", "album_id": t.album_id})
+    return out
+
+
+@router.get("/api/library/versions", response_model=VersionsOut)
+async def get_versions(track_id: int | None = None, ref: str | None = None, nd_song_id: str | None = None,
+                       user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    """The song a track is, with every version of it. The track is named the way a row knows it; a song of the
+    catalog the Hub has not met yet becomes a track here."""
+    from app.library import versions
+    from app.lyrics.service import track_for
+
+    t = await s.get(Track, track_id) if track_id else await track_for(s, nd_song_id=nd_song_id, ref=ref, user_id=user.id)
+    if t is None:
+        raise HTTPException(404, "Трек не найден")
+    out = await versions.card(s, t)
+    await s.commit()
+    return out
+
+
+@router.get("/api/library/tracks/{track_id}/versions/find", response_model=list[VersionOut])
+async def find_versions(track_id: int, q: str = Query(min_length=1), user: User = Depends(current_user),
+                        s: AsyncSession = Depends(get_session, scope="function")):
+    from app.library import versions
+
+    return await versions.candidates(s, await _version_track(s, track_id), q)
+
+
+@router.post("/api/library/tracks/{track_id}/versions", response_model=VersionsOut)
+async def add_version(track_id: int, body: VersionIn, user: User = Depends(current_user),
+                      s: AsyncSession = Depends(get_session, scope="function")):
+    """Another track is a recording of the same song."""
+    from app.library import versions
+
+    t = await _version_track(s, track_id)
+    try:
+        await versions.link(s, user.id, t, await _version_track(s, body.track_id))
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return await _versions(s, user, t)
+
+
+@router.patch("/api/library/tracks/{track_id}/version", response_model=VersionsOut)
+async def patch_version(track_id: int, body: VersionPatchIn, user: User = Depends(current_user),
+                        s: AsyncSession = Depends(get_session, scope="function")):
+    from app.library import versions
+
+    t = await _version_track(s, track_id)
+    try:
+        if body.label is not None:
+            await versions.label(s, user.id, t, body.label)
+        if body.preferred:
+            await versions.prefer(s, user.id, t)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return await _versions(s, user, t)
+
+
+@router.delete("/api/library/tracks/{track_id}/version", response_model=VersionsOut)
+async def drop_version(track_id: int, of: int | None = None, user: User = Depends(current_user),
+                       s: AsyncSession = Depends(get_session, scope="function")):
+    """The track is not a version of that song after all. `of`: the track whose window it was dropped in — the
+    answer is that track's song."""
+    from app.library import versions
+
+    t = await _version_track(s, track_id)
+    await versions.unlink(s, user.id, t)
+    return await _versions(s, user, await _version_track(s, of) if of else t)
+

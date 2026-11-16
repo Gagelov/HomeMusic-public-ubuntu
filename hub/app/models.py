@@ -1184,3 +1184,27 @@ class TrackName(Base):
     key: Mapped[str] = mapped_column(String(512))
     source: Mapped[str] = mapped_column(String(16), default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Song(Base):
+    """A song that several tracks are recordings of (app/library/versions.py). `preferred_track_id`: the version a
+    list that shows the song once shows — said by hand, for everyone."""
+
+    __tablename__ = "songs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    preferred_track_id: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SongTrack(Base):
+    """A track that is a version of a song, and a word for what it is («старая версия», «Deluxe»). A track is a
+    version of one song at most; one that is nobody's version has no row."""
+
+    __tablename__ = "song_tracks"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    song_id: Mapped[int] = mapped_column(ForeignKey("songs.id", ondelete="CASCADE"), index=True)
+    label: Mapped[str | None] = mapped_column(String(64))
+    joined_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+

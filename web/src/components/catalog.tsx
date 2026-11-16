@@ -1,3 +1,5 @@
+import { plural } from '../lib/format';
+import { openVersions } from '../lib/versions';
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { useOfHiddenArtist } from '../lib/dislikes';
 import { KeptMark, useUnreachable } from './Offline';
@@ -204,7 +206,15 @@ export function TrackRow({
         </span>
       ) : null}
       <div className="min-w-0 flex-1">
-        <div className={cx('truncate text-[15px]', current ? 'text-accent' : 'text-fg')}>{track.title}</div>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className={cx('truncate text-[15px]', current ? 'text-accent' : 'text-fg')}>{track.title}</span>
+          {(track.versions ?? 0) > 1 && (
+            // the song has other recordings here: the mark opens them
+            <button type="button" title="Другие версии этой песни" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openVersions({ title: track.title, library_track_id: track.library_track_id, ref: track.ref, nd_song_id: track.nd_song_id }); }} className="shrink-0 rounded-full bg-info/20 px-1.5 text-[11px] leading-[1.35] text-info hover:bg-info/30">
+              {track.versions} {plural(track.versions ?? 0, ['версия', 'версии', 'версий'])}
+            </button>
+          )}
+        </span>
         <div className="flex items-center gap-1.5 text-[13px] text-muted">
           {track.explicit && <ExplicitBadge />}
           <span className="truncate">{sub}</span>
@@ -298,7 +308,15 @@ export function TrackRow({
       ) : null;
     const names = (sub: string) => (
       <span className="block min-w-0 flex-1">
-        <span className={cx('block truncate text-[15px]', titleColor)}>{track.title}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className={cx('truncate text-[15px]', titleColor)}>{track.title}</span>
+          {(track.versions ?? 0) > 1 && (
+            // the song has other recordings here: the mark opens them
+            <button type="button" title="Другие версии этой песни" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openVersions({ title: track.title, library_track_id: track.library_track_id, ref: track.ref, nd_song_id: track.nd_song_id }); }} className="shrink-0 rounded-full bg-info/20 px-1.5 text-[11px] leading-[1.35] text-info hover:bg-info/30">
+              {track.versions} {plural(track.versions ?? 0, ['версия', 'версии', 'версий'])}
+            </button>
+          )}
+        </span>
         <span className="flex items-center gap-1.5 text-[13px] text-muted">
           <KeptMark refId={track.ref} />
           {track.explicit && <ExplicitBadge />}
