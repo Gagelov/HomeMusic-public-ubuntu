@@ -65,7 +65,7 @@ export function PlayerPage() {
   const dl = useListen((s) => (s.track ? s.downloads.get(s.track.ref) : undefined));
   const canNext = useListen((s) => hasNext(s) || (s.repeat === 'all' && !s.context.startsWith('wave:')));
   const canPrev = useListen(hasPrev);
-  const { shownPos, aim, dragging, range } = useSeek(position, duration);
+  const { shownPos, aim, range } = useSeek(position, duration);
   const [busy, setBusy] = useState(false);
   const [lyrics, setLyrics] = useState(() => {
     try {
@@ -185,7 +185,11 @@ export function PlayerPage() {
         )}
         <div className="min-w-0">
       <div className={cx('px-6 pt-2', lyrics && !wide && 'hidden')}>
-        <Cover src={track.cover_url || track.cover_small_url} alt={track.title} className="mx-auto aspect-square w-full max-w-[22rem] shadow-2xl" />
+        {/* the line of the text aimed at while seeking lies over the foot of the cover */}
+        <div className="relative mx-auto aspect-square w-full max-w-[22rem] overflow-hidden rounded-md shadow-2xl">
+          <Cover src={track.cover_url || track.cover_small_url} alt={track.title} className="h-full w-full" />
+          <SeekLine aim={aim} refId={track.ref} songId={info?.nd_song_id ?? track.nd_song_id} time over className="absolute inset-x-0 bottom-0" />
+        </div>
       </div>
 
       <div className="flex items-center gap-2 px-6 pt-6">
@@ -242,8 +246,6 @@ export function PlayerPage() {
       )}
 
       <div className="relative px-6 pt-4">
-        {/* the line aimed at, over the bar — unless the text itself is on the screen and goes there with the handle */}
-        <SeekLine aim={textShown && dragging ? null : aim} refId={track.ref} songId={info?.nd_song_id ?? track.nd_song_id} time className="absolute inset-x-6 bottom-full -mb-2" />
         <input {...range} className="hm-range w-full" disabled={!duration || phase === 'resolving' || phase === 'error'} />
         <div className="flex justify-between pt-1 text-xs tabular-nums text-muted">
           <span>{fmtDuration(shownPos) || '0:00'}</span>
