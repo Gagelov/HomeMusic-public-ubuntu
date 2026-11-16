@@ -845,6 +845,8 @@ export interface PlaylistOut {
   song_count: number;
   /** the playlist's tracks the library has no file of yet: they play, and are downloaded when listened to */
   pending_count?: number;
+  /** the user's own: it can be renamed, given a picture, deleted («Микс дня» is the Hub's: it cannot) */
+  editable?: boolean;
   duration_s: number;
   cover_art?: string | null;
   /** the playlist's picture, the user's own or Navidrome's (add `&size=`) */

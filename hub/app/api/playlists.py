@@ -74,7 +74,7 @@ async def _outs(s: AsyncSession, rows: list[Playlist]) -> list[PlaylistOut]:
             cover = f"/api/nd/cover/{quote(p.nd_cover, safe='')}?v={filed}"  # it changes with the songs
         else:
             cover = None
-        out.append(PlaylistOut(id=str(p.id), name=p.name, song_count=filed, pending_count=total - filed,
+        out.append(PlaylistOut(id=str(p.id), name=p.name, editable=p.kind == playlists.USER, song_count=filed, pending_count=total - filed,
                                duration_s=seconds, cover_art=p.nd_cover, cover_url=cover))
     return out
 

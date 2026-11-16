@@ -417,8 +417,9 @@ export function PlaylistPage({ id }: { id: string }) {
   return (
     <div>
       <ListBar title={p.name} back="/library" tracks={playing} context="playlist"
-        // the playlist's own menu — its name, its picture, deleting it — here as where the playlists are listed
-        extra={<IconButton icon="more" label="Плейлист: переименовать, обложка, удалить" onClick={(e) => openPlaylistMenu({ id, name: p.name, cover_url: p.cover_url }, desktop ? { x: e.clientX, y: e.clientY } : undefined)} />}
+        // the playlist's own menu — its name, its picture, deleting it — here as where the playlists are listed; a
+        // list the Hub makes («Микс дня») has nothing to edit, and no menu
+        extra={p.editable !== false && <IconButton icon="more" label="Плейлист: переименовать, обложка, удалить" onClick={(e) => openPlaylistMenu({ id, name: p.name, cover_url: p.cover_url }, desktop ? { x: e.clientX, y: e.clientY } : undefined)} />}
         offline={{ key: `playlist:${id}`, to: `/playlist/${id}`, tracks: plays(all) }} search={all.length ? search : undefined} tags={all.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : all.length } : undefined} />
       {viewing && <CoverView src={cover} title={p.name} playlistId={id} own={ownCover(p.cover_url)} onClose={closeCover} />}
       {!search.alone && <Hero

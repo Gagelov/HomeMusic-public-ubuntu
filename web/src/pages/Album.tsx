@@ -5,7 +5,7 @@ import { TrackRow, TrackTableHeader } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
 import { PlaylistsPick } from '../components/PlaylistsButton';
-import { ErrorState, ExplicitBadge, HeroSkeleton, OwnedBadge, PageHeader, Sheet, Spinner, cx } from '../components/ui';
+import { ErrorState, ExplicitBadge, HeroSkeleton, IconButton, OwnedBadge, PageHeader, Sheet } from '../components/ui';
 import { startDownload } from '../lib/actions';
 import { useHubEvent } from '../lib/events';
 import { fmtLength, recordTypeLabel, tracksWord, yearOf } from '../lib/format';
@@ -18,9 +18,9 @@ import { Hero } from './MediaLibrary';
 
 /** A release of the catalog (`/album/<ref>`), in the shape of every list: the head — the cover, the kind of release
  * over its name, the artist, the year, the tracks and their length, ▶ and the shuffle — then a row of buttons
- * («Скачать альбом», «В плейлист», ⋯: the link, the release in Deezer, the artist), the tracks by their numbers and,
+ * (at the top of the page: ⋯ — into playlists, the link, the release in its catalog, the artist — and «Скачать
+ * альбом»), the tracks by their numbers and,
  * under them, the day it came out. */
-const pill = 'flex h-9 items-center gap-1.5 rounded-full border border-fg/40 px-4 text-sm font-semibold text-fg transition hover:border-fg active:scale-95 disabled:opacity-60';
 
 export function AlbumPage({ refId }: { refId: string }) {
   const [menu, setMenu] = useState(false);
@@ -138,7 +138,26 @@ export function AlbumPage({ refId }: { refId: string }) {
 
   return (
     <div>
-      <ListBar title={album.title} back="/search" tracks={tracks} context="album" />
+      <ListBar
+        title={album.title}
+        back="/search"
+        tracks={tracks}
+        context="album"
+        // what is done with the release as a whole stands at the top, as on a playlist's page
+        extra={
+          <>
+            <IconButton icon="more" label="Ещё" onClick={() => setMenu(true)} />
+            <IconButton
+              icon={allHere ? 'check' : 'download'}
+              label={allHere ? 'Всё скачано' : owned.length ? `Скачать недостающие ${missing.length} из ${tracks.length}` : 'Скачать альбом'}
+              busy={dlBusy}
+              disabled={allHere || !tracks.length}
+              onClick={() => void downloadAlbum()}
+              className={allHere ? '!text-accent' : undefined}
+            />
+          </>
+        }
+      />
       <Hero
         kicker={recordTypeLabel(album.record_type) || 'Релиз'}
         cover={album.cover_url}
@@ -166,20 +185,11 @@ export function AlbumPage({ refId }: { refId: string }) {
         context="album"
       />
 
-      <div className="flex flex-wrap items-center gap-2 px-4 pb-3 lg:px-6">
-        <button type="button" className={cx(pill, allHere && 'border-accent !text-accent')} disabled={dlBusy || allHere || !tracks.length} onClick={() => void downloadAlbum()}>
-          {dlBusy ? <Spinner size={14} /> : <Icon name={allHere ? 'check' : 'download'} size={16} stroke={allHere ? 3 : 2} />}
-          {allHere ? 'Всё скачано' : owned.length ? `Скачать недостающие ${missing.length} из ${tracks.length}` : 'Скачать альбом'}
-        </button>
-        <button type="button" className={pill} onClick={() => setPickerOpen(true)}>
-          <Icon name="playlist" size={16} />
-          В плейлист
-        </button>
-        <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="flex h-11 w-11 items-center justify-center rounded-full text-muted hover:text-fg">
-          <Icon name="more" size={24} />
-        </button>
-        {!allHere && owned.length > 0 && <OwnedBadge status={album.owned_status} count={album.owned_count} total={tracks.length || album.nb_tracks} />}
-      </div>
+      {!allHere && owned.length > 0 && (
+        <div className="px-4 pb-3 lg:px-6">
+          <OwnedBadge status={album.owned_status} count={album.owned_count} total={tracks.length || album.nb_tracks} />
+        </div>
+      )}
 
       <section aria-label="Треки" className="pt-2">
         {tracks.length > 0 && <TrackTableHeader numbered />}
@@ -198,6 +208,10 @@ export function AlbumPage({ refId }: { refId: string }) {
 
       <Sheet open={menu} onClose={() => setMenu(false)} title={album.title}>
         <div className="-mx-1">
+          {item('playlist', 'Добавить в плейлист', () => {
+            setMenu(false);
+            setPickerOpen(true);
+          })}
           {item('link', 'Скопировать ссылку', () => void share())}
           {deezer && (
             <a href={deezer} target="_blank" rel="noopener noreferrer" onClick={() => setMenu(false)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-[15px] hover:bg-fg/5">

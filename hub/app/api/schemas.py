@@ -777,6 +777,7 @@ class PlaylistOut(BaseModel):
     name: str
     song_count: int = 0  # the tracks the library has a file of
     pending_count: int = 0  # the playlist's tracks it has no file of yet
+    editable: bool = True  # the user's own: renamed, given a picture, deleted («Микс дня» is the Hub's: not)
     duration_s: int = 0
     cover_art: str | None = None
     # the playlist's picture: the user's own, else the one Navidrome makes of its albums (add `&size=`)
