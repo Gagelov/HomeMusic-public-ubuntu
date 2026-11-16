@@ -408,6 +408,8 @@ function Preview({ imp, onStarted }: { imp: ImportOut; onStarted: (r: ImportOut)
   const [tagIds, setTagIds] = useState<number[]>([]);
   const [plPicker, setPlPicker] = useState(false);
   const moved = imp.collections.filter((c) => (c.kind === 'likes' || c.kind === 'playlist') && picked.has(c.id)).reduce((n, c) => n + c.count, 0);
+  // what the transfer makes by itself: a playlist of each list brought over, ♥ for the liked tracks
+  const made = imp.collections.filter((c) => (c.kind === 'likes' || c.kind === 'playlist') && picked.has(c.id)).map((c) => ({ name: c.title, liked: c.kind === 'likes' }));
 
   const go = async () => {
     setBusy(true);
@@ -467,7 +469,7 @@ function Preview({ imp, onStarted }: { imp: ImportOut; onStarted: (r: ImportOut)
       </div>
       {moved > 0 && (
         <>
-          <AfterImport label="После переноса" className="mx-4 mt-4" count={moved} like={like} onLike={setLike} playlists={toPlaylists} onPlaylists={setToPlaylists} onPickPlaylists={() => setPlPicker(true)} tagIds={tagIds} onTags={setTagIds} />
+          <AfterImport label="После переноса" className="mx-4 mt-4" made={made} count={moved} like={like} onLike={setLike} playlists={toPlaylists} onPlaylists={setToPlaylists} onPickPlaylists={() => setPlPicker(true)} tagIds={tagIds} onTags={setTagIds} />
           {(like || toPlaylists.length > 0 || tagIds.length > 0) && (
             <p className="px-5 pt-1.5 text-xs text-dim">Трек получает это, когда попадает в библиотеку{mode === 'economy' ? ' — в режиме «Экономно» после того, как вы его послушали' : ''}.</p>
           )}
