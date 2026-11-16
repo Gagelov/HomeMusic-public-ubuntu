@@ -5,9 +5,13 @@ Auth: cookie `hm_session` (HttpOnly, set by login). Any endpoint except login/he
 Errors: `{"detail": "<Russian message>"}` with 4xx/5xx.
 
 ## Auth
+
+Username matching for sign-in and registration ignores ASCII letter case, as in Navidrome.
+`MeOut.username` uses Navidrome's spelling, including for email sign-in. The password is case-sensitive.
+
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/api/auth/login` | `LoginIn` → `MeOut` (+ cookie). `username` may be the email the account registered with: `MeOut.username` is then its Navidrome name (the player signs in by it). `429` with `Retry-After` when password attempts are throttled |
+| POST | `/api/auth/login` | `LoginIn` → `MeOut` (+ cookie). `username` accepts the Navidrome login or the email the account registered with. `429` with `Retry-After` when password attempts are throttled |
 | POST | `/api/auth/logout` | → `{ok}` |
 | GET | `/api/auth/me` | → `MeOut` |
 | GET | `/api/auth/options` | → `AuthOptionsOut` (no auth): `invites`, `email_signup` (registration by email: SMTP is configured), `google_client_id` (null — no Google), `music_url` |

@@ -177,8 +177,12 @@ export function LoginPage({ onLogin }: { onLogin: (me: MeOut) => void }) {
           {!awaitingLetter && (
             <>
               <Field label={mode === 'login' ? 'Имя или почта' : 'Имя'}>
-                <input className="input" autoComplete="username" {...plain} value={username} onChange={(e) => setUsername(e.target.value)} required />
+                <input className="input" autoComplete="username" {...plain} value={username} onChange={(e) => setUsername(e.target.value)}
+                  aria-describedby={mode === 'login' ? 'login-case-hint' : undefined} required />
               </Field>
+              {mode === 'login' && (
+                <p id="login-case-hint" className="text-xs text-dim">Регистр латинских букв в логине не учитывается.</p>
+              )}
               <Field label="Пароль">
                 <input
                   className="input"

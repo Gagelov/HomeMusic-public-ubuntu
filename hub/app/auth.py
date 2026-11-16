@@ -6,7 +6,8 @@ from datetime import timedelta
 from time import monotonic
 
 from fastapi import Depends, HTTPException, Request, Response
-from sqlalchemy import delete, select
+from sqlalchemy import delete
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -62,15 +63,15 @@ async def login(s: AsyncSession, username: str, password: str) -> tuple[User, st
     finally:
         await nd.aclose()
 
-    user = (await s.execute(select(User).where(User.nd_username == username))).scalar_one_or_none()
-    if user is None:
-        user = User(nd_username=username, nd_password_enc=encrypt(password))
-        s.add(user)
-    else:
-        user.nd_password_enc = encrypt(password)
-    user.is_admin = bool(info.get("adminRole"))
-    user.last_seen_at = utcnow()
-    await s.flush()
+    # Preserve the spelling returned for the authenticated user, including when signing in by email.
+    canonical_name = info.get("username")
+    upsert = insert(User).values(nd_username=canonical_name or username, nd_password_enc=encrypt(password),
+                                is_admin=bool(info.get("adminRole")), last_seen_at=utcnow())
+    user = (await s.scalars(upsert.on_conflict_do_update(
+        index_elements=[User.nd_username.collate("NOCASE")],
+        set_={"nd_username": canonical_name or User.nd_username, "nd_password_enc": upsert.excluded.nd_password_enc,
+              "is_admin": upsert.excluded.is_admin, "last_seen_at": upsert.excluded.last_seen_at},
+    ).returning(User), execution_options={"populate_existing": True})).one()
 
     token, token_hash = new_token()
     s.add(Session(id=token_hash, user_id=user.id, expires_at=utcnow() + timedelta(days=get_settings().session_days)))
