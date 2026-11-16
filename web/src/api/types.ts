@@ -1227,6 +1227,8 @@ export interface TrackEditOut {
   album_id?: number | null;
   album_title?: string | null;
   has_file: boolean;
+  /** who made the beat, where the track's name said so («(prod. by X)»): taken out of the name */
+  producer?: string | null;
   /** the other names it is known by — the search reads them (`id` null: the catalog's, which cannot be dropped) */
   names?: TrackNameOut[];
 }

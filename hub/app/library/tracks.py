@@ -42,12 +42,17 @@ async def id_of(s: AsyncSession, ref: str | None, nd_song_id: str | None) -> int
 
 
 def _names(c: CatalogTrack) -> dict:
-    """What a track says of its song, as the catalog tells it."""
+    """What a track says of its song, as the catalog tells it — the name without the credits written into it
+    (app/library/titles.py): the catalog's own word is kept whole in `Track.catalog`."""
+    from app.library import titles
+
+    title, _, producers = titles.clean(c.title)
     return dict(
-        artist=c.artist, title=c.title, album=c.album_title, album_artist=c.album_artist,
+        producer=", ".join(producers) or None,
+        artist=c.artist, title=title, album=c.album_title, album_artist=c.album_artist,
         track_no=c.track_no, disc_no=c.disc_no, year=c.release_date.year if c.release_date else None,
         duration_s=c.duration_s, isrc=c.isrc.upper() if c.isrc else None, explicit=c.explicit,
-        fingerprint=fingerprint(c.artist, c.title))
+        fingerprint=fingerprint(c.artist, title))
 
 
 async def of_catalog(s: AsyncSession, c: CatalogTrack, *, user_id: int | None = None) -> Track:

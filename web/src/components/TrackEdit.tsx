@@ -129,6 +129,7 @@ function Window({ track }: { track: EditedTrack }) {
               </button>
             </p>
           )}
+          {info.producer && <p className="text-[13px] text-muted">Продюсер: <span className="text-fg">{info.producer}</span></p>}
           <div>
             <p className="pb-1.5 text-[13px] text-muted">Другие названия — по ним трек тоже находится</p>
             {(info.names?.length ?? 0) > 0 && (

@@ -334,6 +334,7 @@ class TrackEditOut(BaseModel):
     album_id: int | None = None  # its album of the library, whose cover can be changed too
     album_title: str | None = None
     has_file: bool = False
+    producer: str | None = None  # who made the beat, where the track's name said so
     # the other names it is known by (`id` None: the catalog's, which is not kept here and cannot be dropped)
     names: list[TrackNameOut] = []
 

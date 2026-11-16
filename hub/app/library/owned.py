@@ -172,7 +172,7 @@ async def annotate_tracks(
         if q.get("query"):
             downloading_fps.add(fingerprint(q["query"]["artist"], q["query"]["title"]))
 
-    from app.library import artists
+    from app.library import artists, titles
 
     spelt = await artists.reader(s, [n for t in tracks for n in (t.artist, t.album_artist, *(t.artists or []))],
                                  [r for t in tracks for r in (t.artist_ref, *(t.artist_refs or []))])
@@ -183,6 +183,7 @@ async def annotate_tracks(
         if hit is None:
             hit = next((r for r in by_fp.get(fp, []) if _duration_ok(r.duration_s, t.duration_s)), None)
         o = TrackOut(**t.model_dump())
+        titles.put_right(o)  # the name without the credits written into it
         artists.put_right(o, spelt)
         if hit is not None:
             o.library_track_id = hit.id  # the Hub knows the song; whether it has a file is `owned`

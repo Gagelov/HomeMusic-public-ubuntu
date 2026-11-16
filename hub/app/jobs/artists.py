@@ -30,3 +30,22 @@ async def handle_artist_rewrite(job: Job) -> None:
         notify()
         if user_id:
             bus.publish(int(user_id), "library", {"kind": "changed", "album_id": None})
+
+
+@handler("titles_clean")
+async def handle_titles_clean(job: Job) -> None:
+    """The library's names without the credits written into them (app/library/titles.py `apply`)."""
+    from app.events import bus
+    from app.library import titles
+
+    user_id = job.payload_json.get("user_id")
+    async with session_scope() as s:
+        n = await titles.apply(s, user_id)
+        if n:
+            await enqueue_scan(s)
+        log.info("titles: %s tracks cleaned", n)
+    if n:
+        notify()
+        if user_id:
+            bus.publish(int(user_id), "library", {"kind": "changed", "album_id": None})
+

@@ -189,6 +189,9 @@ class Track(Base):
     # what the catalog calls the song ("dz:3135556"): one track per ref. None — the catalog does not know it
     ref: Mapped[str | None] = mapped_column(String(64), unique=True)
     explicit: Mapped[bool | None] = mapped_column(Boolean)
+    # who made the beat, where the track's name said so («(prod. by X)»): not a performer, not part of the name
+    # (app/library/titles.py)
+    producer: Mapped[str | None] = mapped_column(String(300))
     fingerprint: Mapped[str] = mapped_column(String(1024))  # normalized "artist|title"
     # what the catalog said of the song when the track was made (a `CatalogTrack`): its cover, its album and
     # artists there. A track without a file is drawn from this; None — the catalog does not know the song

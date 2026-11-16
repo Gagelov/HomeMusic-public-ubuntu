@@ -35,6 +35,7 @@ class ImportSpec(BaseModel):
     title: str
     artists: list[str] = []
     artist_refs: list[str | None] = []  # the catalog's records of `artists`, in their order (None: not said)
+    producer: str | None = None  # who made the beat (taken out of the name where it carried it)
     album: str | None = None
     album_artist: str | None = None
     album_id: int | None = None  # existing Hub album (uploads, editor)
@@ -145,6 +146,7 @@ def tagdata_for(track: Track, album: Album, file: TrackFile, *, cover: bytes | N
         acquired=file.acquired_at,
         deezer_track_id=dz_id(track.ref),
         deezer_album_id=album.deezer_album_id,
+        producer=track.producer,
         cover=cover,
     )
 
@@ -173,8 +175,13 @@ def is_original(source_date: date | None, explicit: bool | None) -> bool:
 async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
     """Tag `src` (a file in staging/), move it into the library and make its track and file rows (caller
     commits)."""
-    from app.library import artists
+    from app.library import artists, titles
 
+    # the name is the name: a guest written into it is one of the artists, the producer has a field of their own
+    spec.title, guests, producers = titles.clean(spec.title)
+    if guests:
+        spec.artist, spec.artists = titles.with_guests(spec.artist, spec.artists, guests)
+    spec.producer = spec.producer or (", ".join(producers) or None)
     # who the music is by — by the catalog's records of them where the catalog said, else by the names — and the
     # lines in their names: a spelling that is somebody's is filed under their name
     ref = spec.ref or dz_ref(spec.deezer_track_id)
@@ -210,6 +217,7 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
             isrc=spec.isrc.upper() if spec.isrc else None,
             ref=ref,
             explicit=spec.explicit,
+            producer=spec.producer,
             fingerprint=fingerprint(spec.artist, spec.title),
             created_by=spec.added_by,
         )
@@ -219,6 +227,7 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
             known.year, known.genre = album.year or known.year, spec.genre or album.genre or known.genre
             known.duration_s = spec.duration_s or known.duration_s
             known.explicit = spec.explicit if spec.explicit is not None else known.explicit
+            known.producer = known.producer or spec.producer
             if known.title == known.ref or not known.artist:
                 # met by its ref alone (a like that said nothing of the song): the file says what the song is
                 known.artist, known.title = spec.artist, spec.title

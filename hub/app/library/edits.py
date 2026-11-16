@@ -131,6 +131,7 @@ async def info(s: AsyncSession, track: Track) -> dict[str, Any]:
                                            else cat.get("cover_small_url") or cat.get("cover_url")),
         "album_id": album.id if album is not None else None, "album_title": album.title if album is not None else None,
         "has_file": await current_file(s, track.id) is not None,
+        "producer": track.producer,
         "names": await _other_names(s, track),
     }
 

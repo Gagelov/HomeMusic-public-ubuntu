@@ -44,9 +44,14 @@ def _match(tags: dict) -> UploadMatch | None:
     m = tags.get("_match")
     if not m:
         return None
+    from app.library import titles
+
     meta = m.get("meta") or {}
+    # the record's name as the file will be filed under it: without the credits written into it
+    name, guests, _ = titles.clean(meta.get("title"))
+    _, credited = titles.with_guests(meta.get("artist"), meta.get("artists") or [meta.get("artist") or ""], guests)
     return UploadMatch(state=m["state"], why=m.get("why"), by_hand=bool(m.get("by_hand")), ref=meta.get("track_ref"),
-                       title=meta.get("title"), artist=meta.get("artist"), artists=meta.get("artists") or [],
+                       title=name if meta.get("title") else None, artist=meta.get("artist"), artists=[a for a in credited if a],
                        album=meta.get("album"), album_artist=meta.get("album_artist"), album_artists=meta.get("album_artists") or [],
                        album_ref=f"dz:{meta['deezer_album_id']}" if meta.get("deezer_album_id") else None,
                        record_type=meta.get("record_type"),
@@ -121,6 +126,10 @@ async def upload_out(s: AsyncSession, u: Upload) -> UploadOut:
         await s.flush()
     tags = {k: v for k, v in kept.items() if not k.startswith("_")}
     artist, title = recognize.names_of(tags, u.orig_name)
+    from app.library import titles
+
+    title, guests, _ = titles.clean(title)  # the file's own name, as it will be filed: the guests are artists
+    artist, _ = titles.with_guests(artist, None, guests)
     return UploadOut(id=u.id, orig_name=u.orig_name, size=u.size, status=u.status, tags=tags,
                      error=u.error, created_at=u.created_at, artists=split_artists(artist),
                      codec=tags.get("codec"), bitrate_kbps=tags.get("bitrate_kbps"), twin=twin, match=await _as_here(s, _match(kept)),
