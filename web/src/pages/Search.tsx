@@ -55,8 +55,10 @@ export function SearchPage({ initialQuery, initialTab }: { initialQuery: string;
     return () => window.removeEventListener(FOCUS_SEARCH, focus);
   }, []);
 
+  // a computer has its keyboard at hand: the cursor is in the field at once. A phone's keyboard would cover half of
+  // the page the moment it opens, so there it comes up when asked for — a tap on the field, or on «Поиск» again
   useEffect(() => {
-    if (!initialQuery) inputRef.current?.focus();
+    if (!initialQuery && window.matchMedia('(hover: hover) and (pointer: fine)').matches) inputRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
