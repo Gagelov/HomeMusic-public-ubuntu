@@ -213,6 +213,17 @@ export function SectionTitle({ children, right }: { children: ReactNode; right?:
 
 // --- badges -----------------------------------------------------------------------------------
 
+/** The mark of the track that is playing now: three bars that move while it plays and stand while it is paused. */
+export function PlayingBars({ on, className }: { on: boolean; className?: string }) {
+  return (
+    <span aria-hidden="true" className={cx('hm-bars shrink-0 text-accent', on && 'on', className)}>
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
+
 export function ExplicitBadge() {
   return (
     <span

@@ -27,7 +27,7 @@ import { QueueButton } from './QueueButton';
 import { SwipeRow } from './SwipeRow';
 import { SaveButton, TrackPlaylists } from './PlaylistsButton';
 import { TrackMenuButton, type MenuExtra, type MenuTrack } from './TrackMenu';
-import { Checkbox, Cover, ExplicitBadge, IconButton, OwnedBadge, Spinner, cx } from './ui';
+import { Checkbox, Cover, ExplicitBadge, IconButton, OwnedBadge, PlayingBars, Spinner, cx } from './ui';
 
 export function TrackStatus({
   owned,
@@ -309,6 +309,9 @@ export function TrackRow({
     const names = (sub: string) => (
       <span className="block min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-1.5">
+          {/* the track that is playing: on a phone the bars stand before its name (a computer has them in place of
+              the row's number, where the row has one) */}
+          {current && (!desktop || (number ?? index) === undefined) && <PlayingBars on={phase === 'playing'} />}
           <span className={cx('truncate text-[15px]', titleColor)}>{track.title}</span>
           {(track.versions ?? 0) > 1 && (
             // the song has other recordings here: the mark opens them
@@ -383,7 +386,7 @@ export function TrackRow({
             <span data-row-actions className="contents" onMouseDown={(e) => e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey && beginDragAction('queue', dragList(), asSel(track))}>
               <QueueButton
                 track={menuTrack.listen as ListenTrack}
-                instead={<span className={cx(current && 'text-accent')}>{current && !showCover ? playMark : rowNumber}</span>}
+                instead={current ? (waiting ? <Spinner size={16} /> : <PlayingBars on={phase === 'playing'} />) : <span>{rowNumber}</span>}
                 marked={dragMark === 'queue' || dragMark === 'unqueue'}
                 className={cx(dragMark === 'queue' ? cx(marked, '!text-accent') : dragMark === 'unqueue' && cx(marked, '!text-muted'))}
               />
