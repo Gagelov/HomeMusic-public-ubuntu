@@ -312,8 +312,10 @@ function BannerPicture({ src, blurred }: { src: string; /** not a wide picture b
   );
 }
 
-/** A name kept to one line where it can be: as large as the page's style makes it, and where that does not fit —
- * smaller, down to half of that (never under 26 px); a name too long even so takes its lines at that least size.
+/** A name kept to one line where it can be, and as large as its place lets it: the page's style says the most (a
+ * short name fills the room it has), and a name that does not fit at that is made smaller — down to a third of it,
+ * never under 26 px; a name too long even so takes its lines at that least size. The mark by the name is of the
+ * name's own measure, so it is counted in and never cut off.
  * Measured anew when the name or the width of its place changes, and once the page's letters have come. */
 function useOneLine(what: string) {
   const ref = useRef<HTMLHeadingElement>(null);
@@ -327,8 +329,8 @@ function useOneLine(what: string) {
       const room = el.clientWidth;
       const need = el.scrollWidth;
       if (!full || !room || need <= room) return;
-      const least = Math.max(26, full * 0.5);
-      const size = Math.floor((full * room) / need);
+      const least = Math.max(26, full * 0.35);
+      const size = Math.floor((full * room) / need) - 1;
       el.style.fontSize = `${Math.max(least, size)}px`;
       if (size < least) el.style.whiteSpace = '';
     };
@@ -365,11 +367,11 @@ function Banner({ name, followed, photo }: { name: string; /** the listener foll
           ))}
         <div className="min-w-0 flex-1">
           <div className="hidden text-sm text-fg/80 lg:block">Исполнитель</div>
-          <h2 ref={title} data-list-title className={cx('line-clamp-2 break-words font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]', wide ? 'text-[clamp(2.5rem,9vw,6rem)]' : 'text-[clamp(2rem,7.5vw,6rem)]')}>
+          <h2 ref={title} data-list-title className={cx('line-clamp-2 break-words font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]', 'text-[clamp(2.5rem,12vw,9rem)]')}>
             {name}
             {followed && (
-              <span title="Вы подписаны: новые релизы появятся в «Релизах»" aria-label="Вы подписаны" className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent align-middle text-black [text-shadow:none] sm:ml-3 sm:h-7 sm:w-7">
-                <Icon name="check" size={13} stroke={3.5} />
+              <span title="Вы подписаны: новые релизы появятся в «Релизах»" aria-label="Вы подписаны" className="ml-[0.4em] inline-flex h-[1em] w-[1em] items-center justify-center rounded-full bg-accent align-middle text-[max(0.28em,16px)] text-black [text-shadow:none]">
+                <Icon name="check" size={13} stroke={3.5} className="!h-[0.62em] !w-[0.62em]" />
               </span>
             )}
           </h2>
