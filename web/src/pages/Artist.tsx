@@ -101,8 +101,8 @@ export function ArtistPage({ refId }: { refId: string }) {
   // how many of them, at the end, are Last.fm's
   const lfm = Math.max(0, Math.min(d.top_from_lastfm ?? 0, top.length - (d.top_tracks.length - (d.top_from_lastfm ?? 0))));
 
-  /** «Подписаться»: the button says «Вы подписаны» for a moment, then folds away — it is pressed once, and from
-   * then on a mark by the name says it; a word at the foot of the window takes a slip of the finger back. */
+  /** «Подписаться»: the button says «Вы подписаны» for a moment, then folds away — it is pressed once (an artist
+   * followed has «Отписаться» in the ⋯); a word at the foot of the window takes a slip of the finger back. */
   const follow = async () => {
     setBusy('follow');
     try {
@@ -173,7 +173,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           </button>
         }
       />
-      <Banner name={shownName} followed={followed} photo={d.banner_url ? undefined : (photo ?? null)} />
+      <Banner name={shownName} photo={d.banner_url ? undefined : (photo ?? null)} />
 
       {/* what goes up over the picture has the page's own colour under it */}
       <div className="relative z-[1] bg-bg">
@@ -188,7 +188,7 @@ export function ArtistPage({ refId }: { refId: string }) {
         <div className="flex items-center gap-2 px-4 pb-3 pt-3 lg:px-6">
           {/* the buttons go sideways where they do not fit; ▶ and the shuffle stay at the right edge, whatever the width */}
           <div className="no-scrollbar -my-1 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1 pr-5 [mask-image:linear-gradient(to_right,#000_calc(100%-1.25rem),transparent)] [&>*]:shrink-0">
-          {/* pressed once: an artist followed has no such button — the mark by the name says it, the ⋯ takes it back */}
+          {/* pressed once: an artist followed has no such button — the ⋯ takes it back */}
           {likesKnown && (!followed || leaving) && (
             <button
               type="button"
@@ -315,8 +315,7 @@ function BannerPicture({ src, blurred }: { src: string; /** not a wide picture b
 
 /** A name kept to one line where it can be, and as large as its place lets it: the page's style says the most (a
  * short name fills the room it has), and a name that does not fit at that is made smaller — down to a third of it,
- * never under 26 px; a name too long even so takes its lines at that least size. The name's place is what is left
- * beside the mark of an artist followed, which keeps its own.
+ * never under 26 px; a name too long even so takes its lines at that least size.
  * Measured anew when the name or the width of its place changes, and once the page's letters have come. */
 function useOneLine(what: string) {
   const ref = useRef<HTMLHeadingElement>(null);
@@ -350,7 +349,7 @@ function useOneLine(what: string) {
  * there is no wide picture (`photo` given: the address, or null for no photo at all) the head is as tall as the
  * round photo, which stands before the name — on a phone and on a computer alike — on the ground made of it.
  */
-function Banner({ name, followed, photo }: { name: string; /** the listener follows the artist: a mark by the name */ followed?: boolean; photo?: string | null }) {
+function Banner({ name, photo }: { name: string; photo?: string | null }) {
   const round = 'h-32 w-32 shrink-0 rounded-full shadow-xl sm:h-44 sm:w-44 lg:h-56 lg:w-56';
   const wide = photo === undefined;
   const title = useOneLine(name);
@@ -368,21 +367,9 @@ function Banner({ name, followed, photo }: { name: string; /** the listener foll
           ))}
         <div className="min-w-0 flex-1">
           <div className="hidden text-sm text-fg/80 lg:block">Исполнитель</div>
-          <div className="flex min-w-0 items-center gap-2.5 lg:gap-4">
-            <h2 ref={title} data-list-title className="line-clamp-2 min-w-0 break-words text-[clamp(2.5rem,12vw,9rem)] font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]">
-              {name}
-            </h2>
-            {/* the mark of an artist followed: one size whatever the name's, and its place kept when it is not there —
-                the name does not move when the listener follows or unfollows */}
-            <span
-              title={followed ? 'Вы подписаны: новые релизы появятся в «Релизах»' : undefined}
-              aria-label={followed ? 'Вы подписаны' : undefined}
-              aria-hidden={!followed}
-              className={cx('flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent text-black transition-opacity duration-300 lg:h-7 lg:w-7', followed ? 'opacity-100' : 'opacity-0')}
-            >
-              <Icon name="check" size={15} stroke={3.5} />
-            </span>
-          </div>
+          <h2 ref={title} data-list-title className="line-clamp-2 break-words text-[clamp(2.5rem,12vw,9rem)] font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]">
+            {name}
+          </h2>
         </div>
       </div>
     </div>
