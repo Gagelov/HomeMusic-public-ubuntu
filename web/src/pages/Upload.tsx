@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, errorMessage, uploadCoverUrl } from '../api/client';
 import type { CoverInfo, TrackOut, UploadAlbumIn, UploadOut, UploadTrackIn } from '../api/types';
 import { Icon } from '../components/Icon';
@@ -1282,6 +1282,18 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
     </span>
   );
   const ref = useRef<HTMLDivElement>(null);
+  // the menu hangs under its ⋯ — or over it, where the foot of the window (the player's bar) would cut it
+  const [up, setUp] = useState(false);
+  useLayoutEffect(() => {
+    if (!menu || !desktop) return setUp(false);
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    // cut by the window's edge, or under something that stands over the page there (the player's bar)
+    const over = document.elementFromPoint(r.left + r.width / 2, Math.min(r.bottom, window.innerHeight) - 4);
+    const cut = r.bottom > window.innerHeight - 8 || (!!over && !el.contains(over));
+    if (cut && r.top - r.height - 48 > 0) setUp(true);
+  }, [menu, desktop]);
   useEffect(() => {
     if (!menu || !desktop) return;
     const close = (e: Event) => {
@@ -1335,7 +1347,7 @@ function FileRow({ u, r, desktop, cols, inAlbum, number, picture, picked, menu, 
       </div>
       {u.twin && <div className="pb-2 pl-12 pr-4 md:pl-[5.75rem]" data-own><TwinNote u={u} r={r} onChange={onChange} /></div>}
       {menu && desktop && (
-        <div ref={ref} role="menu" aria-label={`Меню: ${title}`} className="anim-up absolute right-2 top-12 z-30 w-80 rounded-2xl bg-raised p-1.5 shadow-2xl">
+        <div ref={ref} role="menu" aria-label={`Меню: ${title}`} className={cx('anim-up absolute right-2 z-30 w-80 rounded-2xl bg-raised p-1.5 shadow-2xl', up ? 'bottom-12' : 'top-12')}>
           <div className="px-3 pb-2 pt-1.5">{about}</div>
           {items}
         </div>
