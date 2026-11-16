@@ -704,3 +704,23 @@ async def test_files_are_looked_after_by_who_brought_them(env):
     assert all(a["can_edit"] for a in everything.values())
     # what she could not delete is still there
     assert len((await env["admin"].get(f"/api/library/albums/{ids['his']}")).json()["tracks"]) == 1
+
+
+def test_a_guesser_of_passwords_waits():
+    import pytest
+    from fastapi import HTTPException
+
+    from app import guard
+
+    guard._wrong.clear()
+    for _ in range(guard.PER_ADDRESS):
+        guard.check("1.2.3.4", "anna")
+        guard.wrong("1.2.3.4", "anna")
+    with pytest.raises(HTTPException) as e:
+        guard.check("1.2.3.4", "boris")  # the address guessed enough, whoever it guesses at now
+    assert e.value.status_code == 429
+    guard.check("5.6.7.8", "anna")  # another address, the account not yet at its limit
+    guard.right("anna")
+    with pytest.raises(HTTPException):
+        guard.check("1.2.3.4", "anna")  # the owner got in: the address is still remembered
+    guard._wrong.clear()

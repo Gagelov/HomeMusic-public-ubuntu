@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import accounts, auth, mailer
+from app import accounts, auth, guard, mailer
 from app.api.schemas import (
     AuthOptionsOut,
     EmailCodeIn,
@@ -37,7 +37,15 @@ async def options():
 
 @router.post("/login", response_model=MeOut)
 async def login(body: LoginIn, request: Request, response: Response, s: AsyncSession = Depends(get_session, scope="function")):
-    user, token = await auth.login(s, await accounts.username_for_login(s, body.username), body.password)
+    address = request.client.host if request.client else None
+    guard.check(address, body.username)  # a guesser of passwords waits (app/guard.py)
+    try:
+        user, token = await auth.login(s, await accounts.username_for_login(s, body.username), body.password)
+    except HTTPException as e:
+        if e.status_code == 401:
+            guard.wrong(address, body.username)
+        raise
+    guard.right(body.username)
     auth.set_session_cookie(request, response, token)
     return me_out(user)
 
