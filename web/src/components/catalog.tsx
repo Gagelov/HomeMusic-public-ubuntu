@@ -284,6 +284,8 @@ export function TrackRow({
     const toAlbum = link && track.owned && track.album_ref ? `/album/${enc(track.album_ref)}` : null;
     const downloading = !unknown && (track.downloading || dl === 'queued');
     const titleColor = current ? 'text-accent' : unknown ? 'text-dim' : 'text-fg';
+    // over the cover (or in place of the number): the wheel while the file is being got — the one mark of that in
+    // the row — else ▶ / ‖ under the mouse; a track that plays is told by its bars and its name, not by a ‖ left on it
     const playMark = waiting ? <Spinner size={18} /> : <Icon name={playing ? 'pause' : 'play'} size={18} filled />;
     const lead = (hover: boolean): ReactNode =>
       number !== undefined && showCover ? (
@@ -291,22 +293,22 @@ export function TrackRow({
           <span className="w-5 shrink-0 text-center text-sm tabular-nums text-dim">{number}</span>
           <span className="relative flex h-10 w-10 shrink-0 items-center justify-center">
             <Cover src={track.cover_small_url || track.cover_url} size={40} alt="" />
-            <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center rounded-md bg-black/60 text-white', !current && 'opacity-0', hover && action && 'group-hover/track:opacity-100')}>
+            <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center rounded-md bg-black/60 text-white', !waiting && 'opacity-0', hover && action && 'group-hover/track:opacity-100')}>
               {playMark}
             </span>
           </span>
         </>
       ) : number !== undefined ? (
         <span className="relative flex h-10 w-8 shrink-0 items-center justify-center text-sm tabular-nums text-dim">
-          <span className={cx(hover && action && 'group-hover/track:opacity-0', current && 'opacity-0')}>{number}</span>
-          <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center', current ? 'text-accent' : 'text-fg opacity-0', hover && action && 'group-hover/track:opacity-100')}>
+          <span className={cx(hover && action && 'group-hover/track:opacity-0', waiting && 'opacity-0')}>{number}</span>
+          <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center', waiting ? 'text-accent' : 'text-fg opacity-0', hover && action && 'group-hover/track:opacity-100')}>
             {playMark}
           </span>
         </span>
       ) : showCover ? (
         <span className="relative flex h-10 w-10 shrink-0 items-center justify-center">
           <Cover src={track.cover_small_url || track.cover_url} size={40} alt="" />
-          <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center rounded-md bg-black/60 text-white', !current && 'opacity-0', hover && action && 'group-hover/track:opacity-100')}>
+          <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center rounded-md bg-black/60 text-white', !waiting && 'opacity-0', hover && action && 'group-hover/track:opacity-100')}>
             {playMark}
           </span>
         </span>
@@ -392,7 +394,7 @@ export function TrackRow({
             <span data-row-actions className="contents" onMouseDown={(e) => e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey && beginDragAction('queue', dragList(), asSel(track))}>
               <QueueButton
                 track={menuTrack.listen as ListenTrack}
-                instead={current ? (waiting ? <Spinner size={16} /> : <PlayingBars on={phase === 'playing'} />) : <span>{rowNumber}</span>}
+                instead={current ? (waiting && !showCover ? <Spinner size={16} /> : <PlayingBars on={phase === 'playing'} />) : <span>{rowNumber}</span>}
                 marked={dragMark === 'queue' || dragMark === 'unqueue'}
                 className={cx(dragMark === 'queue' ? cx(marked, '!text-accent') : dragMark === 'unqueue' && cx(marked, '!text-muted'))}
               />
@@ -415,7 +417,7 @@ export function TrackRow({
                   className="relative h-10 w-10 shrink-0 cursor-pointer"
                 >
                   <Cover src={track.cover_small_url || track.cover_url} size={40} alt="" />
-                  <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center rounded-md bg-black/60 text-white', !current && 'opacity-0 group-hover/track:opacity-100')}>
+                  <span aria-hidden="true" className={cx('absolute inset-0 flex items-center justify-center rounded-md bg-black/60 text-white', !waiting && 'opacity-0 group-hover/track:opacity-100')}>
                     {playMark}
                   </span>
                 </button>
