@@ -1,6 +1,6 @@
 # The Hub straight from this computer, for a home with a public (static) IP address: no VPS, no tunnel.
 # The router forwards ports 80 and 443 here; the domain's A record points at the home's address; Caddy gets the
-# certificate from Let's Encrypt by itself and renews it. Navidrome is not published: the Hub is all the app needs.
+# certificate from Let's Encrypt by itself and renews it. Navidrome is not published: the Hub is all the web app and the other players need.
 {$PUBLIC_DOMAIN} {
 	encode zstd gzip
 	header {
@@ -10,10 +10,8 @@
 		Referrer-Policy same-origin
 		-Server
 	}
-	# Navidrome's own API (Subsonic, for other players and the Android app) is not let in from outside: it takes a
-	# password in every request and counts no wrong ones. The web app does not use it. To open it, remove this.
-	@subsonic path /rest /rest/*
-	respond @subsonic 404
+	# Other players (Subsonic: /rest) come to the Hub too — it checks their sign-in and counts the wrong passwords
+	# before anything reaches Navidrome (hub/app/api/subsonic.py, hub/app/guard.py).
 	# SSE (/api/events) is flushed immediately; uploads up to 500 MB are streamed without a body limit.
 	reverse_proxy hub:8080 {
 		flush_interval -1

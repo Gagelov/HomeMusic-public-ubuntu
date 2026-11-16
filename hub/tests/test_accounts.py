@@ -713,6 +713,12 @@ def test_a_guesser_of_passwords_waits():
     from app import guard
 
     guard._wrong.clear()
+    # an address of the home network (or Docker Desktop's gateway, which every caller comes from) is not counted by
+    for _ in range(guard.PER_ADDRESS + 1):
+        guard.check("172.23.0.1", "vera")
+        guard.wrong("172.23.0.1", "vera")
+    guard.check("172.23.0.1", "gleb")
+    guard._wrong.clear()
     for _ in range(guard.PER_ADDRESS):
         guard.check("1.2.3.4", "anna")
         guard.wrong("1.2.3.4", "anna")

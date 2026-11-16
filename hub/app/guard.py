@@ -6,11 +6,17 @@ account). Past the limit the answer is «wait», whatever the password; the coun
 in memory — a restart forgets it, a guesser gains nothing by that.
 
 The address is the one the proxy in front of the Hub names (uvicorn's --proxy-headers): Caddy writes the caller's
-own address there, whatever the caller claims.
+own address there, whatever the caller claims. An address of a home network is not counted by: it is the home
+itself — or Docker Desktop, which shows every caller from outside as its own gateway, so that a count by it would
+shut everybody out for one guesser. There the count by the name is the whole of the guard.
+
+Other players (`/rest`, app/api/subsonic.py) send the sign-in with every call; they are counted the same way, in the
+same counts.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from collections import deque
 
@@ -31,18 +37,33 @@ def _recent(key: str) -> deque[float]:
     return q
 
 
-def _keys(address: str | None, name: str) -> tuple[tuple[str, int], tuple[str, int]]:
-    return (f"a:{address or '?'}", PER_ADDRESS), (f"n:{name.strip().casefold()}", PER_NAME)
+def _outside(address: str | None) -> bool:
+    try:
+        return ipaddress.ip_address(address or "").is_global
+    except ValueError:
+        return False
 
 
-def check(address: str | None, name: str) -> None:
-    """Before a password is looked at: raises 429 when there were too many wrong ones."""
+def _keys(address: str | None, name: str) -> list[tuple[str, int]]:
+    by_name = (f"n:{name.strip().casefold()}", PER_NAME)
+    return [(f"a:{address}", PER_ADDRESS), by_name] if _outside(address) else [by_name]
+
+
+WAIT = "Слишком много неверных попыток. Подождите десять минут"
+
+
+def shut(address: str | None, name: str) -> bool:
+    """Before a password is looked at: there were too many wrong ones, the answer is «wait»."""
     if len(_wrong) > 10_000:  # the addresses that guessed long ago
         for key in [k for k in _wrong if not _recent(k)]:
             del _wrong[key]
-    for key, limit in _keys(address, name):
-        if len(_recent(key)) >= limit:
-            raise HTTPException(429, "Слишком много неверных попыток. Подождите десять минут")
+    return any(len(_recent(key)) >= limit for key, limit in _keys(address, name))
+
+
+def check(address: str | None, name: str) -> None:
+    """`shut`, as an answer of the Hub's own API: raises 429."""
+    if shut(address, name):
+        raise HTTPException(429, WAIT)
 
 
 def wrong(address: str | None, name: str) -> None:

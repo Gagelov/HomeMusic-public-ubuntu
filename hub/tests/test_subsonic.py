@@ -80,6 +80,24 @@ async def test_calls_go_on_to_navidrome_as_they_came(env):
     assert r.status_code == 200 and env["calls"][-1] == ("POST", "scrobble", {**AUTH, "id": "nd1"})
 
 
+async def test_a_wrong_sign_in_goes_no_further_and_is_counted(env):
+    from app import guard
+
+    guard._wrong.clear()
+    c = env["client"]
+    wrong = {**AUTH, "p": "wrong", "f": "json"}
+    for _ in range(guard.PER_NAME):
+        r = (await c.get("/rest/ping", params=wrong)).json()["subsonic-response"]
+        assert (r["status"], r["error"]["code"], r["type"]) == ("failed", 40, "homemusic")  # the Hub's answer, not Navidrome's
+    # past the limit the right password waits too — and an account the Hub does not know never gets in
+    assert (await c.get("/rest/ping", params={**AUTH, "f": "json"})).json()["subsonic-response"]["error"]["message"] == guard.WAIT
+    r = (await c.get("/rest/ping", params={"u": "nobody", "p": "x", "f": "json"})).json()["subsonic-response"]
+    assert r["error"]["message"] == "Wrong username or password"
+    assert (await c.get("/rest/ping", params={"f": "json"})).json()["subsonic-response"]["status"] == "failed"  # no sign-in
+    guard._wrong.clear()
+    assert (await c.get("/rest/ping", params={**AUTH, "f": "json"})).json()["subsonic-response"]["status"] == "ok"
+
+
 async def test_search_adds_the_catalog_after_the_library(env):
     c = env["client"]
     r = await c.get("/rest/search3", params={**AUTH, "f": "json", "query": "кино", "songCount": "5"})
@@ -102,10 +120,13 @@ async def test_search_adds_the_catalog_after_the_library(env):
     r = await c.get("/rest/search3", params={**token, "f": "json", "query": "кино"})
     assert len(r.json()["subsonic-response"]["searchResult3"]["song"]) > 1
 
-    # an app copying the whole library (an empty query), a later page, or not the Hub's password: the library alone
-    for extra in ({"query": '""'}, {"query": "кино", "songOffset": "20"}, {"query": "кино", "p": "wrong"}):
+    # an app copying the whole library (an empty query) or asking for a later page: the library alone
+    for extra in ({"query": '""'}, {"query": "кино", "songOffset": "20"}):
         r = await c.get("/rest/search3", params={**AUTH, "f": "json", **extra})
         assert r.json()["subsonic-response"]["searchResult3"]["song"] == [LIB_SONG], extra
+    # not the Hub's password: no answer at all
+    r = await c.get("/rest/search3", params={**AUTH, "f": "json", "query": "кино", "p": "wrong"})
+    assert r.json()["subsonic-response"]["error"]["code"] == 40
 
 
 async def test_a_catalog_song_shows_plays_and_is_kept(env, monkeypatch):

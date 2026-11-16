@@ -12,8 +12,13 @@ are the Hub's own:
   album: the album is downloaded.
 
 What is the catalog's has an id of the Hub's own — `hms-…` a song, `hma-…` an album, `hmr-…` an artist: its catalog
-ref, and what it is (a ref alone does not say). Once a song is downloaded the library has it under Navidrome's id. The listener is told by the app's sign-in: the same name and password as in the Hub (a
-Subsonic token is checked against the password the Hub keeps). An account the Hub does not know gets Navidrome alone.
+ref, and what it is (a ref alone does not say). Once a song is downloaded the library has it under Navidrome's id.
+
+The listener is told by the app's sign-in, sent with every call: the same name and password as in the Hub (a
+Subsonic token is checked against the password the Hub keeps). Nothing goes on to Navidrome without it: Navidrome
+counts no wrong passwords, so the Hub does (app/guard.py) — a wrong one is answered here and counted, and past the
+limit the answer is «wait» whatever the password. An account the Hub does not know (it never signed in to the Hub)
+is not let in.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import select
 from starlette.background import BackgroundTask
 
-from app import listen
+from app import guard, listen
 from app.catalog.models import CatalogAlbum, CatalogArtist, CatalogTrack, split_ref
 from app.config import get_settings
 from app.db import session_scope
@@ -447,12 +452,15 @@ async def rest(endpoint: str, request: Request) -> Response:
     refs = {v: ext_of(v) for k, v in params if v.startswith(PREFIX)}
     ext = [r for r in refs.values() if r]
     searching = endpoint in ("search3", "search2")
-    if not ext and not searching:
-        return await _pass(request, endpoint, params)
+    address, name = request.client.host if request.client else None, _one(params, "u") or ""
+    if guard.shut(address, name):  # a guesser of passwords waits
+        return _error(fmt, 40, guard.WAIT)
     user = await _listener(params)
     if user is None:
-        # not the Hub's account (or not its password): Navidrome alone answers, and knows no song of the catalog
-        return await _pass(request, endpoint, params) if not ext else _error(fmt, 40, "Wrong username or password")
+        guard.wrong(address, name)
+        return _error(fmt, 40, "Wrong username or password")
+    if not ext and not searching:
+        return await _pass(request, endpoint, params)
     if searching:
         return await _search(endpoint, params, user, fmt)
 
