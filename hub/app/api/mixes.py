@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import favorites
 from app.api.schemas import (
+    ArtistMapOut,
+    ArtistNearOut,
     FavoriteTarget,
     MixOut,
     MixRebuildIn,
@@ -195,6 +197,52 @@ async def similar(ref: str = Query(max_length=64), user: User = Depends(current_
     except Exception as e:
         raise HTTPException(502, f"Каталог не ответил: {e}") from e
     return await artists.shown(s, found)
+
+
+MAP_ASKED = 24  # of Last.fm's nearest looked up in the catalog
+MAP_SHOWN = 14  # of them on the map
+
+
+@router.get("/api/taste/map", response_model=ArtistMapOut)
+async def artist_map(ref: str = Query(max_length=64), user: User = Depends(current_user),
+                     s: AsyncSession = Depends(get_session, scope="function")):
+    """«Карта»: the artists Last.fm holds to be near `ref` (a Deezer artist), nearest first, each with how near.
+    Last.fm knows artists by name: each is looked up in the catalog, and one the catalog has nobody of that name for
+    is left out — on the map an artist is someone to pick or to open. No Last.fm key → `404`."""
+    from app.mixes import sources
+    from app.mixes.build import artist_by_name
+
+    _catalog()
+    if not sources.lastfm_configured():
+        raise HTTPException(404, "Карта исполнителей работает через Last.fm — на этом сервере ключ Last.fm не задан")
+    try:
+        src, id_ = split_ref(ref)
+    except ValueError as e:
+        raise HTTPException(400, f"Неверный исполнитель: {ref}") from e
+    if src != "dz":
+        raise HTTPException(400, f"Неверный исполнитель: {ref}")
+    try:
+        center = await svc.deezer.get_artist(id_)  # type: ignore[union-attr]
+    except Exception as e:
+        raise HTTPException(404, f"Исполнитель не найден: {ref}") from e
+    try:
+        near = await sources.lastfm_near_artists(center.name, MAP_ASKED)
+    except sources.SourceDown as e:
+        raise HTTPException(502, f"Last.fm не ответил: {e}") from e
+
+    async def one(name: str) -> CatalogArtist | None:
+        try:
+            found = await artist_by_name(name)
+            return await svc.deezer.get_artist(split_ref(found)[1]) if found else None  # type: ignore[union-attr]
+        except Exception:
+            return None
+
+    cards = await asyncio.gather(*(one(name) for name, _ in near))
+    match = {a.ref: m for a, (_, m) in zip(cards, near) if a is not None}
+    # as they are here: under their own names, each once — and the artist in the middle is not around themselves
+    here = await artists.shown(s, [center, *(a for a in cards if a is not None)])
+    around = [ArtistNearOut(artist=a, match=match[a.ref]) for a in here[1:] if a.ref in match and a.ref != center.ref]
+    return ArtistMapOut(center=here[0], around=around[:MAP_SHOWN])
 
 
 @router.post("/api/taste/artists", response_model=MixSettingsOut)

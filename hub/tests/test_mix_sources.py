@@ -129,6 +129,8 @@ async def test_lastfm_similar_artists_and_tags(db, respx_mock: respx.MockRouter)
 
     respx_mock.get(LASTFM).mock(side_effect=answer)
 
+    near = await sources.lastfm_near_artists("Кино")
+    assert near[0][0] == "Nautilus Pompilius" and 0 < near[0][1] <= 1 and near == sorted(near, key=lambda x: -x[1])
     assert (await sources.lastfm_similar_artists("Кино"))[:3] == ["Nautilus Pompilius", "ДДТ", "Виктор Цой"]
     assert await sources.lastfm_artist_tags("Кино") == ["russian rock", "post-punk", "rock", "russian", "80s"]
 

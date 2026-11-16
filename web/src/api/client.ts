@@ -5,6 +5,7 @@ import type { Tag, TagSelection, TagsData } from '../lib/tags';
 import type { TelegramChat, TelegramStatus } from '../lib/telegram';
 import type {
   AdminUserDetailOut,
+  ArtistMapOut,
   CatalogArtist,
   AdminUsersOut,
   AlbumCreateIn,
@@ -459,6 +460,7 @@ export const api = {
   tasteOnboarding: (q?: string, signal?: AbortSignal) =>
     request<TasteOnboardingOut>('GET', withQuery('/api/taste/onboarding', { q }), { signal }),
   tasteSimilar: (ref: string, signal?: AbortSignal) => request<CatalogArtist[]>('GET', withQuery('/api/taste/similar', { ref }), { signal }),
+  artistMap: (ref: string, signal?: AbortSignal) => request<ArtistMapOut>('GET', withQuery('/api/taste/map', { ref }), { signal }),
   pickArtists: (artist_refs: string[]) => request<MixSettingsOut>('POST', '/api/taste/artists', { json: { artist_refs } }),
 
   // «Моя волна»

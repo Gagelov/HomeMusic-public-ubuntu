@@ -649,6 +649,41 @@ async def test_onboarding_picks_artists_and_starts_a_build(env) -> None:
     assert r.json()["needed"] is False and r.json()["selected"] == [{"ref": "dz:1", "name": "Кино"}]
 
 
+async def test_the_map_is_lastfms_word_of_who_is_near(env, monkeypatch) -> None:
+    from app.config import get_settings
+    from app.mixes import build, sources
+
+    client = env["client"]
+    assert (await client.get("/api/auth/me")).json()["artist_map"] is False
+    r = await client.get("/api/taste/map", params={"ref": "dz:1"})
+    assert r.status_code == 404 and "Last.fm" in r.json()["detail"]  # no key: no map
+
+    monkeypatch.setattr(get_settings(), "lastfm_api_key", "key")
+    asked = []
+
+    async def near(name, limit=20):
+        asked.append(name)
+        return [("Земфира", 0.8), ("Кого нет в каталоге", 0.6), ("Кино", 0.5)]
+
+    async def by_name(name):
+        return {"Земфира": "dz:2", "Кино": "dz:1"}.get(name)
+
+    async def get_artist(id_):
+        return FakeDeezer().artist(str(id_), {"1": "Кино", "2": "Земфира"}[str(id_)])
+
+    monkeypatch.setattr(sources, "lastfm_near_artists", near)
+    monkeypatch.setattr(build, "artist_by_name", by_name)
+    from app.services import svc
+
+    monkeypatch.setattr(svc.deezer, "get_artist", get_artist)
+    assert (await client.get("/api/auth/me")).json()["artist_map"] is True
+    r = await client.get("/api/taste/map", params={"ref": "dz:1"})
+    assert r.status_code == 200, r.text
+    assert asked == ["Кино"] and r.json()["center"]["name"] == "Кино"
+    # nearest first; one the catalog does not know is left out, and so is the artist in the middle
+    assert [(x["artist"]["ref"], x["match"]) for x in r.json()["around"]] == [("dz:2", 0.8)]
+
+
 async def test_a_picked_artist_is_followed_once(env) -> None:
     from app import favorites
     from app.db import session_scope

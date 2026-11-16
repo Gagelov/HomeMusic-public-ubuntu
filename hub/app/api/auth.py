@@ -25,7 +25,7 @@ def me_out(user: User) -> MeOut:
     settings = get_settings()
     return MeOut(id=user.id, username=user.nd_username, is_admin=user.is_admin,
                  public_music_url=settings.public_music_url, public_hub_url=settings.public_hub_url,
-                 google_email=user.google_email, email=user.email)
+                 google_email=user.google_email, email=user.email, artist_map=bool(settings.lastfm_api_key.strip()))
 
 
 @router.get("/options", response_model=AuthOptionsOut)

@@ -1,5 +1,5 @@
 import { toggle, useListen } from '../lib/listen';
-import { navigate } from '../lib/router';
+import { Link, navigate } from '../lib/router';
 import { tastePath, useNewcomer } from '../lib/taste';
 import { canWave, startWave, useWave } from '../lib/wave';
 import { Icon } from './Icon';
@@ -70,6 +70,12 @@ export function WaveHero() {
         >
           {busy ? <Spinner size={24} /> : running ? <Icon name="pause" size={24} stroke={3} /> : <Icon name="play" size={24} stroke={2.4} className="translate-x-px" />}
         </button>
+      {/* whom the wave starts from can be looked at and changed (a newcomer is led there by the button itself) */}
+      {!newcomer && (
+        <Link to={tastePath()} className="absolute left-1/2 top-[calc(50%+48px)] -translate-x-1/2 whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] text-white/70 transition hover:text-white" style={{ textShadow: '0 1px 10px rgba(0,0,0,.6)' }}>
+          Мои исполнители
+        </Link>
+      )}
     </div>
   );
 }

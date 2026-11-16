@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { CatalogArtist } from '../api/types';
+import { ArtistMap, ArtistsViewSwitch, useArtistsView } from '../components/ArtistMap';
 import { Icon } from '../components/Icon';
 import { Button, Cover, ErrorState, PageHeader, SkeletonRows, cx } from '../components/ui';
 import { useAsync, useDebounced } from '../lib/hooks';
@@ -44,9 +45,18 @@ function ArtistTile({ a, on, onToggle, className }: { a: CatalogArtist; on: bool
 
 /** The artists start from those this server listens to; every pick brings a row of artists like the picked one, so
  * the choice widens from what is already chosen. A pick is a follow too (the Hub makes it one). At least three; as
- * many as one likes. `?then=wave` — the wave starts once they are picked, `?then=mix` — the mix's page opens. */
+ * many as one likes. `?then=wave` — the wave starts once they are picked, `?then=mix` — the mix's page opens.
+ *
+ * «Карта» (a server with a Last.fm key; `?view=map` opens with it) is the other way to widen the choice: the
+ * artist picked last stands in the middle, those near them around; a press on one picks them and puts them in
+ * the middle — so one walks from artist to artist. Before the first pick there is nobody to draw a map around:
+ * the list is shown. */
 export function TastePage() {
-  const then = useRoute().query.get('then');
+  const route = useRoute();
+  const then = route.query.get('then');
+  const [view, setView, canMap] = useArtistsView(route.query.get('view') === 'map' ? 'map' : null);
+  /** whom the map is drawn around: the artist picked (or pressed) last */
+  const [center, setCenter] = useState<{ ref: string; name: string } | null>(null);
   const [q, setQ] = useState('');
   const dq = useDebounced(q.trim(), 400);
   const res = useAsync((s) => api.tasteOnboarding(dq || undefined, s), [dq]);
@@ -59,8 +69,12 @@ export function TastePage() {
   useEffect(() => {
     if (seeded || !res.data) return;
     setSeeded(true);
-    if (res.data.selected.length) setPicked(new Map(res.data.selected.map((a) => [a.ref, a.name])));
+    if (res.data.selected.length) {
+      setPicked(new Map(res.data.selected.map((a) => [a.ref, a.name])));
+      setCenter(res.data.selected[res.data.selected.length - 1]);
+    }
   }, [res.data, seeded]);
+  const map = useAsync((s) => api.artistMap(center!.ref, s), [center?.ref], view === 'map' && !!center);
 
   const toggle = (a: { ref: string; name: string }) => {
     if (picked.has(a.ref)) {
@@ -70,9 +84,16 @@ export function TastePage() {
         return next;
       });
       setAlike((rows) => rows.filter((r) => r.ref !== a.ref));
+      // the map goes back to the one picked before
+      if (center?.ref === a.ref) {
+        const rest = [...picked].filter(([ref]) => ref !== a.ref);
+        setCenter(rest.length ? { ref: rest[rest.length - 1][0], name: rest[rest.length - 1][1] } : null);
+      }
       return;
     }
     setPicked((prev) => new Map(prev).set(a.ref, a.name));
+    setCenter({ ref: a.ref, name: a.name });
+    if (view === 'map') setQ(''); // found and picked: back to the map, now around them
     setAlike((rows) => [{ ref: a.ref, name: a.name }, ...rows.filter((r) => r.ref !== a.ref)]);
     // a row that the catalog has nobody for, or did not answer about, is not shown — the pick itself stands
     api.tasteSimilar(a.ref).then(
@@ -100,7 +121,8 @@ export function TastePage() {
   };
 
   const left = PICK_MIN - picked.size;
-  const rows = dq ? [] : alike.filter((r) => r.artists?.length).slice(0, ROWS);
+  const mapped = view === 'map' && !!center && !dq; // the map is on screen
+  const rows = dq || mapped ? [] : alike.filter((r) => r.artists?.length).slice(0, ROWS);
   const title = res.data?.source === 'server' ? 'Слушают на этом сервере' : res.data?.source === 'chart' ? 'Популярное' : null;
   return (
     <div>
@@ -139,6 +161,29 @@ export function TastePage() {
         </div>
       )}
 
+      {canMap && (
+        <div className="flex items-center justify-between gap-3 px-4 pt-4">
+          <span className="min-w-0 text-[13px] leading-snug text-muted">
+            {view === 'map' ? (center ? 'Нажмите на исполнителя — он будет отмечен, а карта построится вокруг него' : 'Отметьте первого исполнителя — карта построится вокруг него') : ''}
+          </span>
+          <ArtistsViewSwitch view={view} onChange={setView} />
+        </div>
+      )}
+
+      {mapped && (
+        <section aria-label={`Карта: рядом с ${center!.name}`} className="px-2 pt-2">
+          <ArtistMap
+            data={map.data}
+            loading={map.loading}
+            error={map.data ? undefined : map.error}
+            onRetry={() => map.reload()}
+            marked={picked}
+            onArtist={(a) => (picked.has(a.ref) ? setCenter({ ref: a.ref, name: a.name }) : toggle(a))}
+            onCenter={(a) => toggle(a)}
+          />
+        </section>
+      )}
+
       {rows.map((r) => (
         <section key={r.ref} aria-label={`Похожие на ${r.name}`} className="pt-5">
           <h2 className="px-4 text-sm font-semibold text-muted">
@@ -152,7 +197,7 @@ export function TastePage() {
         </section>
       ))}
 
-      {res.loading && !res.data ? (
+      {mapped ? null : res.loading && !res.data ? (
         <SkeletonRows n={6} />
       ) : res.error ? (
         <ErrorState text={res.error} onRetry={() => res.reload()} />

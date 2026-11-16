@@ -109,6 +109,8 @@ export function MorePage() {
             <Group>
               <Item icon="chart" tint="bg-[#2ba6bc]" to="/stats" title="Статистика" />
               <Item icon="history" tint="bg-[#7b61d9]" to="/history" title="История" />
+              <Item icon="user" tint="bg-[#a45ad6]" to="/taste" title="Мои исполнители" />
+              {me.artist_map && <Item icon="wave" tint="bg-[#d5483f]" to="/taste?view=map" title="Карта исполнителей" />}
               <Item icon="download" tint="bg-[#1f9d55]" to="/offline" title="Офлайн" value={kept ? tracksWord(kept) : undefined} />
               <Item icon="ban" tint="bg-[#b0483f]" to="/hidden" title="Скрытое" value={hiddenCount ? String(hiddenCount) : undefined} />
             </Group>
@@ -126,6 +128,22 @@ export function MorePage() {
             <Group title="Сервер">
               {me.is_admin && <Item icon="lyrics" tint="bg-[#c2528b]" to="/lyrics-sources" title="Тексты песен" />}
               {me.is_admin && <Item icon="user" tint="bg-[#3d8ef0]" to="/admin" title="Пользователи и приглашения" />}
+              {me.is_admin && (
+                <Item
+                  icon="wave"
+                  brand="lastfm"
+                  title="Last.fm"
+                  value={me.artist_map ? 'ключ задан' : 'ключ не задан'}
+                  onClick={() =>
+                    toast(
+                      me.artist_map
+                        ? 'Ключ Last.fm задан: работают карта исполнителей, число слушателей и «похожее» в миксах'
+                        : 'Без ключа Last.fm нет карты исполнителей, числа слушателей и «похожего» по Last.fm в миксах. Ключ бесплатный (last.fm/api/account/create): впишите его в LASTFM_API_KEY в .env и перезапустите хаб',
+                      'info',
+                    )
+                  }
+                />
+              )}
               {me.public_music_url && <Item icon="external" tint="bg-[#ef8b3a]" href={me.public_music_url} title="Navidrome" />}
             </Group>
           )}

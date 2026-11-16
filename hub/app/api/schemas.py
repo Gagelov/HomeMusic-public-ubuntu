@@ -63,6 +63,8 @@ class MeOut(BaseModel):
     public_hub_url: str = ""  # for links that leave the Hub (an invite: where to get the app)
     google_email: str | None = None  # the linked Google account (sign-in with Google in the app)
     email: str | None = None  # the email the account registered with (sign-in by it, too)
+    # the server has a Last.fm key: «Карта» of artists is there (it is Last.fm's word of who is near whom)
+    artist_map: bool = False
 
 
 class AuthOptionsOut(BaseModel):
@@ -1310,6 +1312,18 @@ class TasteOnboardingOut(BaseModel):
     suggestions: list[CatalogArtist] = []
     # what `suggestions` are: those this server listens to, the catalog's chart (a server without music), the search
     source: Literal["server", "chart", "search"] = "server"
+
+
+class ArtistNearOut(BaseModel):
+    artist: CatalogArtist
+    match: float  # 0…1, how near Last.fm holds them to be
+
+
+class ArtistMapOut(BaseModel):
+    """«Карта»: an artist and those around them, nearest first."""
+
+    center: CatalogArtist
+    around: list[ArtistNearOut] = []
 
 
 class TasteArtistsIn(BaseModel):

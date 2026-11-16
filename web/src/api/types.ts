@@ -19,6 +19,8 @@ export interface MeOut {
   public_hub_url?: string;
   google_email?: string | null;
   email?: string | null;
+  /** the server has a Last.fm key: «Карта» of artists is there */
+  artist_map?: boolean;
 }
 
 export interface RegisterIn {
@@ -1625,6 +1627,12 @@ export interface MixTodayOut {
 export interface MixSettingsIn {
   mode?: MixMode;
   mix_hour?: number;
+}
+
+/** «Карта»: an artist and those Last.fm holds to be near them, nearest first; `match` 0…1 */
+export interface ArtistMapOut {
+  center: CatalogArtist;
+  around: Array<{ artist: CatalogArtist; match: number }>;
 }
 
 export interface TasteOnboardingOut {
