@@ -2,6 +2,11 @@ import { openTelegramSetup } from '../lib/telegram';
 import { useEffect, useState, type ReactNode } from 'react';
 import { STANDALONE } from '../lib/embedded';
 import { useSession } from '../lib/session';
+import { api } from '../api/client';
+import { useDislikes } from '../lib/dislikes';
+import { tracksWord } from '../lib/format';
+import { useAsync } from '../lib/hooks';
+import { useKeptLists } from '../lib/offline';
 import { BrandIcon } from '../components/BrandIcon';
 import { Icon, type IconName } from '../components/Icon';
 import { PageHeader, cx } from '../components/ui';
@@ -26,6 +31,15 @@ export function MorePage() {
   const [perm, setPerm] = useState<NotifyPermission>(notifyPermission);
   const [canInstall, setCanInstall] = useState(!!deferredInstall);
   const downloads = useActiveDownloads();
+  // what stands now behind the lines: asked once the menu opens, kept between visits — a line waits for none of it
+  const quality = useAsync((s) => (STANDALONE ? api.quality(s) : Promise.resolve(null)), [], true, 'menu:quality');
+  const telegram = useAsync(() => api.telegram(), [], true, 'menu:telegram');
+  const listenbrainz = useAsync((s) => (STANDALONE ? api.listenbrainz(s) : Promise.resolve(null)), [], true, 'menu:listenbrainz');
+  const kept = useKeptLists().tracks;
+  const hiddenCount = useDislikes().length;
+  const waiting = (quality.data?.rows ?? []).filter((r) => r.state === 'found').length;
+  const weak = quality.data?.weak ?? 0;
+  const linked = (d: { connected: boolean } | null | undefined, name?: string | null) => (d ? (d.connected ? (name || 'подключён') : 'не подключён') : undefined);
   const standalone = window.matchMedia('(display-mode: standalone)').matches;
 
   useEffect(() => {
@@ -72,12 +86,15 @@ export function MorePage() {
       <div className="grid items-start gap-5 px-4 lg:grid-cols-2 lg:px-6">
         <div className="space-y-5">
           <Group>
-            <li className="flex min-h-[4.25rem] items-center gap-3.5 px-3.5">
+            <li className="flex min-h-[4.25rem] items-center gap-3.5 pl-3.5 pr-2">
               <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-accent text-lg font-bold uppercase text-on-accent">{me.username.slice(0, 1)}</span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-semibold">{me.username}</span>
                 <span className="block truncate text-[13px] text-muted">{[me.is_admin ? 'Администратор' : 'Пользователь', me.email, me.google_email ? `Google: ${me.google_email}` : null].filter(Boolean).join(' · ')}</span>
               </span>
+              <button type="button" onClick={doLogout} aria-label="Выйти из аккаунта" title="Выйти из аккаунта" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-danger hover:bg-danger/10">
+                <Icon name="logout" size={20} />
+              </button>
             </li>
           </Group>
           {STANDALONE && (
@@ -85,15 +102,15 @@ export function MorePage() {
               <Item icon="sparkle" tint="bg-[#8b6cf6]" to="/assistant" title="Ассистент" />
               <Item icon="download" tint="bg-[#3d8ef0]" to="/downloads" title="Загрузки" value={downloads > 0 ? (downloads > 99 ? '99+' : String(downloads)) : undefined} />
               <Item icon="folder" tint="bg-[#ef8b3a]" to="/files" title={me.is_admin ? 'Все файлы' : 'Мои файлы'} />
-              <Item icon="sliders" tint="bg-[#30b85c]" to="/quality" title="Качество звука" />
+              <Item icon="sliders" tint="bg-[#30b85c]" to="/quality" title="Качество звука" value={waiting ? `ждут решения: ${waiting}` : weak ? `слабых: ${weak}` : undefined} />
             </Group>
           )}
           {STANDALONE && (
             <Group>
               <Item icon="chart" tint="bg-[#2ba6bc]" to="/stats" title="Статистика" />
               <Item icon="history" tint="bg-[#7b61d9]" to="/history" title="История" />
-              <Item icon="download" tint="bg-[#1f9d55]" to="/offline" title="Офлайн" />
-              <Item icon="ban" tint="bg-[#b0483f]" to="/hidden" title="Скрытое" />
+              <Item icon="download" tint="bg-[#1f9d55]" to="/offline" title="Офлайн" value={kept ? tracksWord(kept) : undefined} />
+              <Item icon="ban" tint="bg-[#b0483f]" to="/hidden" title="Скрытое" value={hiddenCount ? String(hiddenCount) : undefined} />
             </Group>
           )}
         </div>
@@ -102,8 +119,8 @@ export function MorePage() {
             <Item icon="transfer" brand="yandex" to="/import?from=yandex" title="Яндекс Музыка" />
             <Item icon="transfer" brand="vk" to="/import?from=vk" title="ВКонтакте" />
             <Item icon="transfer" brand="spotify" to="/import?from=spotify" title="Spotify" />
-            {STANDALONE && <Item icon="wave" brand="listenbrainz" to="/listenbrainz" title="ListenBrainz" />}
-            <Item icon="send" brand="telegram" title="Telegram" onClick={() => openTelegramSetup()} />
+            {STANDALONE && <Item icon="wave" brand="listenbrainz" to="/listenbrainz" title="ListenBrainz" value={linked(listenbrainz.data, listenbrainz.data?.user)} />}
+            <Item icon="send" brand="telegram" title="Telegram" value={telegram.data?.connected && !telegram.data.ready ? 'не завершён' : linked(telegram.data, telegram.data?.bot_username ? `@${telegram.data.bot_username}` : null)} onClick={() => openTelegramSetup()} />
           </Group>
           {(me.is_admin || me.public_music_url) && (
             <Group title="Сервер">
@@ -117,13 +134,6 @@ export function MorePage() {
             {canInstall && !standalone && <Item icon="install" tint="bg-[#30b85c]" title="Установить приложение" onClick={install} />}
             {/* the player is here: in the browser, and the app's own on Android */}
             <Item icon="install" tint="bg-[#1f9d55]" href="/app/latest.apk" title="Приложение для Android" />
-          </Group>
-          <Group>
-            <li>
-              <button type="button" onClick={doLogout} className="flex min-h-12 w-full items-center justify-center px-3.5 text-danger hover:bg-fg/5">
-                Выйти
-              </button>
-            </li>
           </Group>
         </div>
       </div>
@@ -174,7 +184,7 @@ function Item({
       </span>
       <span className="flex min-h-12 min-w-0 flex-1 items-center gap-2 border-b border-fg/[0.07] pr-3.5 group-last/item:border-0">
         <span className="min-w-0 flex-1 truncate">{title}</span>
-        {value && <span className="shrink-0 text-sm text-muted">{value}</span>}
+        {value && <span className="max-w-[55%] shrink-0 truncate text-sm text-muted">{value}</span>}
         <Icon name={href ? 'external' : 'chevron'} size={16} className="shrink-0 text-dim" />
       </span>
     </>
