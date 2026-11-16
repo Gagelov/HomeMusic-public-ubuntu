@@ -13,8 +13,9 @@ const NAMES: Record<string, string> = { deezer: 'Deezer', lastfm: 'Last.fm', cat
 const people = (s: ArtistSourceOut) =>
   s.followers ? `${num(s.followers)} ${plural(s.followers, ['поклонник', 'поклонника', 'поклонников'])}` : s.listeners ? `${num(s.listeners)} ${plural(s.listeners, ['слушатель', 'слушателя', 'слушателей'])}` : '';
 
-/** Where an artist is known, as buttons of their page's row — after the other projects and a thin line: one button
- * a service, with its mark, its name and how many follow or listen there in all.
+/** Where an artist is known, as buttons of their page's row — after the other projects: one button a service, with
+ * its mark (what tells it from a project, which has a round picture), its name and how many follow or listen there
+ * in all.
  *
  * A service that knows the artist by one record opens their page there at a tap. A catalog may keep several
  * records of one artist: then the button opens the list of them — each with its picture, the name the artist has
@@ -25,7 +26,6 @@ export function ArtistServiceButtons({ sources }: { sources: ArtistSourceOut[] }
   if (!services.length) return null;
   return (
     <>
-      <span aria-hidden="true" className="mx-1 h-5 w-px bg-fg/25" />
       {services.map((service) => (
         <ServiceButton key={service} service={service} records={sources.filter((s) => s.service === service)} />
       ))}
