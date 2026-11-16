@@ -32,7 +32,7 @@ from app.library.importer import ImportSpec, cleanup_dir, import_file, staging_d
 from app.library.navidrome import admin_client
 from app.library import upgrade
 from app.library.owned import find_owned, quiet
-from app.library.tracks import current_file
+from app.library.tracks import current_file, has_file
 from app.matching.select import (
     classify,
     match_catalog,
@@ -333,12 +333,34 @@ def _parse_date(v: Any) -> date | None:
 # --- handlers ----------------------------------------------------------------------------------
 
 
+async def filed(s: AsyncSession, item: DownloadItem) -> bool:
+    """The download's file is in the library and only Navidrome is waited for (`handle_scan` finishes it). An item
+    left `importing` with no file is one whose filing failed: it is downloaded again."""
+    return item.status == "importing" and bool(item.track_id) and await has_file(s, item.track_id)
+
+
+async def recover_unfiled() -> int:
+    """Called at startup: downloads left `importing` with no file in the library and no job to bring one (the filing
+    failed, and the attempt after it took the item for filed) go back to the queue."""
+    async with session_scope() as s:
+        waiting = {int((j.payload_json or {}).get("item_id") or 0) for j in (await s.execute(
+            select(Job).where(Job.kind == "download_item", Job.status.in_(("queued", "running"))))).scalars()}
+        n = 0
+        for item in (await s.execute(select(DownloadItem).where(DownloadItem.status == "importing"))).scalars():
+            if item.id in waiting or await filed(s, item):
+                continue
+            item.status, item.progress = "queued", 0
+            await enqueue(s, "download_item", {"item_id": item.id})
+            n += 1
+        return n
+
+
 @handler("download_item")
 async def handle_download_item(job: Job) -> None:
     item_id = int(job.payload_json["item_id"])
     async with session_scope() as s:
         item = await s.get(DownloadItem, item_id)
-        if item is None or item.status in ("done", "cancelled", "importing"):
+        if item is None or item.status in ("done", "cancelled") or await filed(s, item):
             return
         qj = dict(item.query_json or {})
         chosen = item.chosen_candidate_json

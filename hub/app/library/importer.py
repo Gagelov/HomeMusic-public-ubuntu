@@ -182,18 +182,21 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
     if guests:
         spec.artist, spec.artists = titles.with_guests(spec.artist, spec.artists, guests)
     spec.producer = spec.producer or (", ".join(producers) or None)
-    # who the music is by — by the catalog's records of them where the catalog said, else by the names — and the
-    # lines in their names: a spelling that is somebody's is filed under their name
     ref = spec.ref or dz_ref(spec.deezer_track_id)
     met = await by_ref(s, ref)
-    refs = {artists.key(n): r for n, r in zip(spec.artists, spec.artist_refs) if n and r} or artists.refs_of(met.catalog if met else None)
-    spec.artist, by = await artists.credits(s, spec.artist, refs)
-    if spec.artists:
-        spec.artists = [a.name for a in [await artists.who(s, n, refs.get(artists.key(n))) for n in spec.artists] if a is not None]
-    album_by = None
-    if spec.album_artist:
-        spec.album_artist, album_by = await artists.credits(s, spec.album_artist, refs)
+    # The library is taken before anything is written: SQLite has one writer, and a filing that wrote first (an
+    # artist the Hub did not know) and then waited for the library would keep the database from the very filing that
+    # has the library and waits to write — each waiting for the other until one of them gives up
     async with library_lock:
+        # who the music is by — by the catalog's records of them where the catalog said, else by the names — and the
+        # lines in their names: a spelling that is somebody's is filed under their name
+        refs = {artists.key(n): r for n, r in zip(spec.artists, spec.artist_refs) if n and r} or artists.refs_of(met.catalog if met else None)
+        spec.artist, by = await artists.credits(s, spec.artist, refs)
+        if spec.artists:
+            spec.artists = [a.name for a in [await artists.who(s, n, refs.get(artists.key(n))) for n in spec.artists] if a is not None]
+        album_by = None
+        if spec.album_artist:
+            spec.album_artist, album_by = await artists.credits(s, spec.album_artist, refs)
         album = await get_or_create_album(s, spec)
         cover = tagger.prepare_cover(spec.cover) if spec.cover else None
         album_dir_rel = album_reldir(album)
