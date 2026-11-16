@@ -98,7 +98,7 @@ export function BarWindow({ icon, label, children }: { icon: IconName; label: st
  * list's head it is only «back» and, at the right, the tags and the search; once the head has gone up it gets the
  * list's name and ▶. The search opens in the bar itself; the tags — in a window (`TagFilterBody`); the ones chosen
  * are a line above the tracks (`TagFilterChips`, the page's own). */
-export function ListBar({ title, back, tracks, context, search, tags, extra, offline, plain }: { /** a page with no head of its own («История»): the bar is its title, there from the start */ plain?: boolean; title: string; back: string; tracks?: readonly TrackOut[]; context?: string; search?: ListSearch; tags?: ListTags; /** the list can be kept on the device: its key, its page and all of its tracks (`components/Offline.tsx`) */ offline?: { key: string; to: string; tracks: readonly TrackOut[] }; /** a mark of the list's own, before the tags («Режим микса») */ extra?: ReactNode }) {
+export function ListBar({ title, back, tracks, context, search, tags, extra, end, offline, plain }: { /** what stands at the very end of the bar, after ▶ (an artist's ⋯): there whether the page is scrolled or not */ end?: ReactNode; /** a page with no head of its own («История»): the bar is its title, there from the start */ plain?: boolean; title: string; back: string; tracks?: readonly TrackOut[]; context?: string; search?: ListSearch; tags?: ListTags; /** the list can be kept on the device: its key, its page and all of its tracks (`components/Offline.tsx`) */ offline?: { key: string; to: string; tracks: readonly TrackOut[] }; /** a mark of the list's own, before the tags («Режим микса») */ extra?: ReactNode }) {
   const desktop = useDesktop();
   const scrolled = useHeadGone();
   const gone = scrolled || !!plain;
@@ -137,6 +137,7 @@ export function ListBar({ title, back, tracks, context, search, tags, extra, off
             {tags && <IconButton icon="tag" label={narrowed ? 'Теги: отбор включён' : 'Теги'} aria-pressed={tagsOpen} onClick={() => setTagsOpen((v) => !v)} className={narrowed ? '!text-accent' : undefined} />}
             {search && (search.open ? <div className="flex w-80 pl-1">{search.field}</div> : <IconButton icon="search" label="Поиск по списку (Ctrl+F)" onClick={search.show} />)}
             {play}
+            {end}
           </>
         )}
         {tags && tagsOpen && desktop && (

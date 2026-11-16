@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
-import type { AlbumOut, ArtistPageOut, TrackOut } from '../api/types';
+import type { AlbumOut, ArtistPageOut } from '../api/types';
 import { ReleaseCard, TrackRow } from '../components/catalog';
 import { Icon, type IconName } from '../components/Icon';
 import { ListBar } from '../components/ListBar';
@@ -161,14 +161,25 @@ export function ArtistPage({ refId }: { refId: string }) {
       {/* the picture over the page: before everything, so it stays at the top of the window while the page goes over
           it. The wide one where the artist has it; else their own photo, out of focus — the round photo stands on it */}
       {(d.banner_url || photo) && <BannerPicture src={(d.banner_url ?? photo) as string} blurred={!d.banner_url} />}
-      <ListBar title={shownName} back="/search" tracks={hidden ? undefined : top} context="artist" />
-      <Banner name={shownName} followed={followed} photo={d.banner_url ? undefined : (photo ?? null)} tracks={hidden ? undefined : top} />
+      <ListBar
+        title={shownName}
+        back="/search"
+        tracks={hidden ? undefined : top}
+        context="artist"
+        end={
+          // the ⋯ of the artist: at the top right, and there still when the page is scrolled
+          <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="relative mr-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-bg/40 text-fg hover:bg-bg/70">
+            <Icon name="more" size={22} />
+            {/* somebody looks like the same artist under another spelling: «Имя и написания» says who */}
+            {artistHint(names.card) && <span aria-hidden="true" className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-info" />}
+          </button>
+        }
+      />
+      {/* on a phone what is known of the artist is a line under the name; on a computer — buttons of the row below */}
+      <Banner name={shownName} followed={followed} photo={d.banner_url ? undefined : (photo ?? null)} sub={desktop ? undefined : facts} />
 
       {/* what goes up over the picture has the page's own colour under it */}
       <div className="relative z-[1] bg-bg">
-      {/* what is known of the artist, and where from: on a phone one line under the picture; on a computer the
-          places are buttons of the row below, which has the room */}
-      {desktop ? <div className="h-3" /> : <div className="px-4 pb-3 pt-1 text-sm text-muted">{facts}</div>}
       {hidden ? (
         <div className="mx-4 mb-3 rounded-2xl bg-danger/15 px-4 py-3 text-sm text-fg lg:mx-6">
           <p>Вы не слушаете этого исполнителя. Его треков нет в волне, миксах и открытиях, а в плейлистах они пропускаются.</p>
@@ -177,8 +188,8 @@ export function ArtistPage({ refId }: { refId: string }) {
           </Button>
         </div>
       ) : (
-        <div className="flex items-center px-4 pb-3 lg:px-6">
-          {/* the buttons go sideways where they do not fit; the ⋯ stays at the right edge, whatever the width */}
+        <div className="flex items-center gap-2 px-4 pb-3 pt-3 lg:px-6">
+          {/* the buttons go sideways where they do not fit; ▶ and the shuffle stay at the right edge, whatever the width */}
           <div className="no-scrollbar -my-1 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1 pr-5 [mask-image:linear-gradient(to_right,#000_calc(100%-1.25rem),transparent)] [&>*]:shrink-0">
           {/* pressed once: an artist followed has no such button — the mark by the name says it, the ⋯ takes it back */}
           {(!followed || leaving) && (
@@ -212,11 +223,7 @@ export function ArtistPage({ refId }: { refId: string }) {
           <ArtistProjects card={names.card} />
           {desktop && <ArtistSourceButtons sources={d.sources ?? []} />}
           </div>
-          <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted hover:text-fg">
-            <Icon name="more" size={24} />
-            {/* somebody looks like the same artist under another spelling: «Имя и написания» says who */}
-            {artistHint(names.card) && <span aria-hidden="true" className="absolute right-2 top-2 h-2 w-2 rounded-full bg-info" />}
-          </button>
+          {top.length > 0 && <PlayPair tracks={top} context="artist" />}
         </div>
       )}
 
@@ -309,18 +316,20 @@ function BannerPicture({ src, blurred }: { src: string; /** not a wide picture b
   );
 }
 
-/** The head of the page over that picture: as tall as it, reaching up under the bar with «back»; the name in large
- * over its darkened foot, ▶ and the shuffle beside the name — on a phone and on a computer alike, and on the side
- * they keep in the bar once the page is scrolled. Over a wide picture the round photo is not shown — it is the same
- * person twice; where there is none (`photo` given: the address, or null for no photo at all) the round photo
- * stands on the ground made of it: in the middle on a phone, before the name on a computer. */
-function Banner({ name, followed, photo, tracks }: { name: string; /** the listener follows the artist: a mark by the name */ followed?: boolean; photo?: string | null; tracks?: readonly TrackOut[] }) {
-  const round = 'absolute left-1/2 top-[calc(3.75rem+env(safe-area-inset-top))] h-28 w-28 shrink-0 -translate-x-1/2 rounded-full shadow-xl lg:static lg:h-44 lg:w-44 lg:translate-x-0';
+/** The head of the page over that picture, reaching up under the bar with «back» and the ⋯: the name in large over
+ * its darkened foot — alone, with the whole width (▶ and the shuffle are of the row under the head). Over a wide
+ * picture the head is as tall as the picture, and the round photo is not shown — it is the same person twice. Where
+ * there is no wide picture (`photo` given: the address, or null for no photo at all) the head is as tall as the
+ * round photo, which stands before the name — on a phone and on a computer alike — on the ground made of it.
+ * `sub`: a line under the name (a phone: what is known of the artist). */
+function Banner({ name, followed, photo, sub }: { name: string; /** the listener follows the artist: a mark by the name */ followed?: boolean; photo?: string | null; sub?: ReactNode }) {
+  const round = 'h-28 w-28 shrink-0 rounded-full shadow-xl lg:h-44 lg:w-44';
+  const wide = photo === undefined;
   return (
-    <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex items-end', BANNER_H)}>
+    <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex', wide ? cx('items-end', BANNER_H) : 'items-center pt-[calc(4rem+env(safe-area-inset-top))]')}>
       <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-t from-bg via-bg/45 to-black/15" />
-      <div className="flex w-full items-end gap-3 px-4 pb-4 lg:gap-6 lg:px-6 lg:pb-5">
-        {photo !== undefined &&
+      <div className={cx('flex w-full gap-4 px-4 pb-4 lg:gap-6 lg:px-6 lg:pb-5', wide ? 'items-end' : 'items-center')}>
+        {!wide &&
           (photo ? (
             <img src={photo} alt="" className={cx(round, 'object-cover')} />
           ) : (
@@ -330,7 +339,7 @@ function Banner({ name, followed, photo, tracks }: { name: string; /** the liste
           ))}
         <div className="min-w-0 flex-1">
           <div className="hidden text-sm text-fg/80 lg:block">Исполнитель</div>
-          <h2 data-list-title className="line-clamp-2 break-words text-4xl font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)] lg:text-7xl">
+          <h2 data-list-title className={cx('line-clamp-2 break-words font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)] lg:text-7xl', wide ? 'text-4xl' : 'text-3xl')}>
             {name}
             {followed && (
               <span title="Вы подписаны: новые релизы появятся в «Релизах»" aria-label="Вы подписаны" className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent align-middle text-black [text-shadow:none] lg:ml-3 lg:h-7 lg:w-7">
@@ -338,8 +347,8 @@ function Banner({ name, followed, photo, tracks }: { name: string; /** the liste
               </span>
             )}
           </h2>
+          {sub && <div className="mt-2 text-sm text-fg/85 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)]">{sub}</div>}
         </div>
-        {!!tracks?.length && <PlayPair tracks={tracks} context="artist" />}
       </div>
     </div>
   );
