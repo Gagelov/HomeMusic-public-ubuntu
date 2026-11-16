@@ -323,7 +323,8 @@ function BannerPicture({ src, blurred }: { src: string; /** not a wide picture b
  * round photo, which stands before the name — on a phone and on a computer alike — on the ground made of it.
  * `sub`: a line under the name (a phone: what is known of the artist). */
 function Banner({ name, followed, photo, sub }: { name: string; /** the listener follows the artist: a mark by the name */ followed?: boolean; photo?: string | null; sub?: ReactNode }) {
-  const round = 'h-32 w-32 shrink-0 rounded-full shadow-xl sm:h-44 sm:w-44 lg:h-56 lg:w-56';
+  // the photo grows with the window; the name does not — it is one size on a phone and one on anything wider
+  const round = 'aspect-square w-[clamp(8rem,22vw,20rem)] shrink-0 rounded-full shadow-xl';
   const wide = photo === undefined;
   return (
     <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex', wide ? cx('items-end', BANNER_H) : 'items-center pt-[calc(4rem+env(safe-area-inset-top))]')}>
@@ -339,7 +340,7 @@ function Banner({ name, followed, photo, sub }: { name: string; /** the listener
           ))}
         <div className="min-w-0 flex-1">
           <div className="hidden text-sm text-fg/80 lg:block">Исполнитель</div>
-          <h2 data-list-title className={cx('line-clamp-2 break-words font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]', wide ? 'text-[clamp(2.5rem,9vw,6rem)]' : 'text-[clamp(2rem,7.5vw,6rem)]')}>
+          <h2 data-list-title className={cx('line-clamp-2 break-words font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]', wide ? 'text-5xl sm:text-8xl' : 'text-4xl sm:text-8xl')}>
             {name}
             {followed && (
               <span title="Вы подписаны: новые релизы появятся в «Релизах»" aria-label="Вы подписаны" className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent align-middle text-black [text-shadow:none] sm:ml-3 sm:h-7 sm:w-7">
