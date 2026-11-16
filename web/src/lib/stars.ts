@@ -104,6 +104,14 @@ export function isLiked(t: LikeTarget): boolean {
   for (const key of keys) if (own.has(key)) return own.get(key)!;
   return keys.some((key) => snapshot.get(key)) || (typeOf(t) === 'track' && !!t.ref && pendingRefs.has(t.ref));
 }
+/** The likes have been read at least once. Before that «not liked» is not known — only not told yet: a page does
+ * not show what it would have to take back a moment later (a «Подписаться» on an artist followed long ago). */
+export function useLikesKnown(): boolean {
+  useEffect(() => { void refreshStars(); }, []);
+  useSyncExternalStore(subscribe, () => version);
+  return loadedAt > 0;
+}
+
 export function useLiked(t: LikeTarget): boolean {
   useEffect(() => { void refreshStars(); }, []);
   useSyncExternalStore(subscribe, () => version);
