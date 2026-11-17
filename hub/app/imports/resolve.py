@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.catalog.models import CatalogTrack, make_ref, split_ref
 from app.config import get_settings
 from app.library.owned import find_owned
-from app.matching.normalize import clean_isrc, has_cyrillic, normalize_artist, split_version, version_kind
+from app.matching.normalize import clean_isrc, normalize_artist, split_version, version_kind
 from app.matching.score import score
 from app.matching.select import classify_scores, match_catalog, rank_candidates
 from app.models import SourceMap, Track, utcnow
@@ -120,7 +120,7 @@ async def catalog_track(raw: dict[str, Any]) -> Resolution:
             verdict = VERDICT[classify_scores([x[1].total for x in scored], cfg)]
             if verdict != "not_found":
                 return Resolution(verdict, scored[0][0].ref, round(scored[0][1].total, 3), catalog=scored[0][0])
-    if has_cyrillic(artist + title) and (hm := svc.providers.get("hitmoz")) is not None:
+    if (hm := svc.providers.get("hitmoz")) is not None:
         q = TrackQuery(artist=main, title=title, album=raw.get("album"), duration_s=raw.get("duration_s"))
         search_title = title if version_kind(version) else base or title
         try:

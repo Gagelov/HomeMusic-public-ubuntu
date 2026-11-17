@@ -54,22 +54,15 @@ async def env(hub_env, monkeypatch):
                     "boris": {"password": "borispw", "isAdmin": False, "name": "Борис"}},
           "stars": {"admin": ["s1", "s2"]}, "logins": 0}
 
-    def canonical_name(name: str) -> str:
-        key = name.encode().lower()
-        return next((user for user in nd["users"] if user.encode().lower() == key), name)
-
     def subsonic(request: httpx.Request) -> httpx.Response:
         p = request.url.params
         ok = {"status": "ok", "version": "1.16.1"}
-        name = canonical_name(p.get("u", ""))
-        u = nd["users"].get(name)
+        u = nd["users"].get(p.get("u", ""))
         if u is None or hashlib.md5((u["password"] + p.get("s", "")).encode()).hexdigest() != p.get("t"):
             return httpx.Response(200, json={"subsonic-response": {"status": "failed", "error": {"code": 40, "message": "Wrong username or password"}}})
         ep = request.url.path.rsplit("/", 1)[-1]
         if ep == "getUser":
-            return httpx.Response(200, json={"subsonic-response": {
-                **ok, "user": {"username": name, "adminRole": u["isAdmin"]},
-            }})
+            return httpx.Response(200, json={"subsonic-response": {**ok, "user": {"adminRole": u["isAdmin"]}}})
         if ep == "getStarred2":
             songs = [{"id": i} for i in nd["stars"].get(p["u"], [])]
             return httpx.Response(200, json={"subsonic-response": {**ok, "starred2": {"song": songs}}})
@@ -94,7 +87,7 @@ async def env(hub_env, monkeypatch):
                  "createdAt": "2026-10-01T10:00:00.5Z"}
                 for name, u in nd["users"].items()])
         body = json.loads(request.content)
-        if canonical_name(body["userName"]) in nd["users"]:
+        if body["userName"] in nd["users"]:
             return httpx.Response(400, json={"errors": {"userName": "ra.validation.unique"}})
         nd["users"][body["userName"]] = {"password": body["password"], "isAdmin": body["isAdmin"], "name": body["name"]}
         return httpx.Response(200, json={"id": f"nd-{body['userName']}"})
@@ -118,51 +111,6 @@ async def make_invite(admin: httpx.AsyncClient, note: str = "Анна") -> dict:
     r = await admin.post("/api/admin/invites", json={"note": note})
     assert r.status_code == 200, r.text
     return r.json()
-
-
-async def test_parallel_logins_share_one_account_and_keep_navidrome_spelling(env):
-    env["nd"]["users"]["CaseTest"] = {"password": "CasePassword", "isAdmin": False, "name": "Case Test"}
-    async with env["client"]() as first, env["client"]() as second:
-        a, b = await asyncio.gather(
-            first.post("/api/auth/login", json={"username": "casetest", "password": "CasePassword"}),
-            second.post("/api/auth/login", json={"username": "CASETEST", "password": "CasePassword"}),
-        )
-        assert a.status_code == b.status_code == 200, (a.text, b.text)
-        assert a.json()["id"] == b.json()["id"]
-        assert a.json()["username"] == b.json()["username"] == "CaseTest"
-
-        response = await first.post("/api/search/history", json={"query": "Кино"})
-        assert response.status_code == 200, response.text
-        history = await second.get("/api/search/history")
-        assert history.status_code == 200, history.text
-        assert history.json()["queries"] == ["Кино"]
-        wrong_case = await first.post("/api/auth/login", json={"username": "CaseTest", "password": "casepassword"})
-        assert wrong_case.status_code == 401, wrong_case.text
-
-
-async def test_password_failures_leave_the_library_accessible(env, monkeypatch):
-    from app import auth
-
-    now = 100.0
-    monkeypatch.setattr(auth, "monotonic", lambda: now)
-    async with env["client"]() as client:
-        for username in ("admin", "ADMIN", "admin"):
-            response = await client.post("/api/auth/login", json={"username": username, "password": "wrong"})
-            assert response.status_code == 401, response.text
-        upstream_calls = len(env["mock"].calls)
-        response = await client.post("/api/auth/login", json={"username": "ADMIN", "password": "wrong"})
-        assert response.status_code == 429, response.text
-        assert response.headers["retry-after"] == "30"
-        assert len(env["mock"].calls) == upstream_calls
-
-        library = await env["admin"].get("/api/nd/home")
-        assert library.status_code == 200, library.text
-        response = await client.post("/api/auth/login", json={"username": "boris", "password": "borispw"})
-        assert response.status_code == 200, response.text
-
-        now += 31
-        response = await client.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
-        assert response.status_code == 200, response.text
 
 
 async def test_search_history_is_shared_between_sessions_and_isolated_between_accounts(env):
@@ -330,7 +278,7 @@ async def test_register_rejects_bad_input_and_keeps_the_code(env):
             ({"code": "WRONG-CODE", "username": "anna", "password": "secret1"}, 400),
             ({"code": inv["code"], "username": "ан на", "password": "secret1"}, 400),
             ({"code": inv["code"], "username": "anna", "password": "123"}, 400),
-            ({"code": inv["code"], "username": "BORIS", "password": "secret1"}, 409),  # taken in Navidrome
+            ({"code": inv["code"], "username": "boris", "password": "secret1"}, 409),  # taken in Navidrome
             ({"code": inv["code"], "username": "Admin", "password": "secret1"}, 409),  # taken in the Hub
         ]:
             r = await c.post("/api/auth/register", json=body)

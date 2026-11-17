@@ -141,10 +141,8 @@ async def build_for(user_id: int) -> Mix | None:
     if profile.empty:
         log.info("mix: user %s has no history and no picked artists yet", user_id)
         return None
-    recent = await builder.recent_fingerprints(user_id)
     pool = []
-    built = (await builder.build(profile, mode, shadow_pool=pool, recent=recent) if shadow_snapshot is not None
-             else await builder.build(profile, mode, recent=recent))
+    built = await builder.build(profile, mode, shadow_pool=pool) if shadow_snapshot is not None else await builder.build(profile, mode)
     if cfg.taste_shadow:
         if shadow_snapshot is not None:
             try:

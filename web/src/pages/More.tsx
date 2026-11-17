@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { STANDALONE } from '../lib/embedded';
 import { useSession } from '../lib/session';
 import { api } from '../api/client';
+import type { SoulseekStatusOut } from '../api/types';
 import { useDislikes } from '../lib/dislikes';
 import { tracksWord } from '../lib/format';
 import { useAsync } from '../lib/hooks';
@@ -12,7 +13,8 @@ import { Icon, type IconName } from '../components/Icon';
 import { PageHeader, cx } from '../components/ui';
 import { notifyPermission, requestNotifyPermission, useActiveDownloads, type NotifyPermission } from '../lib/notify';
 import { Link } from '../lib/router';
-import { confirmDialog, toast } from '../lib/ui';
+import { setSmartEnabled, useSmartEnabled } from '../lib/smartShuffle';
+import { attempt, confirmDialog, toast } from '../lib/ui';
 
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -37,6 +39,7 @@ export function MorePage() {
   const listenbrainz = useAsync((s) => (STANDALONE ? api.listenbrainz(s) : Promise.resolve(null)), [], true, 'menu:listenbrainz');
   const kept = useKeptLists().tracks;
   const hiddenCount = useDislikes().length;
+  const smart = useSmartEnabled();
   const waiting = (quality.data?.rows ?? []).filter((r) => r.state === 'found').length;
   const weak = quality.data?.weak ?? 0;
   const linked = (d: { connected: boolean } | null | undefined, name?: string | null) => (d ? (d.connected ? (name || 'подключён') : 'не подключён') : undefined);
@@ -144,10 +147,13 @@ export function MorePage() {
                   }
                 />
               )}
+              {me.is_admin && <SoulseekSettings />}
               {me.public_music_url && <Item icon="external" tint="bg-[#ef8b3a]" href={me.public_music_url} title="Navidrome" />}
             </Group>
           )}
           <Group title="Это устройство">
+            <Item icon="shuffleSmart" tint="bg-[#7b61d9]" title="Умное перемешивание" value={smart ? 'включено' : 'выключено'}
+              onClick={() => setSmartEnabled(!smart)} />
             <Item icon="bell" tint="bg-[#d9534f]" title="Уведомления" value={permText[perm]} onClick={notifications} />
             {canInstall && !standalone && <Item icon="install" tint="bg-[#30b85c]" title="Установить приложение" onClick={install} />}
             {/* the player is here: in the browser, and the app's own on Android */}
@@ -158,6 +164,36 @@ export function MorePage() {
 
       <p className="px-6 pt-6 text-center text-xs text-dim">HomeMusic · личный музыкальный сервис</p>
     </div>
+  );
+}
+
+const SOULSEEK_STATE: Record<SoulseekStatusOut['state'], string> = {
+  disabled: 'Источник выключен',
+  unreachable: 'slskd недоступен',
+  auth_error: 'Ошибка ключа API',
+  connecting: 'Вход в сеть Soulseek',
+  disconnected: 'Нет подключения к сети Soulseek',
+  ready: 'Подключён к сети Soulseek',
+};
+
+function SoulseekSettings() {
+  const res = useAsync((signal) => api.soulseekStatus(false, signal), []);
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    const result = await attempt(() => api.soulseekStatus(true));
+    if (result) res.setData(result);
+    setBusy(false);
+  };
+  const status = res.data;
+  if (!status || status.state === 'disabled') return null;
+  const summary = status.search_error ? 'Пробный поиск не ответил'
+    : status.search_matches != null ? `Поиск ответил: ${status.search_matches} файлов`
+    : SOULSEEK_STATE[status.state];
+  return (
+    <Item icon="search" tint="bg-[#6b7684]" title="Проверить Soulseek" onClick={run}
+      value={busy ? 'Проверяем…' : summary} />
   );
 }
 

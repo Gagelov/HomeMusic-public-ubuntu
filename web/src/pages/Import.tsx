@@ -80,11 +80,12 @@ export function ImportsPage({ from = null }: { from?: ImportSource | null }) {
   const res = useAsync((s) => api.imports(s), []);
   const past = (res.data ?? []).filter((imp) => !from || imp.source === from);
   useHubEvent('import', () => res.reload(true));
-  const [busy, setBusy] = useState<'device' | 'profile' | 'token' | 'csv' | 'vk' | 'vk-token' | null>(null);
+  const [busy, setBusy] = useState<'device' | 'profile' | 'token' | 'spotify' | 'csv' | 'vk' | 'vk-token' | null>(null);
   const [vkLogin, setVkLogin] = useState('');
   const [vkPassword, setVkPassword] = useState('');
   const [vkToken, setVkToken] = useState('');
   const csvRef = useRef<HTMLInputElement>(null);
+  const spotifyFile = useRef<HTMLInputElement>(null);
   const [profile, setProfile] = useState('');
   const [token, setToken] = useState('');
 
@@ -109,6 +110,14 @@ export function ImportsPage({ from = null }: { from?: ImportSource | null }) {
   const startCsv = async (files: File[]) => {
     setBusy('csv');
     const r = await attempt(() => api.createImportCsv(files));
+    setBusy(null);
+    if (r) navigate(`/import/${r.id}`);
+  };
+
+  const uploadSpotify = async (files: File[]) => {
+    if (!files.length) return;
+    setBusy('spotify');
+    const r = await attempt(() => api.importSpotify(files));
     setBusy(null);
     if (r) navigate(`/import/${r.id}`);
   };
@@ -236,6 +245,24 @@ export function ImportsPage({ from = null }: { from?: ImportSource | null }) {
           Выбрать файлы CSV
         </Button>
         <p className="text-xs text-dim">Exportify — сторонний открытый сервис: вход идёт на сайте Spotify, Хаб получает только файл со списком треков.</p>
+        <div className="border-t border-line/60 pt-3">
+          <p className="mb-2 text-sm text-muted">Или загрузите полный экспорт аккаунта Spotify: файлы Playlist*.json и YourLibrary.json.</p>
+          <input
+            ref={spotifyFile}
+            type="file"
+            multiple
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              e.target.value = '';
+              void uploadSpotify(files);
+            }}
+          />
+          <Button block icon="upload" busy={busy === 'spotify'} disabled={!!busy} onClick={() => spotifyFile.current?.click()}>
+            Загрузить экспорт Spotify (JSON)
+          </Button>
+        </div>
       </div>
       {!EMBEDDED && (
         <Link to="/stats" className="card mx-4 lg:mx-6 mt-3 flex items-center gap-3 p-4 hover:bg-hover">
@@ -574,7 +601,7 @@ function Progress({ imp, onChange }: { imp: ImportOut; onChange: (r: ImportOut) 
 
       <SectionTitle>Отчёт</SectionTitle>
       <ul className="mx-4 lg:mx-6 overflow-hidden rounded-2xl bg-surface">
-        <ReportRow to={`/import/${imp.id}/items?match=exact,owned`} icon="check" tone="text-accent" title="Точно" value={st.exact + st.owned} />
+        <ReportRow to={`/import/${imp.id}/items?match=exact,manual,owned`} icon="check" tone="text-accent" title="Точно" value={st.exact + st.owned} />
         <ReportRow to={`/import/${imp.id}/items?match=probable`} icon="alert" tone="text-warn" title="Вероятно — проверьте" value={st.probable} />
         <ReportRow to={`/import/${imp.id}/items?match=not_found`} icon="x" tone="text-danger" title="Не найдено" value={st.not_found} />
         {st.failed > 0 && <ReportRow to={`/import/${imp.id}/items?status=failed`} icon="refresh" tone="text-danger" title="Не скачалось" value={st.failed} />}
@@ -654,6 +681,7 @@ const PAGE = 300;
 const MATCH_LABEL: Record<string, [string, string]> = {
   owned: ['есть', 'bg-accent/15 text-accent'],
   exact: ['точно', 'bg-accent/15 text-accent'],
+  manual: ['выбран вручную', 'bg-accent/15 text-accent'],
   probable: ['вероятно', 'bg-warn/15 text-warn'],
   not_found: ['не найдено', 'bg-danger/15 text-danger'],
 };

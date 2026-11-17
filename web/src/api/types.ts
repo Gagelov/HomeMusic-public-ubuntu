@@ -567,6 +567,9 @@ export interface DownloadItemOut {
   import_id?: number | null;
   candidates?: Candidate[] | null;
   /** the journal (the detail view only): the steps of the download in order */
+  /** playable candidates registered by the detail view */
+  preview_refs?: string[] | null;
+  /** the journal (the detail view only): the steps of the download in order */
   log?: DownloadStep[] | null;
   chosen?: Candidate | null;
   /** taken off the list by the user (comes with an event: every open page drops it) */
@@ -1091,7 +1094,7 @@ export interface ChatConfirmOut {
 // --- imports from music services ------------------------------------------------------------
 
 export type ImportSource = 'yandex' | 'spotify' | 'vk';
-export type ImportMethod = 'device' | 'token' | 'profile' | 'csv' | 'password' | 'link';
+export type ImportMethod = 'device' | 'token' | 'profile' | 'file' | 'csv' | 'password' | 'link';
 export type ImportMode = 'economy' | 'full';
 export type ImportStatus = 'auth' | 'fetching' | 'preview' | 'running' | 'done' | 'failed' | 'cancelled';
 export type ImportCollectionKind = 'likes' | 'playlist' | 'albums' | 'artists' | 'dislikes';
@@ -1427,6 +1430,14 @@ export interface HealthOut {
   providers: Record<string, unknown>;
   version: string;
   today?: ISODate | null;
+}
+
+export type SoulseekState = 'disabled' | 'unreachable' | 'auth_error' | 'connecting' | 'disconnected' | 'ready';
+
+export interface SoulseekStatusOut {
+  state: SoulseekState;
+  search_matches?: number | null;
+  search_error?: boolean | null;
 }
 
 // --- listening data (MIXES.md 3.2) -----------------------------------------------------------------

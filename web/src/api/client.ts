@@ -73,6 +73,7 @@ import type {
   SearchHistoryOut,
   SearchRecent,
   SearchTracksOut,
+  SoulseekStatusOut,
   TrackOut,
   StarIn,
   StarOut,
@@ -622,12 +623,20 @@ export const api = {
   lyricsScan: () => request<LyricsSettings>('POST', '/api/lyrics/scan'),
   imports: (signal?: AbortSignal) => request<ImportOut[]>('GET', '/api/imports', { signal }),
   createImport: (body: ImportIn) => request<ImportOut>('POST', '/api/imports', { json: body }),
+  /** Spotify account-data export (JSON): playlists and liked tracks. */
+  importSpotify: (files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append('files', file);
+    return request<ImportOut>('POST', '/api/imports/spotify', { form });
+  },
   /** Spotify playlists exported to CSV by Exportify: one file is one playlist. */
   createImportCsv: (files: File[]) => {
     const form = new FormData();
     for (const f of files) form.append('files', f);
     return request<ImportOut>('POST', '/api/imports/csv', { form });
   },
+  soulseekStatus: (search = false, signal?: AbortSignal) =>
+    request<SoulseekStatusOut>('GET', withQuery('/api/system/soulseek', { search }), { signal }),
   /** What VK asked for at the sign-in: the code it sent, or what its captcha page answered with. */
   importAuth: (id: number, body: { code?: string; captcha?: string }) => request<ImportOut>('POST', `/api/imports/${id}/auth`, { json: body }),
   importGet: (id: number, signal?: AbortSignal) => request<ImportOut>('GET', `/api/imports/${id}`, { signal }),

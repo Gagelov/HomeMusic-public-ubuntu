@@ -48,12 +48,18 @@ function censorship(c: Candidate): { text: string; tone: 'good' | 'bad' } | null
  * search's files it is among) it can be listened to: ▷ plays the list from it on, and while the row is on screen
  * the Hub opens the file in the background (`watchOnScreen`), so the tap starts at once. ♥ downloads that very file
  * and stars it after the import, like ♥ on a catalog track. */
-export function CandidateRow({ c, action, queue }: { c: Candidate; action?: ReactNode; queue?: readonly Candidate[] }) {
+export function CandidateRow({ c, action, queue, preview }: {
+  c: Candidate;
+  action?: ReactNode;
+  queue?: readonly Candidate[];
+  preview?: boolean;
+}) {
   const ref = fileRef(c);
-  const listenable = !!queue;
+  const prefetch = !!queue;
+  const listenable = prefetch || !!preview;
   const rowRef = useRef<HTMLDivElement>(null);
   const current = useListen((s) => listenable && s.track?.ref === ref);
-  useEffect(() => (rowRef.current && listenable ? watchOnScreen(rowRef.current, ref) : undefined), [ref, listenable]);
+  useEffect(() => (rowRef.current && prefetch ? watchOnScreen(rowRef.current, ref) : undefined), [ref, prefetch]);
   const str = (k: string) => (typeof c.extra?.[k] === 'string' ? (c.extra[k] as string) : null);
   // hitmoz's full title with the version; a re-upload's own title ("Трек – Исполнитель (без цензуры)")
   const version = str('full_title') ?? str('original_title');
@@ -86,7 +92,7 @@ export function CandidateRow({ c, action, queue }: { c: Candidate; action?: Reac
             <span key={f as string}>{f}</span>
           ))}
           {c.score ? <span className="text-dim">совпадение {Math.round(c.score * 100)}%</span> : null}
-          {c.page_url && (
+          {/^https?:\/\//i.test(c.page_url ?? '') && (
             <a href={c.page_url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-0.5 text-dim underline-offset-2 hover:underline" aria-label="Открыть страницу источника">
               источник <Icon name="external" size={12} />
             </a>
@@ -94,13 +100,13 @@ export function CandidateRow({ c, action, queue }: { c: Candidate; action?: Reac
         </div>
         {action && <div className="mt-2">{action}</div>}
       </div>
-      {queue && (
+      {listenable && (
         <div className="flex shrink-0 items-center self-center">
-          <SaveButton refId={ref} title={c.title} className="!w-10" />
-          <span onPointerDown={() => touchTrack(ref)}>
-            <ListenButton track={{ ref, title: c.title }} onListen={() => listenFiles(queue, c)} />
+          {queue && <SaveButton refId={ref} title={c.title} className="!w-10" />}
+          <span onPointerDown={queue ? () => touchTrack(ref) : undefined}>
+            <ListenButton track={{ ref, title: c.title }} onListen={() => listenFiles(queue ?? [c], c)} />
           </span>
-          <TrackMenuButton track={{ ...fileTrack(c), listen: fileTrack(c) }} className="w-8" />
+          {queue && <TrackMenuButton track={{ ...fileTrack(c), listen: fileTrack(c) }} className="w-8" />}
         </div>
       )}
     </div>

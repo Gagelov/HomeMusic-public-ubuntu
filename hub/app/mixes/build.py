@@ -818,7 +818,7 @@ def local_now(now: datetime | None = None) -> datetime:
 
 
 async def build(p: Profile, mode: str, gens: dict[str, Gen] | None = None,
-                shadow_pool: list[Cand] | None = None, recent: set[str] | None = None) -> Built:
+                shadow_pool: list[Cand] | None = None) -> Built:
     cfg = get_settings().cfg.mixes
     t0 = time.monotonic()
     stats: dict[str, Any] = {"mode": mode, "taste_model": "v2" if isinstance(p, V2Profile) else "v1"}
@@ -841,14 +841,10 @@ async def build(p: Profile, mode: str, gens: dict[str, Gen] | None = None,
         except Exception:
             shadow_pool.append(None)  # comparison reports failure without affecting the build
     rejected = dict.fromkeys(REJECT_REASONS, 0)
-    recent = recent or set()
     kept = []
     for c in cands.values():
         if (reason := keep_reason(c, p, cfg)) is None:
-            if fingerprint(c.track.artist, c.track.title) in recent:
-                rejected["recent"] += 1
-            else:
-                kept.append(c)
+            kept.append(c)
         else:
             rejected[reason] = rejected.get(reason, 0) + 1
     stats["rejected"] = rejected
