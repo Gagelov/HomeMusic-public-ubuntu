@@ -24,7 +24,7 @@ from app.db import session_scope
 from app.events import bus
 from app.jobs.queue import enqueue, handler, notify
 from app.library.navidrome import SubsonicError
-from app.models import Job, Playlist, PlaylistItem, Track, TrackFile, User
+from app.models import Job, Playlist, PlaylistItem, TrackFile, User
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +36,8 @@ NOT_FOUND = 70
 
 async def songs_of(s: AsyncSession, playlist_id: int) -> list[str]:
     """The Navidrome songs of the playlist's tracks that have one, in the playlist's order."""
-    rows = (await s.execute(select(Track.nd_song_id).join(PlaylistItem, PlaylistItem.track_id == Track.id)
+    rows = (await s.execute(select(TrackFile.nd_song_id)
+                            .join(PlaylistItem, PlaylistItem.track_id == TrackFile.track_id)
                             .where(PlaylistItem.playlist_id == playlist_id)
                             .order_by(PlaylistItem.position, PlaylistItem.id))).scalars()
     return [x for x in rows if x]
