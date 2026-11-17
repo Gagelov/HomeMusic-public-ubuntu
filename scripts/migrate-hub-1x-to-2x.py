@@ -168,7 +168,7 @@ def copy_imported_playlists(new: sqlite3.Connection) -> None:
     for cid, title, _position, cover, nd_pid, nd_songs, user_id, created, updated in rows:
         cur = new.execute("""
             INSERT INTO main.playlists (user_id, kind, name, nd_playlist_id, mirrored, nd_cover, created_at, updated_at)
-            VALUES (?, 'user', ?, ?, 1, ?, ?, ?)
+            VALUES (?, 'user', ?, ?, '[]', ?, ?, ?)
         """, (user_id, title or "Перенесённый плейлист", nd_pid, cover, created or NOW, updated or NOW))
         pid = cur.lastrowid
         new.execute("UPDATE main.import_collections SET playlist_id = ? WHERE id = ?", (pid, cid))
