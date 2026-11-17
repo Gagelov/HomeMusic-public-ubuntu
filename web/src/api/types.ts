@@ -451,6 +451,7 @@ export interface DownloadItemOut {
   /** queued by this import (`/api/imports`) */
   import_id?: number | null;
   candidates?: Candidate[] | null;
+  preview_refs?: string[] | null;
   chosen?: Candidate | null;
   created_at: ISODateTime;
   updated_at: ISODateTime;
@@ -748,7 +749,7 @@ export interface ChatConfirmOut {
 
 // --- imports from music services ------------------------------------------------------------
 
-export type ImportMethod = 'device' | 'token' | 'profile';
+export type ImportMethod = 'device' | 'token' | 'profile' | 'file';
 export type ImportMode = 'economy' | 'full';
 export type ImportStatus = 'auth' | 'fetching' | 'preview' | 'running' | 'done' | 'failed' | 'cancelled';
 export type ImportCollectionKind = 'likes' | 'playlist' | 'albums' | 'artists' | 'dislikes';
@@ -789,7 +790,7 @@ export interface ImportCollectionOut {
 
 export interface ImportOut {
   id: number;
-  source: 'yandex';
+  source: 'yandex' | 'spotify';
   method: ImportMethod;
   status: ImportStatus | string;
   mode: ImportMode;
@@ -814,7 +815,8 @@ export interface ImportStartIn {
   keep_token?: boolean;
 }
 
-export type ImportMatch = 'owned' | 'exact' | 'probable' | 'not_found';
+/** `manual`: the user picked the file by hand (`importPick`) — counted and listed as «Точно». */
+export type ImportMatch = 'owned' | 'exact' | 'probable' | 'not_found' | 'manual';
 export type ImportItemStatus = 'pending' | 'waiting' | 'queued' | 'done' | 'failed' | 'not_found' | 'skipped';
 
 export interface ImportItemOut {
@@ -880,6 +882,12 @@ export interface HubEventMap {
 }
 
 // --- misc ---------------------------------------------------------------------------------------
+
+export interface SoulseekStatusOut {
+  state: 'disabled' | 'unreachable' | 'auth_error' | 'connecting' | 'disconnected' | 'ready';
+  search_matches: number | null;
+  search_error: boolean;
+}
 
 export interface HealthOut {
   capabilities?: string[];

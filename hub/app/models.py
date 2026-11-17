@@ -33,6 +33,10 @@ class User(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+# Navidrome looks up usernames using SQLite's ASCII case-insensitive collation.
+Index("uq_users_nd_username_nocase", User.nd_username.collate("NOCASE"), unique=True)
+
+
 class SearchHistory(Base):
     """The account's recent queries, shared by browsers and the embedded app."""
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,7 @@ from app.api.schemas import ImportIn, ImportItemsOut, ImportOut, ImportPickOut, 
 from app.auth import current_user
 from app.db import get_session
 from app.imports import apply, core
+from app.imports.sources import spotify
 from app.imports.sources.base import SourceError
 from app.jobs.queue import PRIORITY_IMPORT, PermanentError, enqueue, notify
 from app.models import DownloadItem, Import, ImportCollection, ImportItem, Track, User
@@ -42,6 +43,30 @@ async def create(body: ImportIn, user: User = Depends(current_user),
     await s.commit()
     notify()
     return out
+
+
+@router.post("/spotify", response_model=ImportOut)
+async def import_spotify(files: list[UploadFile] = File(), user: User = Depends(current_user),
+                         s: AsyncSession = Depends(get_session, scope="function")):
+    if not 1 <= len(files) <= spotify.MAX_FILES:
+        raise HTTPException(400, f"Выберите от 1 до {spotify.MAX_FILES} файлов JSON")
+    remaining = spotify.MAX_BYTES
+    payloads = []
+    for file in files:
+        data = await file.read(remaining + 1)
+        remaining -= len(data)
+        if remaining < 0:
+            raise HTTPException(413, "Файлы JSON превышают 8 МБ")
+        payloads.append(data)
+    try:
+        snapshot = spotify.parse(payloads)
+    except SourceError as e:
+        raise HTTPException(400, str(e)) from e
+    imp = Import(user_id=user.id, source="spotify", method="file", status="preview")
+    s.add(imp)
+    await s.flush()
+    await core.store_snapshot(s, imp, snapshot)
+    return await core.import_out(s, imp)
 
 
 @router.get("/{import_id}", response_model=ImportOut)
@@ -119,6 +144,8 @@ async def sync(import_id: int, user: User = Depends(current_user),
         raise HTTPException(409, "Импорт ещё идёт")
     if imp.started_at is None:
         raise HTTPException(409, "Импорт ещё не запущен")
+    if imp.method == "file":
+        raise HTTPException(409, "Загрузите новый экспорт Spotify")
     if imp.method != "profile" and not imp.token_enc:
         raise HTTPException(409, "Вход в сервис удалён — начните новый перенос")
     imp.status = "fetching"
@@ -187,7 +214,15 @@ async def pick(item_id: int, user: User = Depends(current_user),
     qj = {"query": apply.track_query(raw).model_dump(), "meta": {}, "import": {"id": imp.id, "item": it.id},
           "requested": True}  # a like gets its ♥ from the import, in order (`apply.sync_likes`)
     dl = await apply.new_download(s, imp, qj, 0)
-    it.download_item_id, it.status, it.ref = dl.id, "queued", None
+    # the user decides the file now: the row (and the same track in the other likes / playlists of the import) is no
+    # longer «probable» / «not found», whatever the download ends with — even «already in the library»
+    twins = (await s.execute(
+        select(ImportItem).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+        .where(ImportItem.import_id == imp.id, ImportItem.external_id == it.external_id,
+               ImportCollection.kind.in_(("likes", "playlist")), ImportItem.status != "skipped",
+               ImportItem.match.is_distinct_from("owned")))).scalars().all()
+    for row in {it, *twins}:
+        row.download_item_id, row.status, row.ref, row.match = dl.id, "queued", None, "manual"
     await s.commit()
     notify()
     return ImportPickOut(download_item_id=dl.id)
