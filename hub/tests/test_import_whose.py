@@ -58,6 +58,14 @@ async def test_a_download_is_by_whom_the_catalog_says(env):
     assert (meta["artists"], meta["artist_refs"]) == (["LSP", "Гость"], ["dz:900", "dz:901"])
 
 
+def test_records_beside_other_names_say_nothing():
+    # one name by two records (a service's «GONE.Fludd» by the catalog's Iroh and GONE.Fludd): nobody is given the
+    # first record
+    assert artists.beside(["GONE.Fludd"], ["dz:1", "dz:2"]) == {}
+    assert artists.beside(["Iroh", "GONE.Fludd"], ["dz:1", None]) == {artists.key("Iroh"): "dz:1"}
+    assert artists.refs_of({"artists": ["GONE.Fludd"], "artist_refs": ["dz:1", "dz:2"], "artist": "Iroh", "artist_ref": "dz:1"}) == {artists.key("Iroh"): "dz:1"}
+
+
 async def test_a_matched_row_is_downloaded_as_the_catalogs_track(env):
     user_id, imp_id, item_id = env
     await remember_track(CATALOG)

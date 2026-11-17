@@ -190,7 +190,7 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
     async with library_lock:
         # who the music is by — by the catalog's records of them where the catalog said, else by the names — and the
         # lines in their names: a spelling that is somebody's is filed under their name
-        refs = {artists.key(n): r for n, r in zip(spec.artists, spec.artist_refs) if n and r} or artists.refs_of(met.catalog if met else None)
+        refs = artists.beside(spec.artists, spec.artist_refs) or artists.refs_of(met.catalog if met else None)
         spec.artist, by = await artists.credits(s, spec.artist, refs)
         if spec.artists:
             spec.artists = [a.name for a in [await artists.who(s, n, refs.get(artists.key(n))) for n in spec.artists] if a is not None]

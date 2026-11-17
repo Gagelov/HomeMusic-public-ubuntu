@@ -260,10 +260,18 @@ async def shown(s: AsyncSession, found_: list[Any]) -> list[Any]:
 # ---------------------------------------------------------------- who the music is by
 
 
+def beside(names_: list[str] | None, refs: list[str | None] | None) -> dict[str, str]:
+    """Spelling (as `key`) -> the catalog's record that stands beside it. The records stand beside the names one to
+    one, or say nothing: a list of another length is of other names (a service's names by the catalog's records),
+    and would give an artist somebody else's record."""
+    names_, refs = names_ or [], refs or []
+    return {key(n): r for n, r in zip(names_, refs) if n and r} if len(names_) == len(refs) else {}
+
+
 def refs_of(catalog: dict[str, Any] | None) -> dict[str, str]:
     """Spelling (as `key`) -> the catalog's record, as the catalog's word of a track says."""
     c = catalog or {}
-    out = {key(n): r for n, r in zip(c.get("artists") or [], c.get("artist_refs") or []) if n and r}
+    out = beside(c.get("artists"), c.get("artist_refs"))
     if c.get("artist") and c.get("artist_ref"):
         out.setdefault(key(c["artist"]), c["artist_ref"])
     return out
