@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { api } from '../api/client';
 import type { RecentPlaceOut, ReleaseOut, TrackOut } from '../api/types';
 import { TrackRow } from '../components/catalog';
+import { ChartsSection } from '../components/Charts';
 import { ForYouTiles } from '../components/ForYouTiles';
 import { Icon, type IconName } from '../components/Icon';
 import { WaveHero } from '../components/WaveHero';
@@ -26,6 +27,7 @@ export function HomePage() {
         </span>
       </Link>
       <WaveHero />
+      <ChartsSection />
       <Continue />
       <NewReleases />
       <section aria-label="Для вас">

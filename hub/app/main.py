@@ -120,6 +120,7 @@ def create_app() -> FastAPI:
         admin,
         auth,
         catalog,
+        charts,
         discoveries,
         downloads,
         for_you,
@@ -154,7 +155,7 @@ def create_app() -> FastAPI:
                   redoc_url=None)
     for r in (auth.router, search.router, catalog.router, downloads.router, listen.router, library.router, medialib.router,
               uploads.router, playlists.router, plays.router, mixes.router, wave.router, smart_shuffle.router, imports.router, events.router, system.router, admin.router,
-              artists.router, insights.router, telegram.router, lyrics.router, links.router, tags.router, stats.router, releases.router, quality.router, discoveries.router, listenbrainz.router, for_you.router, subsonic.router):
+              artists.router, insights.router, telegram.router, lyrics.router, links.router, tags.router, stats.router, releases.router, quality.router, discoveries.router, listenbrainz.router, for_you.router, subsonic.router, charts.router):
         app.include_router(r)
     try:
         from app.api import assistant

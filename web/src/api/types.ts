@@ -1687,7 +1687,32 @@ export interface WaveStartIn {
 }
 
 export type WaveOrigin = 'home_card' | 'catalog_card' | 'track_menu' | 'artist_menu' | 'player' | 'artist_page' | 'radio'
-  | 'search_file' | 'restart';
+  | 'search_file' | 'restart' | 'chart_page';
+
+/** «Чарты и жанры» (GET /api/charts): a country's chart or a genre. */
+export interface ChartOut {
+  id: string;
+  title: string;
+  name: string;
+  kind: 'country' | 'genre';
+  group: 'main' | 'europe' | 'ru_genres' | 'genres';
+  source: string;
+  covers: string[];
+  updated_at?: string | null;
+}
+
+export interface ChartsOut {
+  charts: ChartOut[];
+}
+
+export interface ChartTrackOut extends TrackOut {
+  position: number;
+}
+
+export interface ChartPageOut {
+  chart: ChartOut;
+  tracks: ChartTrackOut[];
+}
 
 export interface WaveNextIn {
   /** the events since the previous call (the same ones go to /api/plays/events: one event_id is stored once) */

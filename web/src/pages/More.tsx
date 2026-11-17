@@ -13,7 +13,6 @@ import { Icon, type IconName } from '../components/Icon';
 import { PageHeader, cx } from '../components/ui';
 import { notifyPermission, requestNotifyPermission, useActiveDownloads, type NotifyPermission } from '../lib/notify';
 import { Link } from '../lib/router';
-import { setSmartEnabled, useSmartEnabled } from '../lib/smartShuffle';
 import { attempt, confirmDialog, toast } from '../lib/ui';
 
 interface InstallPromptEvent extends Event {
@@ -39,7 +38,6 @@ export function MorePage() {
   const listenbrainz = useAsync((s) => (STANDALONE ? api.listenbrainz(s) : Promise.resolve(null)), [], true, 'menu:listenbrainz');
   const kept = useKeptLists().tracks;
   const hiddenCount = useDislikes().length;
-  const smart = useSmartEnabled();
   const waiting = (quality.data?.rows ?? []).filter((r) => r.state === 'found').length;
   const weak = quality.data?.weak ?? 0;
   const linked = (d: { connected: boolean } | null | undefined, name?: string | null) => (d ? (d.connected ? (name || 'подключён') : 'не подключён') : undefined);
@@ -152,8 +150,6 @@ export function MorePage() {
             </Group>
           )}
           <Group title="Это устройство">
-            <Item icon="shuffleSmart" tint="bg-[#7b61d9]" title="Умное перемешивание" value={smart ? 'включено' : 'выключено'}
-              onClick={() => setSmartEnabled(!smart)} />
             <Item icon="bell" tint="bg-[#d9534f]" title="Уведомления" value={permText[perm]} onClick={notifications} />
             {canInstall && !standalone && <Item icon="install" tint="bg-[#30b85c]" title="Установить приложение" onClick={install} />}
             {/* the player is here: in the browser, and the app's own on Android */}

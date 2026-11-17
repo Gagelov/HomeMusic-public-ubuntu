@@ -54,6 +54,14 @@ async def cache_set_many(values: dict[str, Any], ttl_s: int) -> None:
         await s.execute(stmt, rows)
 
 
+async def cache_prefix(prefix: str) -> dict[str, Any]:
+    """Values whose keys start with `prefix` (old and fresh; the caller knows their meaning)."""
+    async with session_scope() as s:
+        rows = (await s.execute(select(CatalogCache.key, CatalogCache.payload_json)
+                                .where(CatalogCache.key.startswith(prefix)))).all()
+    return {key: payload.get("v") for key, payload in rows if isinstance(payload, dict)}
+
+
 async def cache_delete(key: str) -> None:
     async with session_scope() as s:
         await s.execute(delete(CatalogCache).where(CatalogCache.key == key))

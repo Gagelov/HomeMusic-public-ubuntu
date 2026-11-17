@@ -35,6 +35,7 @@ import { setAssistantAccount } from './pages/AssistantChat';
 import { DownloadDetailPage } from './pages/DownloadDetail';
 import { DownloadsPage } from './pages/Downloads';
 import { ArtistMapPage } from './pages/ArtistMapPage';
+import { ChartPage } from './pages/Chart';
 import { HomePage } from './pages/Home';
 import { ImportItemsPage, ImportPage, ImportsPage } from './pages/Import';
 import { FilesPage } from './pages/Files';
@@ -105,6 +106,7 @@ const START = STANDALONE ? '/home' : '/search';
 const ROUTES: RouteDef[] = [
   ...(STANDALONE ? STANDALONE_ROUTES : []),
   ['/search', 'search', (_, r) => <SearchPage initialQuery={r.query.get('q') ?? ''} initialTab={searchTab(r.query.get('tab'))} />],
+  ['/chart/:id', 'search', (p) => <ChartPage key={p.id} id={p.id} />],
   ['/artist/:ref/discography', 'search', (p) => <DiscographyPage key={p.ref} refId={p.ref} />],
   ['/artist/:ref', 'search', (p) => <ArtistPage key={p.ref} refId={p.ref} />],
   ['/artist-named/:name', 'search', (p) => <ArtistNamedPage key={p.name} name={p.name} />],

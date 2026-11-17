@@ -10,12 +10,14 @@ import logging
 
 from app.catalog.cache import cached
 from app.catalog.models import ArtistPage, CatalogAlbum, CatalogArtist, CatalogTrack, make_ref
+from app.matching.normalize import normalize_artist
 from app.providers.base import Candidate, ProviderError
 from app.providers.hitmoz import (
     PAGE_SIZE,
     HitmozProvider,
     parse_album_page,
     parse_artist_page,
+    parse_search,
     parse_search_albums,
     parse_search_artists,
     yandex_size,
@@ -33,6 +35,12 @@ COVER_SMALL_SIZE = "200x200"
 
 def _split_artists(s: str) -> list[str]:
     return [p.strip() for p in s.replace(" feat. ", ", ").replace(" & ", ", ").split(",") if p.strip()]
+
+
+def _credit_matches(name: str, credit: str) -> bool:
+    """Same artist name, allowing different case and Cyrillic/Latin spellings."""
+    want, got = normalize_artist(name), normalize_artist(credit)
+    return bool((want.text and want.text == got.text) or (want.latin and want.latin == got.latin))
 
 
 def track_from_candidate(
@@ -135,20 +143,31 @@ class HitmozCatalog:
                 break
             candidates.extend(page["tracks"])
             offset += PAGE_SIZE
-        picture = first["picture_url"]
-        if picture is None:  # the artist page has no picture; the search artist block does
+        search_html: str | None = None
+        search_base = ""
+        if first["name"]:
             try:
-                s_html, s_base = await self._search_html(first["name"])
-                picture = next(
-                    (a["picture_url"] for a in parse_search_artists(s_html, s_base) if a["id"] == artist_id), None
-                )
+                search_html, search_base = await self._search_html(first["name"])
             except ProviderError as e:
-                log.info("hitmoz: no picture for artist %s: %s", artist_id, e)
+                log.info("hitmoz: search for artist %s failed: %s", artist_id, e)
+        picture = first["picture_url"]
+        if picture is None and search_html is not None:  # the artist page has no picture; the search block does
+            picture = next(
+                (a["picture_url"] for a in parse_search_artists(search_html, search_base) if a["id"] == artist_id), None
+            )
         artist = _artist({"id": artist_id, "name": first["name"], "picture_url": picture})
         seen: set[str] = set()
         tracks: list[CatalogTrack] = []
         for c in candidates:
             if c.provider_id not in seen:
+                seen.add(c.provider_id)
+                tracks.append(track_from_candidate(c, artist_ref=artist.ref))
+        # The artist page misses some tracks (e.g. guest spots, re-uploads) that the site search finds.
+        if search_html is not None and first["name"]:
+            for c in parse_search(search_html, search_base):
+                credits = _split_artists(c.artist)
+                if c.provider_id in seen or not any(_credit_matches(first["name"], a) for a in credits):
+                    continue
                 seen.add(c.provider_id)
                 tracks.append(track_from_candidate(c, artist_ref=artist.ref))
         return ArtistPage(artist=artist, top_tracks=tracks, albums=[]).model_dump(mode="json")

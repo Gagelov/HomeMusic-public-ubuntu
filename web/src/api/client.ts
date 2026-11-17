@@ -7,6 +7,8 @@ import type {
   AdminUserDetailOut,
   ArtistMapOut,
   CatalogArtist,
+  ChartPageOut,
+  ChartsOut,
   AdminUsersOut,
   AlbumCreateIn,
   AlbumMergeIn,
@@ -575,6 +577,8 @@ export const api = {
   discoveriesBuild: () => request<OkOut>('POST', '/api/discoveries/build'),
   // «Релизы» (lib/releases.ts)
   releases: (signal?: AbortSignal) => request<ReleasesOut>('GET', '/api/releases', { signal }),
+  charts: (signal?: AbortSignal) => request<ChartsOut>('GET', '/api/charts', { signal }),
+  chart: (id: string, signal?: AbortSignal) => request<ChartPageOut>('GET', `/api/charts/${enc(id)}`, { signal }),
   releasesCount: () => request<{ unseen: number; artists: number }>('GET', '/api/releases/count'),
   releasesSeen: () => request<OkOut>('POST', '/api/releases/seen'),
   // «Статистика» (lib/stats.ts)

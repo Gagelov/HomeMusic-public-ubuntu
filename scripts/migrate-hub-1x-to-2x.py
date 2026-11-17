@@ -87,7 +87,7 @@ def copy_tracks(new: sqlite3.Connection) -> None:
                    ELSE NULL
                END,
                explicit, fingerprint,
-               CASE WHEN deezer_track_id IS NOT NULL AND deezer_track_id != '' THEN 'deezer' ELSE 'library' END,
+               NULL,
                COALESCE(acquired_at, CURRENT_TIMESTAMP), added_by
         FROM old.tracks
     """)
@@ -168,7 +168,7 @@ def copy_imported_playlists(new: sqlite3.Connection) -> None:
     for cid, title, _position, cover, nd_pid, nd_songs, user_id, created, updated in rows:
         cur = new.execute("""
             INSERT INTO main.playlists (user_id, kind, name, nd_playlist_id, mirrored, nd_cover, created_at, updated_at)
-            VALUES (?, 'playlist', ?, ?, 1, ?, ?, ?)
+            VALUES (?, 'user', ?, ?, 1, ?, ?, ?)
         """, (user_id, title or "Перенесённый плейлист", nd_pid, cover, created or NOW, updated or NOW))
         pid = cur.lastrowid
         new.execute("UPDATE main.import_collections SET playlist_id = ? WHERE id = ?", (pid, cid))

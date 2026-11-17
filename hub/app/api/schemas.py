@@ -1417,6 +1417,32 @@ class WaveOut(BaseModel):
     recorded: PlayEventsOut | None = None  # what became of `played` (next only)
 
 
+# --- charts and genres ---------------------------------------------------------------------------------------------
+
+class ChartOut(BaseModel):
+    id: str
+    title: str
+    name: str
+    kind: Literal["country", "genre"]
+    group: Literal["main", "europe", "ru_genres", "genres"]
+    source: str
+    covers: list[str] = []
+    updated_at: datetime | None = None
+
+
+class ChartsOut(BaseModel):
+    charts: list[ChartOut] = []
+
+
+class ChartTrackOut(TrackOut):
+    position: int
+
+
+class ChartPageOut(BaseModel):
+    chart: ChartOut
+    tracks: list[ChartTrackOut] = []
+
+
 # --- smart shuffle (MIXES.md 8) ------------------------------------------------------------------------------------
 
 
