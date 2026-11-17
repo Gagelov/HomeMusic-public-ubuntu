@@ -3,16 +3,16 @@ import { api, libraryCoverUrl } from '../api/client';
 import type { LibAlbumOut, LibTrackOut, ReleaseType } from '../api/types';
 import { Icon } from '../components/Icon';
 import { AlbumPicker } from '../components/pickers';
-import { Button, Checkbox, Cover, ErrorState, ExplicitBadge, Field, IconButton, Loading, PageHeader, SectionTitle, Sheet, cx } from '../components/ui';
+import { Button, Checkbox, Cover, ErrorState, ExplicitBadge, Field, IconButton, Loading, Notice, PageHeader, SectionTitle, Sheet, cx } from '../components/ui';
 import { fmtDuration, fmtLength, providerLabel, toIntOrNull, tracksWord, warningText } from '../lib/format';
 import { useAsync } from '../lib/hooks';
-import { LikeButton } from '../components/LikeButton';
+import { SaveButton } from '../components/PlaylistsButton';
 import { TrackMenuButton } from '../components/TrackMenu';
 import { listen, listenAll, type ListenTrack } from '../lib/listen';
 import { canPlay, playList } from '../lib/player';
 import { navigate } from '../lib/router';
 import { attempt, confirmDialog, toast } from '../lib/ui';
-import { ReleaseTypeSelect } from './Library';
+import { ReleaseTypeSelect } from './Files';
 
 const RELEASE_TYPES: ReleaseType[] = ['album', 'single', 'ep', 'compilation'];
 
@@ -27,14 +27,14 @@ export function LibraryAlbumPage({ id }: { id: number }) {
   if (res.loading)
     return (
       <>
-        <PageHeader title="Альбом" back="/library" />
+        <PageHeader title="Альбом" back="/files" />
         <Loading />
       </>
     );
   if (res.error || !res.data)
     return (
       <>
-        <PageHeader title="Альбом" back="/library" />
+        <PageHeader title="Альбом" back="/files" />
         <ErrorState text={res.error ?? 'Альбом не найден'} onRetry={() => res.reload()} />
       </>
     );
@@ -113,18 +113,20 @@ export function LibraryAlbumPage({ id }: { id: number }) {
       <PageHeader
         title={album.title}
         sub={album.album_artist}
-        back="/library"
+        back="/files"
         right={
-          <>
-            <LikeButton targetType="album" ndId={album.nd_album_id}
-              refId={album.deezer_album_id ? `dz:${album.deezer_album_id}` : null}
-              title={album.title} data={{ name: album.title, artist: album.album_artist }} />
-            <IconButton icon="merge" label="Объединить с другим альбомом" onClick={() => setPicker('merge')} />
-          </>
+          album.can_edit ? <IconButton icon="merge" label="Объединить с другим альбомом" onClick={() => setPicker('merge')} /> : undefined
         }
       />
 
-      <AlbumForm
+      {/* an album with tracks of other listeners: its name and picture are an admin's to change; one's own tracks of
+          it are below, as ever */}
+      {!album.can_edit && (
+        <div className="px-4 pb-2">
+          <Notice kind="info">В этом альбоме есть треки других слушателей, поэтому его название и обложку меняет администратор. Свои треки ниже вы можете править и удалять.</Notice>
+        </div>
+      )}
+      {album.can_edit && <AlbumForm
         album={album}
         coverSrc={album.has_cover ? libraryCoverUrl(album.id, 600, coverRev) : null}
         onSaved={(a) => res.setData((prev) => ({ ...a, tracks: a.tracks ?? prev?.tracks }))}
@@ -132,7 +134,7 @@ export function LibraryAlbumPage({ id }: { id: number }) {
           res.setData((prev) => ({ ...a, tracks: a.tracks ?? prev?.tracks }));
           setCoverRev(Date.now());
         }}
-      />
+      />}
 
       <SectionTitle
         right={
@@ -188,19 +190,19 @@ export function LibraryAlbumPage({ id }: { id: number }) {
                 </span>
                 <span className="shrink-0 text-xs tabular-nums text-dim">{fmtDuration(t.duration_s)}</span>
               </button>
-              <LikeButton songId={t.nd_song_id} title={t.title} className="w-10" />
+              <SaveButton songId={t.nd_song_id} listKey={String(t.id)} title={t.title} className="!w-10" />
               {playable.includes(t) && (
                 <IconButton icon="play" label={`Слушать «${t.title}»`} className="!text-accent" size={20} onClick={() => playFrom(t)} />
               )}
               <IconButton icon="trash" label={`Удалить «${t.title}»`} className="text-dim hover:text-danger" size={20} onClick={() => deleteTrack(t)} />
-              {t.nd_song_id && <TrackMenuButton track={{ title: t.title, artist: t.artist, nd_song_id: t.nd_song_id }} className="-ml-2 w-8" />}
+              {t.nd_song_id && <TrackMenuButton track={{ title: t.title, artist: t.artist, nd_song_id: t.nd_song_id, library_track_id: t.id }} className="-ml-2 w-8" />}
             </li>
           ))}
         </ul>
       )}
 
       {selected.size > 0 && (
-        <div className="fixed inset-x-0 bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+env(safe-area-inset-bottom))] z-30 mx-auto flex max-w-2xl items-center gap-2 border-t border-line bg-surface px-4 py-2.5">
+        <div className="fixed left-(--side-w) right-0 bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+env(safe-area-inset-bottom))] z-30 mx-auto flex max-w-(--app-w) items-center gap-2 border-t border-line bg-surface px-4 py-2.5">
           <IconButton icon="x" label="Снять выбор" onClick={() => setSelected(new Set())} className="-ml-2" />
           <span className="flex-1 whitespace-nowrap text-sm">Выбрано {selected.size}</span>
           <Button small variant="primary" icon="move" className="whitespace-nowrap" onClick={() => setPicker('move')}>

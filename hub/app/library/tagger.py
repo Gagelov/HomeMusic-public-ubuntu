@@ -42,6 +42,7 @@ CUSTOM_FIELDS: dict[str, str] = {
     "acquired": "HOMEMUSIC_ACQUIRED",
     "deezer_track_id": "DEEZER_TRACK_ID",
     "deezer_album_id": "DEEZER_ALBUM_ID",
+    "producer": "PRODUCER",
 }
 
 _ID3_TEXT = {"TITLE": TIT2, "ARTIST": TPE1, "ALBUMARTIST": TPE2, "ALBUM": TALB, "DATE": TDRC, "GENRE": TCON,
@@ -82,6 +83,7 @@ class TagData(BaseModel):
     acquired: dt.datetime | None = None
     deezer_track_id: int | None = None
     deezer_album_id: int | None = None
+    producer: str | None = None  # who made the beat (app/library/titles.py)
     cover: bytes | None = Field(default=None, repr=False)
 
     @field_validator("date", mode="before")

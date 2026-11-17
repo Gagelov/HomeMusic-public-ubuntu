@@ -20,8 +20,11 @@ log = logging.getLogger("app")
 def _import_handlers() -> None:
     # registering job handlers is a side effect of importing these modules
     import app.imports.core
+    import app.jobs.artists
     import app.jobs.downloads
     import app.mixes.core
+    import app.mixes.discover
+    import app.playlists_mirror
 
     try:
         import app.ai.pipeline  # noqa: F401
@@ -38,16 +41,24 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(db.run_migrations)
     db.init_engine()
 
-    from app import listen
+    from app import listen, telegram_chats
     from app.housekeeping import scheduler_loop
-    from app.jobs.downloads import playlist_adds_loop
     from app.jobs.queue import WorkerPool, recover_stale
     from app.mixes import smart, wave
+    from app.for_you import loop as for_you_loop
     from app.mixes.core import schedule_loop
     from app.plays import scrobbles_loop
     from app.services import svc
 
     svc.start()
+    from app.catalog import namesakes
+
+    await namesakes.load()  # what the catalog's client leaves out of an artist's releases
+    from app.db import session_scope
+    from app.library import artists as artist_names
+
+    async with session_scope() as names_s:  # every artist the library names is one the Hub knows
+        await artist_names.seed(names_s)
     _import_handlers()
     pool = WorkerPool(s.cfg.jobs.workers)
     tasks: list[asyncio.Task] = []
@@ -55,17 +66,36 @@ async def lifespan(app: FastAPI):
         n = await recover_stale()
         if n:
             log.info("re-queued %s interrupted jobs", n)
+        from app.jobs.downloads import recover_unfiled
+
+        if n := await recover_unfiled():
+            log.info("re-queued %s downloads whose file was never filed", n)
         pool.start()
         tasks.append(asyncio.create_task(scheduler_loop(), name="scheduler"))
         tasks.append(asyncio.create_task(scrobbles_loop(), name="scrobbles"))
         tasks.append(asyncio.create_task(schedule_loop(), name="mixes"))
-        tasks.append(asyncio.create_task(playlist_adds_loop(), name="playlist-adds"))
+        from app.releases import loop as releases_loop
+
+        tasks.append(asyncio.create_task(releases_loop(), name="releases"))
+        from app.playlists_mirror import loop as playlists_loop
+
+        tasks.append(asyncio.create_task(playlists_loop(), name="playlists"))
+        from app.mixes.discover import loop as discoveries_loop
+
+        tasks.append(asyncio.create_task(discoveries_loop(), name="discoveries"))
+        tasks.append(asyncio.create_task(for_you_loop(), name="for_you"))
+        from app.listenbrainz import loop as listenbrainz_loop
+
+        tasks.append(asyncio.create_task(listenbrainz_loop(), name="listenbrainz"))
+        await telegram_chats.start_all()
+        tasks.append(asyncio.create_task(_sync_tags(), name="tags"))
     log.info("hub started")
     try:
         yield
     finally:
         for t in tasks:
             t.cancel()
+        telegram_chats.stop_all()
         await pool.stop()
         await listen.reset()
         await wave.reset()
@@ -74,33 +104,57 @@ async def lifespan(app: FastAPI):
         await db.dispose()
 
 
+async def _sync_tags() -> None:
+    """The tags the Hub tells by itself, for the tracks that came while it was down (and all of them the first time)."""
+    from app import tags as track_tags
+
+    try:
+        async with db.session_scope() as s:
+            await track_tags.sync(s)
+    except Exception:
+        log.exception("tags: the sync at start failed")
+
+
 def create_app() -> FastAPI:
     from app.api import (
         admin,
         auth,
         catalog,
+        discoveries,
         downloads,
+        for_you,
         events,
         imports,
         insights,
         library,
+        links,
         listen,
+        artists,
+        listenbrainz,
+        lyrics,
         medialib,
         mixes,
         playlists,
         plays,
+        quality,
+        releases,
         search,
         smart_shuffle,
+        stats,
         system,
+        tags,
+        subsonic,
+        telegram,
         uploads,
         wave,
     )
 
-    app = FastAPI(title="HomeMusic Hub", version="0.1.0", lifespan=lifespan, docs_url="/api/docs",
-                  openapi_url="/api/openapi.json", redoc_url=None)
+    # no page that lists the Hub's commands: it is reached from the internet, and nobody but a guesser reads it
+    app = FastAPI(title="HomeMusic Hub", version="0.1.0", lifespan=lifespan, docs_url=None, openapi_url=None,
+                  redoc_url=None)
     for r in (auth.router, search.router, catalog.router, downloads.router, listen.router, library.router, medialib.router,
               uploads.router, playlists.router, plays.router, mixes.router, wave.router, smart_shuffle.router, imports.router, events.router, system.router, admin.router,
-              insights.router):
+              artists.router, insights.router, telegram.router, lyrics.router, links.router, tags.router, stats.router, releases.router, quality.router, discoveries.router, listenbrainz.router, for_you.router, subsonic.router):
         app.include_router(r)
     try:
         from app.api import assistant

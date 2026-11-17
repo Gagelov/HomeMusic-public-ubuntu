@@ -24,7 +24,7 @@ const reducedMotion = () => !!window.matchMedia?.('(prefers-reduced-motion: redu
 const css = (c: RGB, a: number) =>
   `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${a})`;
 
-/** The living soft blob of «Моя волна» (`WaveHero`, desktop only): a fragment shader drawn at half resolution and stretched, stopped while the
+/** The living soft blob of «Моя волна» (`WaveHero`): a fragment shader drawn at half resolution and stretched, stopped while the
  * card is off screen or the page is hidden. Without WebGL (or after a lost context) a still soft radial gradient. */
 export function WaveGlow({ playing, cover, center = [0.5, 0.5], zoom = 0.9, className, style }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
@@ -95,8 +95,10 @@ export function WaveGlow({ playing, cover, center = [0.5, 0.5], zoom = 0.9, clas
     const ro = new ResizeObserver(resize);
     ro.observe(box);
 
-    // The blob glows right on the page, so the shader fades into the page's own background.
-    const pageColor = () => parseCssColor(getComputedStyle(document.body).backgroundColor);
+    // The blob glows right on the page, so the shader fades into the background it is on: a computer's page is a
+    // panel a shade lighter than the window (`.hm-page`) — faded into the window's colour, the glow had a darker
+    // box around it, with an edge where the panel showed above it.
+    const pageColor = () => parseCssColor(getComputedStyle(cv.closest('.hm-page') ?? document.body).backgroundColor);
     let bg: RGB = pageColor();
     const themeObserver = new MutationObserver(() => { bg = pageColor(); });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });

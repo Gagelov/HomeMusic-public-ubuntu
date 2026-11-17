@@ -59,6 +59,9 @@ class YtdlpCfg(BaseModel):
     sleep_requests_s: float = Field(default=1.0, ge=0)
     sleep_downloads_s: float = Field(default=5.0, ge=0)
     refusal_cooldown_s: float = Field(default=900, ge=0)
+    # the clients YouTube is asked as (yt-dlp's `player_client`). Empty: yt-dlp's own choice — it follows what
+    # YouTube changes, and a client pinned here goes stale (in November 2026 `mweb` gave links that answered 403)
+    player_clients: list[str] = []
 
 
 class MatchingCfg(BaseModel):
@@ -167,6 +170,10 @@ class Settings(BaseSettings):
 
     public_music_url: str = ""
     public_hub_url: str = ""
+    # The page a «HomeMusic» link of a track opens (app/links.py, docs/index.html): it belongs to no server and
+    # hands the track over to the visitor's own HomeMusic. One page for everyone, so a link made on any server opens
+    # for anyone; a fork may publish the page itself and name its address here. Empty: no such links.
+    share_page_url: str = "https://alenkimov.github.io/HomeMusic-public/"
 
     hub_secret_key: str = ""
     session_days: int = 60
@@ -195,6 +202,8 @@ class Settings(BaseSettings):
 
     # Last.fm API (similar tracks/artists, tags for mix names): https://www.last.fm/api/account/create
     lastfm_api_key: str = ""
+    # Yandex Music as one more catalog (app/catalog/yandex_catalog.py): read without signing in, no key
+    yandex_catalog: bool = True
     # the audio vector service (MIXES.md 4.2) in the compose network; empty, or it doesn't answer — mixes are built
     # without the audio term
     embedder_url: str = "http://embedder:8090"

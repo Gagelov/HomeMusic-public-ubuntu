@@ -4,7 +4,7 @@
   30 s — up to +2 by how much of the rest was heard, rising slowly at first and steeply near the end (`skip_weight`);
   each × `0.5 ^ (days / 30)`. A download of the user's own weighs nothing: such a track is in the profile (`downloaded`,
   the stash, fallback seeds) with the score of its other events, 0 without them. ♥ that an import of another service
-  set don't count (`plays.imported_likes`).
+  set don't count (a like whose provenance is the import, `taste_math`).
 - A track is known by its catalog `ref` and/or its Navidrome song; `key` is `nd:<song>` when the library has it
   (the key of its audio vector), else the `ref`.
 - Seeds: up to `seeds` best tracks of the last 30 days, ≤ 2 of an artist; without such — own ♥ and downloads, the
@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from itertools import zip_longest
+
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -28,6 +30,7 @@ from app.matching.normalize import fingerprint, normalize_artist
 from app.mixes.embedder import song_key
 from app.models import Dislike, DownloadItem, MixSettings, Track, User, utcnow
 from app.plays import Ids, user_events
+from app.library import artists as artist_names
 
 log = logging.getLogger(__name__)
 
@@ -115,10 +118,17 @@ class Profile:
         """In the user's history: heard, liked, downloaded or disliked."""
         return self.find(ref=ref, nd_song_id=nd_song_id, fp=fp) is not None
 
-    def disliked(self, *, ref: str | None, nd_song_id: str | None, artist: str, artist_ref: str | None) -> bool:
+    def disliked(self, *, ref: str | None, nd_song_id: str | None, artist: str, artist_ref: str | None,
+                 artists: Any = (), artist_refs: Any = ()) -> bool:
+        """The track is marked «Не нравится», or one of its artists is — the main one or any credited with them
+        (`artists`, `artist_refs`): a track a hidden artist only features on is theirs too."""
         if (ref and ref in self.disliked_ids) or (nd_song_id and song_key(nd_song_id) in self.disliked_ids):
             return True
-        return bool(artist_ref and artist_ref in self.disliked_artist_refs) or artist_key(artist) in self.disliked_artists
+        # an artist is told by the catalog's record of them; by the name only where the track gives no record —
+        # a namesake of somebody hidden is not hidden
+        credited = [(artist, artist_ref), *zip_longest(artists or (), artist_refs or ())]
+        return any((r in self.disliked_artist_refs) if r else bool(a and artist_key(a) in self.disliked_artists)
+                   for a, r in credited)
 
     @property
     def empty(self) -> bool:
@@ -274,10 +284,10 @@ async def build_profile(s: AsyncSession, user: User, now: datetime | None = None
         t.last_event = max(filter(None, [t.last_event, item.created_at]), default=None)
 
     for d in (await s.execute(select(Dislike).where(Dislike.user_id == user.id))).scalars():
-        if d.artist_ref:
-            p.disliked_artist_refs.add(d.artist_ref)
-            if d.artist:
-                p.disliked_artists.add(artist_key(d.artist))
+        if d.artist_ref:  # the whole artist: every record a catalog keeps of them, every spelling
+            refs, names = await artist_names.whole(s, d.artist_ref, d.artist)
+            p.disliked_artist_refs.update(refs)
+            p.disliked_artists.update(artist_key(n) for n in names if n)
             continue
         p.disliked_ids.update(k for k in (d.ref, song_key(d.nd_song_id) if d.nd_song_id else None) if k)
         t = await b.track(d.ref, d.nd_song_id)
@@ -315,8 +325,8 @@ async def _names(s: AsyncSession, p: Profile, b: _Builder) -> None:
     for t in p.tracks.values():
         if t.nd_song_id and (tr := lib.get(t.nd_song_id)):
             t.artist, t.title, t.duration_s = tr.artist, tr.title, tr.duration_s
-            if not t.ref and tr.deezer_track_id:
-                t.ref = f"dz:{tr.deezer_track_id}"
+            if not t.ref and tr.ref and tr.ref.startswith("dz:"):
+                t.ref = tr.ref
     need = [t.ref for t in p.tracks.values() if t.ref and (not t.artist or t.score > 0)]
     info = await _catalog_info(list(dict.fromkeys(need)))
     for t in p.tracks.values():

@@ -1,11 +1,13 @@
 import { useSyncExternalStore } from 'react';
-import { ApiError, api, errorMessage } from '../api/client';
+import { ApiError, api } from '../api/client';
 import type { PlayEventIn, WaveOrigin, WaveOut, WaveSeedIn, WaveTrackOut } from '../api/types';
 import { EMBEDDED } from './embedded';
 import { getListenState, listenAll, replaceUpcoming, type ListenTrack } from './listen';
 import { canPlayAll, canPlayWave, playWave } from './player';
 import { onPlayEvent } from './plays';
-import { toastError } from './ui';
+import { navigate } from './router';
+import { tastePath } from './taste';
+import { toast, toastError } from './ui';
 
 /** «Моя волна» (MIXES.md 7): an endless stream the Hub picks for the user, 5 tracks at a time
  * (`POST /api/wave/start`, then `POST /api/wave/{id}/next`).
@@ -146,7 +148,7 @@ export async function startWave(seed: WaveSeedIn | null | undefined, origin: Wav
   try {
     const w = await api.waveStart({ seed: seed ?? null, origin, client: EMBEDDED ? 'pwa-app' : 'pwa' });
     if (!w.tracks.length) {
-      toastError('Волна пока пустая: попробуйте чуть позже');
+      toast('Волна пока пустая: попробуйте чуть позже', 'error');
       return false;
     }
     if (canPlayWave()) {
@@ -162,7 +164,9 @@ export async function startWave(seed: WaveSeedIn | null | undefined, origin: Wav
     session = s;
     return true;
   } catch (e) {
-    toastError(errorMessage(e));
+    // the user's own wave has nothing to start from: the artists are picked first, and the wave starts from there
+    if (!seed && e instanceof ApiError && e.status === 409) navigate(tastePath('wave'));
+    else toastError(e);
     return false;
   } finally {
     starting = null;

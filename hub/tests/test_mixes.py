@@ -18,7 +18,7 @@ import respx
 from sqlalchemy import func, select
 
 from app.catalog.models import CatalogTrack
-from tests.support import FakeDeezer, app_client
+from tests.support import FakeDeezer, app_client, filed_track
 
 NOW = datetime(2026, 10, 22, 12, 0)
 
@@ -122,7 +122,6 @@ async def add_track(n: int, *, music: Path | None = None, deezer: bool = True) -
     """A library song «Свой n — Песня n» (Navidrome nd<n>, Deezer dz:<n> unless `deezer` is false)."""
     from app.db import session_scope
     from app.matching.normalize import fingerprint
-    from app.models import Track
 
     path = f"Свой {n}/Песня {n}.mp3"
     if music is not None:
@@ -130,8 +129,8 @@ async def add_track(n: int, *, music: Path | None = None, deezer: bool = True) -
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"mp3")
     async with session_scope() as s:
-        t = Track(uid=str(uuid.uuid4()), path=path, nd_song_id=f"nd{n}", artist=f"Свой {n}", title=f"Песня {n}",
-                  duration_s=200, deezer_track_id=str(n) if deezer else None,
+        t = filed_track(uid=str(uuid.uuid4()), path=path, nd_song_id=f"nd{n}", artist=f"Свой {n}", title=f"Песня {n}",
+                  duration_s=200, ref=f"dz:{n}" if deezer else None,
                   fingerprint=fingerprint(f"Свой {n}", f"Песня {n}"))
         s.add(t)
         await s.flush()
@@ -360,11 +359,20 @@ async def test_build_queues_quiet_downloads_and_writes_the_playlist(env, monkeyp
     assert all(d.query_json["mix"]["id"] == mix.id for d in dls) and {j.priority for j in jobs} == {-10}
     assert all(r.downloaded_for_mix for r in active if not r.familiar)
     r = await env["client"].get("/api/downloads")
-    assert r.status_code == 200 and all(x["star"] for x in r.json())  # clients hide them
+    assert r.status_code == 200 and all(x["quiet"] for x in r.json())  # clients hide them
     # the playlist «Микс дня» has the songs the library has, in the mix's order
     pl = env["nd"].playlists[settings.nd_playlist_id]
     assert pl["name"] == "Микс дня" and pl["songs"] == [r.nd_song_id for r in active if r.nd_song_id]
     assert mix.title in pl["comment"] and mix.nd_playlist_id == settings.nd_playlist_id
+    # the Hub lists it among the user's playlists: its own row, made by the builder, follows Navidrome's
+    from sqlalchemy import select as _select
+
+    from app.db import session_scope as _scope
+    from app.models import Playlist
+
+    async with _scope() as s:
+        row = (await s.execute(_select(Playlist).where(Playlist.kind == "mix"))).scalar_one()
+        assert (row.name, row.nd_playlist_id) == ("Микс дня", settings.nd_playlist_id)
 
 
 async def test_a_song_that_did_not_download_gives_its_place_to_the_reserve(env, monkeypatch) -> None:
@@ -622,7 +630,12 @@ async def test_onboarding_picks_artists_and_starts_a_build(env) -> None:
     client = env["client"]
     r = await client.get("/api/taste/onboarding")
     assert r.status_code == 200, r.text
+    # a server with no music yet has nobody of its own to offer: the catalog's chart
     assert r.json()["needed"] is True and [a["name"] for a in r.json()["suggestions"]] == ["Земфира", "Кино"]
+    assert r.json()["source"] == "chart"
+    r = await client.get("/api/taste/similar", params={"ref": "dz:1"})
+    assert r.status_code == 200 and [a["name"] for a in r.json()] == ["Земфира"]
+    assert (await client.get("/api/taste/similar", params={"ref": "hm:1"})).status_code == 400
 
     r = await client.post("/api/taste/artists", json={"artist_refs": ["dz:1"]})
     assert r.status_code == 200, r.text
@@ -634,6 +647,116 @@ async def test_onboarding_picks_artists_and_starts_a_build(env) -> None:
     assert [(j.payload_json, j.priority) for j in jobs] == [({"user_id": env["admin"]}, 0)]
     r = await client.get("/api/taste/onboarding")
     assert r.json()["needed"] is False and r.json()["selected"] == [{"ref": "dz:1", "name": "Кино"}]
+
+
+async def test_the_map_is_lastfms_word_of_who_is_near(env, monkeypatch) -> None:
+    from app.config import get_settings
+    from app.mixes import build, sources
+
+    client = env["client"]
+    assert (await client.get("/api/auth/me")).json()["artist_map"] is False
+    r = await client.get("/api/taste/map", params={"ref": "dz:1"})
+    assert r.status_code == 404 and "Last.fm" in r.json()["detail"]  # no key: no map
+
+    monkeypatch.setattr(get_settings(), "lastfm_api_key", "key")
+    asked = []
+
+    async def near(name, limit=20):
+        asked.append(name)
+        return [("Земфира", 0.8), ("Кого нет в каталоге", 0.6), ("Кино", 0.5)]
+
+    async def by_name(name):
+        return {"Земфира": "dz:2", "Кино": "dz:1"}.get(name)
+
+    async def get_artist(id_):
+        return FakeDeezer().artist(str(id_), {"1": "Кино", "2": "Земфира"}[str(id_)])
+
+    monkeypatch.setattr(sources, "lastfm_near_artists", near)
+    monkeypatch.setattr(build, "artist_by_name", by_name)
+    from app.services import svc
+
+    monkeypatch.setattr(svc.deezer, "get_artist", get_artist)
+    assert (await client.get("/api/auth/me")).json()["artist_map"] is True
+    r = await client.get("/api/taste/map", params={"ref": "dz:1"})
+    assert r.status_code == 200, r.text
+    assert asked == ["Кино"] and r.json()["center"]["name"] == "Кино"
+    # nearest first; one the catalog does not know is left out, and so is the artist in the middle
+    assert [(x["artist"]["ref"], x["match"]) for x in r.json()["around"]] == [("dz:2", 0.8)]
+    assert r.json()["more"] is False
+    assert (await client.get("/api/taste/map", params={"ref": "dz:1", "n": 51})).status_code == 422
+
+
+async def test_a_picked_artist_is_followed_once(env) -> None:
+    from app import favorites
+    from app.db import session_scope
+    from app.models import PlayEvent
+
+    client = env["client"]
+    for _ in range(2):  # picked again (the page reopened): no second follow
+        assert (await client.post("/api/taste/artists", json={"artist_refs": ["dz:1"]})).status_code == 200
+    async with session_scope() as s:
+        states = await favorites.snapshot(s, env["admin"])
+        likes = (await s.execute(select(func.count(PlayEvent.id)).where(PlayEvent.kind == "like"))).scalar_one()
+    assert [(x.target_type, x.ref, x.liked, (x.data or {}).get("name")) for x in states.values()] == [("artist", "dz:1", True, "Кино")]
+    assert likes == 1
+
+
+async def test_an_artist_of_several_catalog_records_is_one(env) -> None:
+    """One address, one follow, one pick — whichever of the records it was said by."""
+    from app import favorites, releases
+    from app.catalog.models import CatalogArtist
+    from app.db import session_scope
+    from app.library import artists
+    from app.models import Artist, ArtistRef, PlayEvent
+
+    client = env["client"]
+    async with session_scope() as s:
+        kino = Artist(name="КИНО")
+        s.add(kino)
+        await s.flush()
+        s.add(ArtistRef(ref="dz:1", artist_id=kino.id, tied_at=datetime(2026, 1, 1)))
+        s.add(ArtistRef(ref="dz:7", artist_id=kino.id, tied_at=datetime(2026, 2, 1)))
+    # followed by the second record
+    r = await client.post("/api/star", json={"targets": [{"target_type": "artist", "ref": "dz:7", "target_data": {"name": "Кино"}}]})
+    assert r.status_code == 200, r.text
+    async with session_scope() as s:
+        states = [x for x in (await favorites.snapshot(s, env["admin"])).values() if x.target_type == "artist"]
+        assert [(x.ref, x.liked, x.aliases) for x in states] == [("dz:1", True, ["ref:dz:1", "ref:dz:7"])]
+        assert [f.ref for f in await releases.follows(s, env["admin"])] == ["dz:1"]
+        assert await releases.followed(s, env["admin"]) == {"dz:1": "Кино", "dz:7": "Кино"}
+        # shown at the address, whichever record the catalog gave
+        card = (await artists.shown(s, [CatalogArtist(ref="dz:7", source="dz", id="7", name="Кино")]))[0]
+        assert (card.ref, card.id, card.name) == ("dz:1", "1", "КИНО")
+    # picked by the first: followed already, nothing new
+    r = await client.post("/api/taste/artists", json={"artist_refs": ["dz:1"]})
+    assert r.status_code == 200 and r.json()["artists"] == [{"ref": "dz:1", "name": "КИНО"}]
+    async with session_scope() as s:
+        assert (await s.execute(select(func.count(PlayEvent.id)).where(PlayEvent.kind == "like"))).scalar_one() == 1
+    # unfollowed by the first: the follow made by the second is gone
+    r = await client.post("/api/star", json={"targets": [{"target_type": "artist", "ref": "dz:1"}], "unstar": True})
+    assert r.status_code == 200, r.text
+    async with session_scope() as s:
+        assert await releases.follows(s, env["admin"]) == []
+
+
+async def test_the_picker_offers_whom_this_server_listens_to(env) -> None:
+    """The most listened to first, then those the library has most of — and only artists with a catalog record."""
+    from app.db import session_scope
+    from app.models import Artist, ArtistRef, TrackArtist
+
+    ids = [await add_track(n) for n in (1, 2, 3)]
+    async with session_scope() as s:
+        kino, other = Artist(name="КИНО"), Artist(name="Без записи в каталоге")
+        s.add_all([kino, other])
+        await s.flush()
+        s.add(ArtistRef(ref="dz:1", artist_id=kino.id))
+        s.add_all([TrackArtist(track_id=ids[0], position=0, artist_id=kino.id),
+                   TrackArtist(track_id=ids[1], position=0, artist_id=other.id),
+                   TrackArtist(track_id=ids[2], position=0, artist_id=other.id)])
+    r = await env["client"].get("/api/taste/onboarding")
+    assert r.status_code == 200, r.text
+    # under the name the artist has here, not the catalog's
+    assert r.json()["source"] == "server" and [(a["ref"], a["name"]) for a in r.json()["suggestions"]] == [("dz:1", "КИНО")]
 
 
 # --- the schedule ------------------------------------------------------------------------------------------------------
@@ -688,3 +811,20 @@ async def test_v2_shadow_does_not_repeat_build_services(env, monkeypatch, shadow
         jobs = list((await s.execute(select(Job).where(Job.kind == "download_item"))).scalars())
     active_downloads = [row for row in rows if row.state == "active" and row.download_item_id]
     assert len(jobs) == len(downloads) == len(active_downloads)
+
+
+async def test_two_requests_at_once_queue_one_build(env):
+    """The check and the insert are one statement: a build is not queued twice."""
+    from sqlalchemy import func
+    from sqlalchemy import select as _select
+
+    from app.db import session_scope as _scope
+    from app.mixes.core import enqueue_build
+    from app.models import Job, User
+
+    async with _scope() as s:
+        me = (await s.execute(_select(User.id))).scalars().first()
+        assert [await enqueue_build(s, me), await enqueue_build(s, me)] == [True, False]
+        job = (await s.execute(_select(Job).where(Job.kind == "mix_build"))).scalar_one()
+        assert (job.status, job.attempts, job.max_attempts, job.payload_json) == ("queued", 0, 3, {"user_id": me})
+        assert (await s.execute(_select(func.count()).select_from(Job).where(Job.kind == "mix_build"))).scalar_one() == 1

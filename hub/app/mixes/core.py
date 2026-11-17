@@ -9,6 +9,9 @@ Job kinds (background: below the user's downloads, `PRIORITY_MIX`):
 Downloads of a mix are the Hub's own (`query_json["mix"]`, `library.owned.quiet`): not in «Загрузки», no
 notifications, background network priority. The playlist «Микс дня» is one per user (`MixSettings.nd_playlist_id`):
 its songs are replaced, its id stays, so the app and «Keep synced» follow it.
+
+«Открытия недели» is kept by the same means: an issue is a mix of the kind `WEEKLY` (`save_weekly`), with a playlist of
+its own (`app/for_you.py`). Each kind has one active mix; a new one closes the previous of its kind.
 """
 
 from __future__ import annotations
@@ -18,7 +21,8 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import JSON, func, literal, or_, select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.models import CatalogTrack, split_ref
@@ -46,6 +50,7 @@ log = logging.getLogger(__name__)
 
 PRIORITY_MIX = PRIORITY_IMPORT
 PLAYLIST_NAME = "Микс дня"
+DAILY, WEEKLY = "daily", "weekly"
 SYNC_DELAY_S = 20  # downloads coming in one after another ask for one sync
 CHECK_EVERY_S = 300
 LISTENED_S = 30
@@ -66,19 +71,22 @@ async def settings_of(s: AsyncSession, user_id: int) -> MixSettings:
 
 
 async def current_mix(s: AsyncSession, user_id: int) -> Mix | None:
-    return (await s.execute(select(Mix).where(Mix.user_id == user_id, Mix.status == "active")
+    return (await s.execute(select(Mix).where(Mix.user_id == user_id, Mix.status == "active", Mix.kind == DAILY)
                             .order_by(Mix.id.desc()).limit(1))).scalar_one_or_none()
 
 
 async def enqueue_build(s: AsyncSession, user_id: int, *, priority: int = PRIORITY_MIX) -> bool:
     """One queued or running build per user. False: one is under way."""
-    busy = (await s.execute(select(Job.id).where(
+    busy = select(Job.id).where(
         Job.kind == "mix_build", Job.status.in_(("queued", "running")),
-        func.json_extract(Job.payload_json, "$.user_id") == user_id).limit(1))).scalar_one_or_none()
-    if busy is not None:
-        return False
-    await enqueue(s, "mix_build", {"user_id": user_id}, priority=priority, max_attempts=3)
-    return True
+        func.json_extract(Job.payload_json, "$.user_id") == user_id).exists()
+    # checked and written in one statement: two requests at once (two taps, a tap and the daily schedule) cannot
+    # both find none and both queue one
+    row = select(literal("mix_build"), literal({"user_id": user_id}, type_=JSON), literal(priority), literal(3),
+                 literal(utcnow())).where(~busy)
+    made = await s.execute(insert(Job).from_select(
+        ["kind", "payload_json", "priority", "max_attempts", "run_after"], row).returning(Job.id))
+    return made.scalar_one_or_none() is not None
 
 
 async def enqueue_sync(s: AsyncSession, mix_id: int, *, delay_s: float = SYNC_DELAY_S) -> None:
@@ -186,6 +194,30 @@ async def save(s: AsyncSession, user: User, built: builder.Built) -> Mix:
     return mix
 
 
+async def save_weekly(user_id: int, picked: list[Any], *, issue_id: int, description: str) -> int:
+    """An issue of «Открытия недели» as a mix of the week: its tracks are downloaded and written to its playlist the
+    way a daily mix's are, and the previous issue's unheard ones go. Returns the mix's id."""
+    from app.for_you import NAMES
+
+    async with session_scope() as s:
+        batch = DownloadBatch(user_id=user_id, origin="mix", title=NAMES[WEEKLY])
+        s.add(batch)
+        await s.flush()
+        mix = Mix(user_id=user_id, kind=WEEKLY, title=NAMES[WEEKLY], description=description, mode="discover",
+                  status="active", batch_id=batch.id, stats_json={"issue": issue_id}, created_at=utcnow())
+        s.add(mix)
+        await s.flush()
+        for pos, c in enumerate(picked):
+            s.add(MixItem(mix_id=mix.id, position=pos, state="active", familiar=False,
+                          ref=c.track.ref if c.track.source == "dz" else None, nd_song_id=c.nd_song_id,
+                          track_id=c.library_track_id, generator=c.generator, score=round(c.score, 4),
+                          features_json=c.features()))
+        mix_id = mix.id
+    await sync(mix_id)
+    await close_previous(user_id, mix_id)
+    return mix_id
+
+
 async def queue_download(s: AsyncSession, mix: Mix, it: MixItem) -> None:
     """A song of the mix the library lacks: joins a download under way (an import's, another mix's), else a quiet
     download of its own (`downloaded_for_mix`)."""
@@ -256,10 +288,21 @@ async def sync(mix_id: int) -> None:
         songs = [i.nd_song_id for i in sorted(items, key=lambda i: i.position) if i.state == "active" and i.nd_song_id]
         user = await s.get(User, mix.user_id)
         settings = await settings_of(s, mix.user_id)
-        if user is not None and songs != (mix.stats_json or {}).get("playlist_songs"):
+        if user is not None and songs != (mix.stats_json or {}).get("playlist_songs") and mix.kind == WEEKLY:
+            from app import for_you
+
+            row = await for_you.row_of(s, mix.user_id, for_you.WEEKLY)
+            pid = await for_you.put(user, row.nd_playlist_id, for_you.WEEKLY, songs)
+            if pid:
+                row.nd_playlist_id, row.songs_json, mix.nd_playlist_id = pid, songs, pid
+                mix.stats_json = {**(mix.stats_json or {}), "playlist_songs": songs}
+        elif user is not None and songs != (mix.stats_json or {}).get("playlist_songs"):
             pid = await write_playlist(user, settings.nd_playlist_id, songs, mix)
             if pid:
+                from app.playlists_mirror import follow_mix
+
                 settings.nd_playlist_id = mix.nd_playlist_id = pid
+                await follow_mix(s, mix.user_id, pid, PLAYLIST_NAME)
                 mix.stats_json = {**(mix.stats_json or {}), "playlist_songs": songs}
     # the light copies for a metered network (app.light), made now so a tap finds them ready
     from app import listen
@@ -297,10 +340,13 @@ async def write_playlist(user: User, playlist_id: str | None, songs: list[str], 
 
 
 async def close_previous(user_id: int, new_mix_id: int) -> None:
-    """The user's older mixes close: their downloads not started yet are cancelled, and the songs downloaded only
-    for closed mixes are checked for removal (a download that was still running is checked at the next closing)."""
+    """The user's older mixes of the new one's kind close: their downloads not started yet are cancelled, and the
+    songs downloaded only for closed mixes are checked for removal (a download that was still running is checked at
+    the next closing)."""
     async with session_scope() as s:
+        new = await s.get(Mix, new_mix_id)
         old = list((await s.execute(select(Mix).where(Mix.user_id == user_id, Mix.status == "active",
+                                                      Mix.kind == (new.kind if new else DAILY),
                                                       Mix.id != new_mix_id))).scalars())
         for m in old:
             m.status, m.closed_at = "closed", utcnow()
@@ -328,8 +374,11 @@ async def _users_keep(users: list[User]) -> tuple[set[str], set[str]] | None:
     from app.auth import user_navidrome
 
     async with session_scope() as s:
+        from app import for_you
+
         mix_playlists = set((await s.execute(select(MixSettings.nd_playlist_id)
                                              .where(MixSettings.nd_playlist_id.is_not(None)))).scalars())
+        mix_playlists |= await for_you.playlist_ids(s)  # «Открытия недели», the tops: no playlists of the user's
     starred: set[str] = set()
     listed: set[str] = set()
     for u in users:
@@ -352,7 +401,7 @@ async def kept_reasons(s: AsyncSession, it: MixItem, track: Track, starred: set[
     """Why a song downloaded for a mix stays in the library (6.3); empty — it goes."""
     why: list[str] = []
     song = track.nd_song_id
-    refs = [r for r in {it.ref, f"dz:{track.deezer_track_id}" if track.deezer_track_id else None} if r]
+    refs = [r for r in {it.ref, track.ref} if r]
     ids = or_(*([PlayEvent.nd_song_id == song] if song else []), *([PlayEvent.ref.in_(refs)] if refs else []))
     # by anyone: the app's and the PWA's events and Navidrome's scrobbles (imported as `finish`)
     listened = (await s.execute(select(PlayEvent.id).where(
@@ -418,7 +467,7 @@ async def remove_unheard(mix_ids: list[int]) -> int:
                 verdict = "kept: " + ", ".join(why)
             else:
                 log.info("mix cleanup: trash %s — %s", track.artist, track.title)
-                await editor.trash_track(s, track)
+                await editor.trash_track(s, track, kept=False)
                 verdict = "trashed"
                 removed += 1
             it.features_json = {**(it.features_json or {}), "cleanup": verdict}

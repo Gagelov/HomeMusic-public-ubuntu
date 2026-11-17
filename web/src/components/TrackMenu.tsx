@@ -1,15 +1,24 @@
-import { useState } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
+import { deleteFile } from '../lib/deleteFile';
+import { openFindFile } from '../lib/findFile';
+import { openTrackEdit } from '../lib/trackEdit';
+import { openVersions } from '../lib/versions';
 import { createPortal } from 'react-dom';
-import { api } from '../api/client';
 import { setDisliked, useDisliked, type DislikeTarget } from '../lib/dislikes';
 import { STANDALONE } from '../lib/embedded';
-import { addToQueue, next, playNext, stopListening, useListen, type ListenTrack } from '../lib/listen';
+import { addToQueue, next, stopListening, useListen, type ListenTrack } from '../lib/listen';
+import { useInPlaylists } from '../lib/inPlaylists';
 import { canPlayAll } from '../lib/player';
 import { enc, navigate } from '../lib/router';
+import { api } from '../api/client';
 import { attempt } from '../lib/ui';
+import { useSession } from '../lib/session';
+import { openShare } from '../lib/shareTrack';
+import { useLiked } from '../lib/stars';
+import { openTagsSheet, tagKey } from '../lib/tags';
 import { artistSeed, canWave, startWave, trackSeed } from '../lib/wave';
 import { Icon, type IconName } from './Icon';
-import { PlaylistPicker, type PlaylistPick } from './pickers';
+import { SaveMark, TrackPlaylists } from './PlaylistsButton';
 import { IconButton, Sheet, cx } from './ui';
 
 export interface MenuTrack {
@@ -17,6 +26,13 @@ export interface MenuTrack {
   artist: string;
   ref?: string | null;
   nd_song_id?: string | null;
+  /** what the Hub calls the track (`lib/tags.ts` `tagKey`), if it knows it: given as is, or as the track's id */
+  key?: string | null;
+  library_track_id?: number | null;
+  /** the library has a file of it: «Удалить файл» is offered */
+  has_file?: boolean;
+  /** known by its name alone — no file, no record of the catalog: «Выбрать файл» is offered, what plays is not */
+  unknown?: boolean;
   artist_ref?: string | null;
   album_ref?: string | null;
   /** the song's Navidrome album and artist (the library pages of a browser) */
@@ -34,51 +50,53 @@ export interface MenuExtra {
   onClick: () => void;
 }
 
-/** ⋯ of a track row (catalog or library): «Играть следующим» / «В очередь» where the page's own player plays (a
+/** ⋯ of a track row (catalog or library): «В очередь» where the page's own player plays (a
  * browser; inside the app its player has them), «В плейлист», «К альбому» / «К исполнителю», «Волна по треку» /
  * «по исполнителю» (MIXES.md 7) where the wave can play, and «Не нравится» for the track and for its artist
  * (MIXES.md 3.2) — it keeps them out of mixes and «Моя волна»; set again, it is taken off. A track disliked while
  * the page's player plays it is skipped. */
-export function TrackMenuButton({ track, extra, className, inPlayer }: { track: MenuTrack; extra?: MenuExtra[]; className?: string; inPlayer?: boolean }) {
+export function TrackMenuButton({ track, extra, className, inPlayer, lean, noTags, picked, onPick }: { track: MenuTrack; extra?: MenuExtra[]; className?: string; inPlayer?: boolean; lean?: boolean; noTags?: boolean; picked?: boolean; onPick?: () => void }) {
   const [open, setOpen] = useState(false);
+  // rows are being picked (`onPick`): the button picks this row or takes it out, and the menu is a right click away
+  const menu = (e: MouseEvent) => {
+    e.preventDefault();
+    setOpen(true);
+  };
   return (
     <>
-      <IconButton icon="more" label={`Ещё: «${track.title}»`} onClick={() => setOpen(true)} className={cx('text-muted hover:text-fg', className)} />
-      {open && createPortal(<TrackMenu track={track} extra={extra} inPlayer={inPlayer} onClose={() => setOpen(false)} />, document.body)}
+      {picked ? (
+        <IconButton
+          icon="check"
+          size={18}
+          label={`Снять выделение: «${track.title}» (меню — правой кнопкой)`}
+          onClick={() => onPick?.()}
+          onContextMenu={menu}
+          className={cx(className, '!text-accent !opacity-100')}
+        />
+      ) : (
+        <IconButton
+          icon="more"
+          label={onPick ? `Выбрать «${track.title}» (меню — правой кнопкой)` : `Ещё: «${track.title}»`}
+          onClick={() => (onPick ? onPick() : setOpen(true))}
+          onContextMenu={onPick ? menu : undefined}
+          className={cx('text-muted hover:text-fg', className)}
+        />
+      )}
+      {open && createPortal(<TrackMenu track={track} extra={extra} inPlayer={inPlayer} lean={lean} noTags={noTags} onClose={() => setOpen(false)} />, document.body)}
     </>
   );
 }
 
-/** Library songs go into the playlist at once; a catalog track is downloaded into it (it appears once imported). */
-async function addToPlaylist(track: MenuTrack, pick: PlaylistPick): Promise<boolean> {
-  const name = pick.kind === 'existing' ? pick.playlist.name : pick.name;
-  if (track.nd_song_id) {
-    const r = await attempt(async () => {
-      const id = pick.kind === 'existing' ? pick.playlist.id : (await api.createPlaylist(pick.name)).id;
-      return api.addToPlaylist(id, { song_ids: [track.nd_song_id as string] });
-    }, `Добавлено в «${name}»`);
-    return !!r;
-  }
-  if (!track.ref) return false;
-  const r = await attempt(
-    () =>
-      api.download({
-        track_refs: [track.ref as string],
-        playlist_id: pick.kind === 'existing' ? pick.playlist.id : null,
-        new_playlist_name: pick.kind === 'new' ? pick.name : null,
-      }),
-    `Скачиваем — трек появится в «${name}»`,
-  );
-  return !!r;
-}
-
-/** `inPlayer`: opened from a player (the mini player, `/player` and its queue): a wave started here is the player's. */
-function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extra?: MenuExtra[]; inPlayer?: boolean; onClose: () => void }) {
+/** `noTags`: the row has a button for the tags of its own (the table of a computer).
+ * `inPlayer`: opened from a player (the mini player, `/player` and its queue): a wave started here is the player's.
+ * `lean`: the playlists and the share have buttons of their own beside this menu (the player) — not repeated here. */
+function TrackMenu({ track, extra, inPlayer, lean, noTags, onClose }: { track: MenuTrack; extra?: MenuExtra[]; inPlayer?: boolean; lean?: boolean; noTags?: boolean; onClose: () => void }) {
   const [picking, setPicking] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const canMap = !!useSession().me.artist_map; // «Карта похожих» is there
   const trackWave = trackSeed(track);
   const artistWave = artistSeed(track);
-  const target: DislikeTarget = { ref: track.ref, nd_song_id: track.nd_song_id, artist: track.artist, title: track.title };
+  const key = tagKey(track);
+  const target: DislikeTarget = { track_id: key ? Number(key) : null, ref: track.ref, nd_song_id: track.nd_song_id, artist: track.artist, title: track.title };
   const artist: DislikeTarget | null = track.artist_ref ? { artist_ref: track.artist_ref, artist: track.artist } : null;
   const disliked = useDisliked(target);
   const artistDisliked = useDisliked(artist ?? { artist_ref: '\u0000' });
@@ -100,51 +118,62 @@ function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extr
     });
   };
 
-  if (picking)
-    return (
-      <PlaylistPicker
-        open
-        busy={busy}
-        onClose={onClose}
-        onPick={async (pick) => {
-          setBusy(true);
-          const ok = await addToPlaylist(track, pick);
-          setBusy(false);
-          if (ok) onClose();
-        }}
-      />
-    );
+  if (picking) return <TrackPlaylists track={track} onClose={onClose} />;
 
   return (
     <Sheet open onClose={onClose} title={`${track.artist} — ${track.title}`}>
       <div className="-mx-4 -my-3 flex flex-col py-1">
-        {queueable && (
-          <>
-            <MenuItem
-              icon="queue"
-              label="Играть следующим"
-              onClick={() => {
-                onClose();
-                playNext([track.listen as ListenTrack]);
-              }}
-            />
-            <MenuItem
-              icon="plus"
-              label="Добавить в очередь"
-              hint={hasQueue ? undefined : 'Сейчас ничего не играет — начнёт играть'}
-              onClick={() => {
-                onClose();
-                addToQueue([track.listen as ListenTrack]);
-              }}
-            />
-          </>
+        {track.unknown && track.library_track_id != null && (
+          <MenuItem
+            icon="search"
+            label="Выбрать файл"
+            hint="Хаб поищет по источникам, а вы выберете подходящий — трек останется на своём месте"
+            onClick={() => {
+              onClose();
+              void attempt(() => api.trackFindFile(track.library_track_id as number)).then((r) => r && navigate(`/downloads/${r.download_item_id}`));
+            }}
+          />
         )}
-        {(track.nd_song_id || track.ref) && (
+        {queueable && (
+          <MenuItem
+            icon="queue"
+            label="Добавить в очередь"
+            hint={hasQueue ? undefined : 'Сейчас ничего не играет — начнёт играть'}
+            onClick={() => {
+              onClose();
+              addToQueue([track.listen as ListenTrack]);
+            }}
+          />
+        )}
+        {!(lean && track.nd_song_id) && (track.nd_song_id || track.ref) && (
           <MenuItem
             icon="playlist"
+            mark={<KeptMark track={track} />}
             label="Добавить в плейлист"
-            hint={track.nd_song_id ? undefined : 'Трек скачается в библиотеку'}
+            hint={tagKey(track) ? undefined : 'Трек скачается в библиотеку'}
             onClick={() => setPicking(true)}
+          />
+        )}
+        {tagKey(track) && !noTags && (
+          <MenuItem
+            icon="tag"
+            label="Теги"
+            hint="Язык, жанр и свои — по ним фильтруются списки"
+            onClick={() => {
+              onClose();
+              openTagsSheet([tagKey(track) as string], track.title);
+            }}
+          />
+        )}
+        {!lean && !track.unknown && (track.nd_song_id || track.ref) && (
+          <MenuItem
+            icon="share"
+            label="Поделиться"
+            hint="В Telegram — себе, в группу, в канал — или ссылкой"
+            onClick={() => {
+              onClose();
+              openShare(track);
+            }}
           />
         )}
         {extra?.map((x) => (
@@ -159,9 +188,31 @@ function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extr
             }}
           />
         ))}
+        {(track.library_track_id || track.ref || track.nd_song_id) && (
+          <MenuItem
+            icon="edit"
+            label="Переименовать"
+            hint="Название, исполнители и обложка — для всех"
+            onClick={() => {
+              onClose();
+              openTrackEdit({ title: track.title, artist: track.artist, library_track_id: track.library_track_id, ref: track.ref, nd_song_id: track.nd_song_id });
+            }}
+          />
+        )}
+        {(track.library_track_id || track.ref || track.nd_song_id) && (
+          <MenuItem
+            icon="disc"
+            label="Версии песни"
+            hint="Другие записи той же песни: старая, remix, live"
+            onClick={() => {
+              onClose();
+              openVersions({ title: track.title, library_track_id: track.library_track_id, ref: track.ref, nd_song_id: track.nd_song_id });
+            }}
+          />
+        )}
         {albumTo && <MenuItem icon="disc" label="Перейти к альбому" onClick={() => go(albumTo)} />}
         {artistTo && <MenuItem icon="user" label="Перейти к исполнителю" hint={track.artist} onClick={() => go(artistTo)} />}
-        {canWave() && trackWave && (
+        {canWave() && trackWave && !track.unknown && (
           <MenuItem
             icon="wave"
             label="Волна по треку"
@@ -183,6 +234,17 @@ function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extr
             }}
           />
         )}
+        {canMap && track.artist_ref?.startsWith('dz:') && (
+          <MenuItem
+            icon="nodes"
+            label="Карта похожих"
+            hint={track.artist}
+            onClick={() => {
+              onClose();
+              navigate(`/map/${enc(track.artist_ref!)}`);
+            }}
+          />
+        )}
         <MenuItem
           icon="ban"
           active={disliked}
@@ -190,11 +252,33 @@ function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extr
           hint={disliked ? 'Трек снова может попадать в миксы' : 'Трек не будет попадать в миксы и «Мою волну»'}
           onClick={() => toggle(target, disliked)}
         />
+        {track.has_file && track.library_track_id != null && (
+          <MenuItem
+            icon="search"
+            label="Найти другой файл…"
+            hint="Без цензуры или в лучшем качестве — вместо этого"
+            onClick={() => {
+              onClose();
+              openFindFile({ library_track_id: track.library_track_id as number, title: track.title, artist: track.artist });
+            }}
+          />
+        )}
+        {track.has_file && track.library_track_id != null && (
+          <MenuItem
+            icon="trash"
+            label="Удалить файл"
+            hint="С сервера — если трек не лежит в плейлистах у других"
+            onClick={() => {
+              onClose();
+              void deleteFile({ library_track_id: track.library_track_id as number, title: track.title, artist: track.artist });
+            }}
+          />
+        )}
         {artist && (
           <MenuItem
             icon="user"
             active={artistDisliked}
-            label={artistDisliked ? `Убрать «Не нравится» с исполнителя` : 'Не нравится исполнитель'}
+            label={artistDisliked ? `Убрать «Не нравится» с исполнителя` : 'Не включать исполнителя'}
             hint={track.artist}
             onClick={() => toggle(artist, artistDisliked)}
           />
@@ -204,10 +288,24 @@ function TrackMenu({ track, extra, inPlayer, onClose }: { track: MenuTrack; extr
   );
 }
 
-function MenuItem({ icon, label, hint, active, onClick }: { icon: IconName; label: string; hint?: string; active?: boolean; onClick: () => void }) {
+/** The mark of «Добавить в плейлист»: the one the track's own button wears (`SaveMark`) — «+» in a ring, ♥ or ✓ in a
+ * green circle when it is in «Любимое» or in a playlist already. */
+function KeptMark({ track }: { track: MenuTrack }) {
+  const key = tagKey(track);
+  const liked = useLiked({ targetType: 'track', trackId: key ? Number(key) : null, songId: track.nd_song_id, ref: track.ref });
+  const listed = useInPlaylists(key);
+  return (
+    <span className={cx('flex w-[22px] shrink-0 justify-center', !liked && !listed && 'text-muted')}>
+      <SaveMark state={liked ? 'liked' : listed ? 'listed' : 'none'} size={20} />
+    </span>
+  );
+}
+
+/** `mark`: a mark of its own in place of the icon. */
+function MenuItem({ icon, mark, label, hint, active, onClick }: { icon: IconName; mark?: ReactNode; label: string; hint?: string; active?: boolean; onClick: () => void }) {
   return (
     <button type="button" onClick={onClick} className="flex min-h-14 items-center gap-4 px-4 py-2 text-left transition hover:bg-fg/5 active:bg-fg/10">
-      <Icon name={icon} size={22} className={cx('shrink-0', active ? 'text-accent' : 'text-muted')} />
+      {mark ?? <Icon name={icon} size={22} className={cx('shrink-0', active ? 'text-accent' : 'text-muted')} />}
       <span className="min-w-0 flex-1">
         <span className="block text-[15px]">{label}</span>
         {hint && <span className="block text-[13px] text-muted">{hint}</span>}

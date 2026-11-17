@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas import ImportIn, ImportItemsOut, ImportOut, ImportPickOut, ImportStartIn
+from app.api.schemas import ImportAuthIn, ImportIn, ImportItemsOut, ImportOut, ImportPickOut, ImportStartIn
 from app.auth import current_user
 from app.db import get_session
+from app.events import bus
 from app.imports import apply, core
-from app.imports.sources import spotify
+from app.imports.sources import spotify, spotify_csv
 from app.imports.sources.base import SourceError
 from app.jobs.queue import PRIORITY_IMPORT, PermanentError, enqueue, notify
 from app.models import DownloadItem, Import, ImportCollection, ImportItem, Track, User
@@ -35,7 +36,8 @@ async def list_imports(user: User = Depends(current_user), s: AsyncSession = Dep
 async def create(body: ImportIn, user: User = Depends(current_user),
                  s: AsyncSession = Depends(get_session, scope="function")):
     try:
-        imp = await core.create(s, user.id, source=body.source, method=body.method, token=body.token, url=body.url)
+        imp = await core.create(s, user.id, source=body.source, method=body.method, token=body.token, url=body.url,
+                                login=body.login, password=body.password)
     except SourceError as e:
         raise HTTPException(400, str(e)) from e
     await s.flush()
@@ -69,10 +71,49 @@ async def import_spotify(files: list[UploadFile] = File(), user: User = Depends(
     return await core.import_out(s, imp)
 
 
+@router.post("/csv", response_model=ImportOut)
+async def create_from_csv(request: Request, user: User = Depends(current_user),
+                          s: AsyncSession = Depends(get_session, scope="function")):
+    """Spotify playlists exported to CSV by Exportify (`files`, one playlist each) → an import at its preview."""
+    form = await request.form()
+    uploads = [f for f in form.getlist("files") if hasattr(f, "read")]
+    if len(uploads) > spotify_csv.MAX_FILES:
+        raise HTTPException(400, f"За один раз не больше {spotify_csv.MAX_FILES} файлов")
+    files: list[tuple[str, bytes]] = []
+    for f in uploads:
+        data = await f.read(spotify_csv.MAX_FILE_BYTES + 1)
+        files.append((getattr(f, "filename", "") or "Spotify.csv", data))
+    try:
+        snap = spotify_csv.parse(files)
+    except SourceError as e:
+        raise HTTPException(400, str(e)) from e
+    imp = await core.create_from_snapshot(s, user.id, source="spotify", method="csv", snap=snap)
+    out = await core.import_out(s, imp)
+    await s.commit()
+    return out
+
+
 @router.get("/{import_id}", response_model=ImportOut)
 async def get(import_id: int, user: User = Depends(current_user),
               s: AsyncSession = Depends(get_session, scope="function")):
     return await core.import_out(s, await _own(s, user, import_id))
+
+
+@router.post("/{import_id}/auth", response_model=ImportOut)
+async def answer_auth(import_id: int, body: ImportAuthIn, user: User = Depends(current_user),
+                      s: AsyncSession = Depends(get_session, scope="function")):
+    """The code VK sent, or what its captcha answered: the sign-in goes on with it."""
+    imp = await _own(s, user, import_id)
+    try:
+        await core.answer_auth(s, imp, code=body.code, captcha=body.captcha)
+    except SourceError as e:
+        raise HTTPException(409, str(e)) from e
+    await s.flush()
+    out = await core.import_out(s, imp)
+    await s.commit()
+    notify()
+    core.publish(imp)
+    return out
 
 
 @router.get("/{import_id}/items", response_model=ImportItemsOut)
@@ -109,7 +150,9 @@ async def start(import_id: int, body: ImportStartIn, user: User = Depends(curren
     imp = await _own(s, user, import_id)
     try:
         await core.start(s, imp, collection_ids=body.collection_ids, mode=body.mode,
-                         download_albums=body.download_albums, keep_token=body.keep_token)
+                         download_albums=body.download_albums, keep_token=body.keep_token,
+                         extra={"star": body.star, "playlist_ids": list(dict.fromkeys(body.playlist_ids)),
+                                "tag_ids": list(dict.fromkeys(body.tag_ids))})
     except PermanentError as e:
         raise HTTPException(409, str(e)) from e
     await s.flush()
@@ -144,9 +187,9 @@ async def sync(import_id: int, user: User = Depends(current_user),
         raise HTTPException(409, "Импорт ещё идёт")
     if imp.started_at is None:
         raise HTTPException(409, "Импорт ещё не запущен")
-    if imp.method == "file":
-        raise HTTPException(409, "Загрузите новый экспорт Spotify")
-    if imp.method != "profile" and not imp.token_enc:
+    if imp.method in ("file", "csv"):
+        raise HTTPException(409, "Перенос из файла не обновляется — загрузите новую выгрузку")
+    if imp.method not in ("profile", "link") and not imp.token_enc:
         raise HTTPException(409, "Вход в сервис удалён — начните новый перенос")
     imp.status = "fetching"
     await enqueue(s, "import_fetch", {"import_id": imp.id}, priority=PRIORITY_IMPORT)
@@ -210,19 +253,7 @@ async def pick(item_id: int, user: User = Depends(current_user),
     it, coll, imp = await _own_item(s, user, item_id)
     if coll.kind not in ("likes", "playlist"):
         raise HTTPException(400, "Выбрать файл можно только для трека")
-    raw = it.raw_json or {}
-    qj = {"query": apply.track_query(raw).model_dump(), "meta": {}, "import": {"id": imp.id, "item": it.id},
-          "requested": True}  # a like gets its ♥ from the import, in order (`apply.sync_likes`)
-    dl = await apply.new_download(s, imp, qj, 0)
-    # the user decides the file now: the row (and the same track in the other likes / playlists of the import) is no
-    # longer «probable» / «not found», whatever the download ends with — even «already in the library»
-    twins = (await s.execute(
-        select(ImportItem).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
-        .where(ImportItem.import_id == imp.id, ImportItem.external_id == it.external_id,
-               ImportCollection.kind.in_(("likes", "playlist")), ImportItem.status != "skipped",
-               ImportItem.match.is_distinct_from("owned")))).scalars().all()
-    for row in {it, *twins}:
-        row.download_item_id, row.status, row.ref, row.match = dl.id, "queued", None, "manual"
+    dl = await apply.pick(s, imp, it)
     await s.commit()
     notify()
     return ImportPickOut(download_item_id=dl.id)
@@ -231,7 +262,17 @@ async def pick(item_id: int, user: User = Depends(current_user),
 @router.post("/items/{item_id}/skip")
 async def skip(item_id: int, user: User = Depends(current_user),
                s: AsyncSession = Depends(get_session, scope="function")):
-    """Leave this row out (it is not moved)."""
-    it, _, _ = await _own_item(s, user, item_id)
+    """Leave this row out (it is not moved). A track known by its name alone, which this row brought, leaves the
+    playlist the row brought it into: there was nothing of it but its place there."""
+    from app import playlists
+    from app.library.tracks import has_file
+
+    it, coll, _ = await _own_item(s, user, item_id)
     it.status = "skipped"
+    track = await s.get(Track, it.track_id) if it.track_id else None
+    p = await playlists.own(s, user.id, coll.playlist_id) if coll.playlist_id else None
+    if track is not None and p is not None and not track.ref and not await has_file(s, track.id):
+        await playlists.remove_tracks(s, p, [track.id])
+        await s.commit()
+        bus.publish(user.id, "library", {"kind": "playlist", "playlist_id": str(p.id)})
     return {"ok": True}

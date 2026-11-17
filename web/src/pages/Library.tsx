@@ -1,207 +1,156 @@
-import { useEffect, useState } from 'react';
-import { api, libraryCoverUrl, withQuery } from '../api/client';
-import type { LibAlbumOut, ReleaseType } from '../api/types';
-import { Icon, type IconName } from '../components/Icon';
-import { Button, Cover, Empty, ErrorState, Field, IconButton, SectionTitle, Sheet, SkeletonRows } from '../components/ui';
-import { STANDALONE } from '../lib/embedded';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useFollowedCount, useUnseenReleases } from '../lib/releases';
+import { api } from '../api/client';
+import { ForYouTiles } from '../components/ForYouTiles';
+import { Icon } from '../components/Icon';
+import { ArtistBubble, TrackRow } from '../components/catalog';
+import { Cover, Empty, ErrorState, IconButton, PageHeader, SectionTitle, SkeletonRows } from '../components/ui';
 import { useHubEvent } from '../lib/events';
-import { recordTypeLabel, toIntOrNull, tracksWord } from '../lib/format';
+import { plural, tracksWord } from '../lib/format';
 import { useAsync, useDebounced } from '../lib/hooks';
-import { Link, navigate } from '../lib/router';
-import { attempt } from '../lib/ui';
+import { playlistMenuProps } from '../lib/playlistMenu';
+import { Link, enc, navigate } from '../lib/router';
 
-const PAGE = 50;
-
-export function LibraryPage({ initialQuery }: { initialQuery: string }) {
-  const [q, setQ] = useState(initialQuery);
-  const dq = useDebounced(q.trim(), 350);
-  const [extra, setExtra] = useState<LibAlbumOut[]>([]);
-  const [more, setMore] = useState<{ busy: boolean; done: boolean }>({ busy: false, done: false });
-  const [createOpen, setCreateOpen] = useState(false);
-  const res = useAsync((s) => api.libAlbums(dq, 0, PAGE, s), [dq]);
-  // «Перенести музыку» lives here too: the app has no «Ещё»; the banner shows until the first import
-  const imports = useAsync((s) => api.imports(s), []);
-  const offerImport = imports.data?.length === 0 && !dq;
-
-  useEffect(() => {
-    setExtra([]);
-    setMore({ busy: false, done: false });
-    const target = withQuery('/library', { q: dq });
-    if (window.location.hash !== '#' + target) navigate(target, { replace: true });
-  }, [dq]);
-
-  useHubEvent('library', () => res.reload(true));
-
-  const albums = [...(res.data ?? []), ...extra];
-  const canMore = !more.done && (res.data?.length ?? 0) >= PAGE;
-
-  const loadMore = async () => {
-    setMore({ busy: true, done: false });
-    const next = await attempt(() => api.libAlbums(dq, albums.length, PAGE));
-    setExtra((x) => [...x, ...(next ?? [])]);
-    setMore({ busy: false, done: !next || next.length < PAGE });
+/** «Библиотека» of a phone: the lists themselves, at once — «Любимое» and the playlists one keeps (a group of rows),
+ * (a finger held on one of them: its menu — the name, the picture, deleting it), the lists that make themselves («Для вас», tiles) and, last, the tags: the saved filters by them and «Все теги». A computer has the same in its
+ * side panel (`components/Sidebar.tsx`). The files the Hub keeps are «Мои файлы» of «Меню» (`pages/Files.tsx`). */
+export function LibraryPage() {
+  const lists = useAsync((s) => api.playlists(s), [], true, 'playlists');
+  const liked = useAsync((s) => api.ndLiked(s), [], true, 'liked');
+  const sels = useAsync((s) => api.tagSelections(s), [], true, 'selections');
+  const again = () => {
+    lists.reload(true);
+    liked.reload(true);
+    sels.reload(true);
   };
+  // the Hub says when a playlist or a ♥ changes
+  useHubEvent('library', again);
+  useHubEvent('reconnect', again);
+
+  const followed = useFollowedCount();
+  const fresh = useUnseenReleases();
 
   return (
-    <div>
-      <header className="pt-safe sticky top-0 z-20 bg-bg/95 px-4 pb-3 backdrop-blur">
-        <div className="flex items-center justify-between pb-3 pt-4">
-          <h1 className="text-2xl font-bold">Библиотека</h1>
-          <div className="flex gap-1">
-            <IconButton icon="transfer" label="Перенести музыку из другого сервиса" onClick={() => navigate('/import')} />
-            <IconButton icon="upload" label="Загрузить файлы" onClick={() => navigate('/upload')} />
-            <IconButton icon="plus" label="Создать свой альбом" onClick={() => setCreateOpen(true)} />
-          </div>
-        </div>
-        <div className="relative">
-          <Icon name="search" size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-dim" />
-          <input className="input pl-10" type="search" placeholder="Поиск по альбомам" aria-label="Поиск по альбомам" value={q} onChange={(e) => setQ(e.target.value)} />
-        </div>
+    <div className="px-4 pb-4">
+      <header className="pt-safe flex items-center justify-between pb-1 pt-4">
+        <h1 className="text-3xl font-bold tracking-tight">Библиотека</h1>
+        <span className="flex items-center">
+          <IconButton icon="search" size={24} label="Поиск по библиотеке" onClick={() => navigate('/library/search')} />
+          <IconButton icon="plus" size={28} label="Создать плейлист" onClick={() => navigate('/playlists')} />
+        </span>
       </header>
 
-      {STANDALONE && !dq && (
-        // a browser has no app around it: the Navidrome library a player shows, then the files the Hub keeps
-        <>
-          <ul className="mx-4 mb-2 overflow-hidden rounded-xl bg-surface">
-            <LibraryLink to="/liked" icon="heart" title="Понравившиеся" />
-            <LibraryLink to="/playlists" icon="playlist" title="Плейлисты" />
-            <LibraryLink to="/artists" icon="user" title="Исполнители" />
-            <LibraryLink to="/lib/albums" icon="disc" title="Все альбомы" />
-          </ul>
-          <SectionTitle>Мои файлы</SectionTitle>
-        </>
-      )}
-      {offerImport && (
-        <Link to="/import" className="card mx-4 mb-4 flex items-center gap-3 p-3 hover:bg-hover">
-          <Icon name="transfer" size={22} className="shrink-0 text-accent" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold">Перенести музыку из Яндекс Музыки</span>
-            <span className="block text-xs text-muted">♥, плейлисты, любимые альбомы и исполнители</span>
-          </span>
-          <Icon name="chevron" size={18} className="shrink-0 text-dim" />
-        </Link>
-      )}
-      {res.loading ? (
-        <SkeletonRows />
-      ) : res.error ? (
-        <ErrorState text={res.error} onRetry={() => res.reload()} />
-      ) : albums.length === 0 ? (
-        dq ? (
-          <Empty icon="search" title="Ничего не найдено" />
-        ) : (
-          <Empty icon="library" title="Библиотека пуста" text="Скачайте музыку через поиск или загрузите свои файлы.">
-            <div className="mt-2 flex gap-2">
-              <Button small variant="primary" icon="search" onClick={() => navigate('/search')}>
-                Поиск
-              </Button>
-              <Button small icon="upload" onClick={() => navigate('/upload')}>
-                Загрузить
-              </Button>
-            </div>
-          </Empty>
-        )
-      ) : (
-        <>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-5 px-4 pt-1 min-[520px]:grid-cols-3">
-            {albums.map((a) => (
-              <Link key={a.id} to={`/library/album/${a.id}`} className="min-w-0">
-                <Cover src={a.has_cover ? libraryCoverUrl(a.id, 300) : null} alt={a.title} className="aspect-square w-full" icon="disc" />
-                <div className="mt-2 truncate text-sm font-medium">{a.title}</div>
-                <div className="truncate text-xs text-muted">{[a.album_artist, a.year].filter(Boolean).join(' · ')}</div>
-                <div className="truncate text-xs text-dim">{[recordTypeLabel(a.release_type), tracksWord(a.track_count)].filter(Boolean).join(' · ')}</div>
-              </Link>
-            ))}
-          </div>
-          {canMore && (
-            <div className="flex justify-center py-5">
-              <Button busy={more.busy} onClick={loadMore}>
-                Показать ещё
-              </Button>
-            </div>
-          )}
-        </>
-      )}
+      <Title>Плейлисты</Title>
+      <ul className="overflow-hidden rounded-2xl bg-surface">
+        <Row to="/liked" title="Любимое" sub={liked.data ? tracksWord(liked.data.songs.length) : undefined} art={<span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-accent text-on-accent"><Icon name="heart" size={22} filled /></span>} />
+        <Row
+          to="/subscriptions"
+          title="Релизы"
+          sub={followed ? [`${followed} ${plural(followed, ['исполнитель', 'исполнителя', 'исполнителей'])}`, fresh ? `новых релизов: ${fresh}` : null].filter(Boolean).join(' · ') : 'Исполнители и их новые релизы'}
+          art={<span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent"><Icon name="user" size={22} />{fresh > 0 && <span className="absolute right-0 top-0 h-3 w-3 rounded-full bg-accent ring-2 ring-surface" />}</span>}
+        />
+        {(lists.data ?? []).map((p) => (
+          <Row
+            key={p.id}
+            menu={playlistMenuProps(p)}
+            to={`/playlist/${enc(p.id)}`}
+            title={p.name}
+            sub={tracksWord(p.song_count + (p.pending_count ?? 0))}
+            art={<Cover src={p.cover_url ? `${p.cover_url}&size=160` : null} size={48} icon="playlist" className="!rounded-xl" />}
+          />
+        ))}
+      </ul>
+      {lists.loading && !lists.data ? <SkeletonRows n={3} /> : lists.error && !lists.data ? <ErrorState text={lists.error} onRetry={() => lists.reload()} /> : null}
 
-      <CreateAlbumSheet open={createOpen} onClose={() => setCreateOpen(false)} />
+      <Title>Для вас</Title>
+      <ForYouTiles />
+
+      {/* the tags, last: the saved filters by them, and the way to the tags themselves */}
+      <Title>Подборки по тегам</Title>
+      <div className="flex flex-wrap gap-2">
+        {(sels.data ?? []).map((x) => (
+          <Link key={x.id} to={`/selection/${x.id}`} className="flex h-11 items-center gap-2 rounded-full bg-surface pl-3 pr-4 text-[15px] font-medium hover:bg-raised">
+            <Icon name="filter" size={18} className="text-accent" />
+            <span className="max-w-56 truncate">{x.name}</span>
+          </Link>
+        ))}
+        <Link to="/tags" className="flex h-11 items-center gap-2 rounded-full bg-surface pl-3 pr-4 text-[15px] font-medium text-muted hover:bg-raised hover:text-fg">
+          <Icon name="tag" size={18} />
+          Все теги
+        </Link>
+      </div>
     </div>
   );
 }
 
-function CreateAlbumSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [title, setTitle] = useState('');
-  const [artist, setArtist] = useState('');
-  const [year, setYear] = useState('');
-  const [genre, setGenre] = useState('');
-  const [type, setType] = useState<ReleaseType>('compilation');
-  const [busy, setBusy] = useState(false);
-
-  const create = async () => {
-    setBusy(true);
-    const a = await attempt(
-      () => api.createAlbum({ title: title.trim(), album_artist: artist.trim() || 'Various Artists', year: toIntOrNull(year), genre: genre.trim() || null, release_type: type }),
-      'Альбом создан',
-    );
-    setBusy(false);
-    if (a) {
-      onClose();
-      navigate(`/library/album/${a.id}`);
-    }
-  };
-
-  return (
-    <Sheet
-      open={open}
-      onClose={onClose}
-      title="Создать свой альбом"
-      footer={
-        <Button variant="primary" block busy={busy} disabled={!title.trim()} onClick={create}>
-          Создать
-        </Button>
-      }
-    >
-      <p className="mb-4 text-sm text-muted">Пустой альбом или подборка: потом перенесите в него треки из других альбомов.</p>
-      <div className="space-y-4">
-        <Field label="Название">
-          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
-        </Field>
-        <Field label="Исполнитель альбома">
-          <input className="input" value={artist} onChange={(e) => setArtist(e.target.value)} placeholder="Various Artists" />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Год">
-            <input className="input" inputMode="numeric" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))} />
-          </Field>
-          <Field label="Жанр">
-            <input className="input" value={genre} onChange={(e) => setGenre(e.target.value)} />
-          </Field>
-        </div>
-        <Field label="Тип">
-          <ReleaseTypeSelect value={type} onChange={setType} />
-        </Field>
-      </div>
-    </Sheet>
-  );
+function Title({ children }: { children: ReactNode }) {
+  return <h2 className="px-1 pb-2 pt-5 text-[13px] font-semibold uppercase tracking-wide text-muted">{children}</h2>;
 }
 
-export function ReleaseTypeSelect({ value, onChange }: { value: ReleaseType; onChange: (v: ReleaseType) => void }) {
+/** A row of the group of playlists: the rule between two rows starts after the picture. */
+function Row({ to, title, sub, art, menu }: { to: string; title: string; sub?: string; art: ReactNode; menu?: ReturnType<typeof playlistMenuProps> }) {
   return (
-    <select className="input" value={value} onChange={(e) => onChange(e.target.value as ReleaseType)}>
-      <option value="album">Альбом</option>
-      <option value="single">Сингл</option>
-      <option value="ep">EP</option>
-      <option value="compilation">Сборник</option>
-    </select>
-  );
-}
-
-function LibraryLink({ to, icon, title }: { to: string; icon: IconName; title: string }) {
-  return (
-    <li className="border-b border-line/60 last:border-0">
-      <Link to={to} className="flex min-h-14 items-center gap-4 px-4 py-2 hover:bg-fg/5">
-        <Icon name={icon} size={22} className="text-accent" />
-        <span className="min-w-0 flex-1">{title}</span>
-        <Icon name="chevron" size={18} className="text-dim" />
+    <li className="group select-none [-webkit-touch-callout:none]" {...menu}>
+      <Link to={to} className="flex h-[68px] items-center gap-3.5 pl-3.5 hover:bg-fg/5">
+        {art}
+        <span className="flex min-w-0 flex-1 flex-col justify-center self-stretch border-b border-fg/5 pr-3.5 group-last:border-0">
+          <span className="truncate font-semibold">{title}</span>
+          {sub && <span className="truncate text-[13px] text-muted">{sub}</span>}
+        </span>
       </Link>
     </li>
+  );
+}
+
+/** The search of «Библиотека» (`/library/search`): through what the listener keeps and nothing else — the artists
+ * they follow and the tracks of their playlists and «Любимое» (`/api/search/mine`). No releases: a release is not
+ * kept as such. The field has the cursor at once: the page is opened to type. */
+export function LibrarySearchPage() {
+  const [q, setQ] = useState('');
+  const dq = useDebounced(q.trim(), 250);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => input.current?.focus(), []);
+  const res = useAsync((s) => (dq ? api.searchMine(dq, s) : Promise.resolve(null)), [dq]);
+  const d = dq ? res.data : null;
+  const tracks = d?.tracks ?? [];
+  return (
+    <div className="pb-4">
+      <PageHeader title="Поиск по библиотеке" back="/library" />
+      <div className="px-4 pb-2 lg:px-6">
+        <input ref={input} className="input" type="search" placeholder="Трек из плейлистов или исполнитель" aria-label="Поиск по библиотеке" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+      {!dq ? (
+        <p className="px-4 py-8 text-center text-sm text-muted lg:px-6">Ищет среди треков ваших плейлистов и «Любимого» и среди исполнителей, на которых вы подписаны.</p>
+      ) : res.loading && !d ? (
+        <SkeletonRows n={6} />
+      ) : res.error ? (
+        <ErrorState text={res.error} onRetry={() => res.reload()} />
+      ) : d && !d.artists.length && !tracks.length ? (
+        <Empty icon="search" title="В библиотеке такого нет" text="Попробуйте другое написание — или поищите во всём каталоге на вкладке «Поиск»." />
+      ) : (
+        d && (
+          <>
+            {d.artists.length > 0 && (
+              <section aria-label="Исполнители">
+                <SectionTitle>Исполнители</SectionTitle>
+                <div className="no-scrollbar flex gap-3 overflow-x-auto px-4 pb-1">
+                  {d.artists.map((a) => (
+                    <ArtistBubble key={a.ref} artist={a} />
+                  ))}
+                </div>
+              </section>
+            )}
+            {tracks.length > 0 && (
+              <section aria-label="Треки">
+                <SectionTitle>Треки</SectionTitle>
+                {tracks.map((t, i) => (
+                  <TrackRow key={`${t.ref}:${i}`} track={t} showAlbum queue={tracks.filter((x) => !x.unknown)} index={i + 1} />
+                ))}
+              </section>
+            )}
+          </>
+        )
+      )}
+    </div>
   );
 }

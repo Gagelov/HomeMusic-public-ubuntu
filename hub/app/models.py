@@ -5,12 +5,34 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    select,
+    text,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, column_property, mapped_column, relationship
 
 
 def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def naive(value: datetime | None) -> datetime | None:
+    """UTC without a zone, the way the Hub keeps its times."""
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -31,6 +53,17 @@ class User(Base):
     # the confirmed email the account registered with (lower case): sign-in by it, too
     email: Mapped[str | None] = mapped_column(String(320), unique=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # the user's own Telegram bot (app/telegram.py): its key (Fernet) and the private chat it sends tracks to
+    # the user's ListenBrainz account, if they gave one (app/listenbrainz.py): the token (Fernet), the name it is
+    # of, and the time of the last listen sent there
+    lb_token_enc: Mapped[str | None] = mapped_column(Text)
+    lb_user: Mapped[str | None] = mapped_column(String(128))
+    lb_sent_until: Mapped[datetime | None] = mapped_column(DateTime)
+    tg_bot_token_enc: Mapped[str | None] = mapped_column(Text)
+    tg_bot_username: Mapped[str | None] = mapped_column(String(64))
+    tg_chat_id: Mapped[str | None] = mapped_column(String(32))
+    tg_chat_name: Mapped[str | None] = mapped_column(String(128))
+    tg_with_lyrics: Mapped[bool] = mapped_column(Boolean, default=False)  # send the track's text with it by default
 
 
 # Navidrome looks up usernames using SQLite's ASCII case-insensitive collation.
@@ -38,13 +71,21 @@ Index("uq_users_nd_username_nocase", User.nd_username.collate("NOCASE"), unique=
 
 
 class SearchHistory(Base):
-    """The account's recent queries, shared by browsers and the embedded app."""
+    """«Недавнее» of the search, shared by the account's browsers and the embedded app: what was opened from the
+    results — a track, an album, an artist — and the queries asked for with Enter. What is merely typed is not kept."""
 
     __tablename__ = "search_history"
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    query_key: Mapped[str] = mapped_column(String(1024), primary_key=True)
-    query: Mapped[str] = mapped_column(String(512))
+    # one line per thing: "q:<the query, casefolded>" or "<kind>:<ref>"
+    key: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # query | track | album | artist
+    title: Mapped[str] = mapped_column(String(512))  # the query itself, or the name of what was opened
+    subtitle: Mapped[str | None] = mapped_column(String(512), nullable=True)  # whose it is
+    ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cover_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    link: Mapped[str | None] = mapped_column(String(512), nullable=True)  # the page of the app a tap opens
+    times: Mapped[int] = mapped_column(Integer, default=1, server_default="1")  # how often it was come back to
     searched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -131,14 +172,14 @@ class Album(Base):
 
 
 class Track(Base):
+    """A song the Hub knows (ARCHITECTURE.md): its names and length. Nothing here is about a file — a track has
+    none, one or several (`TrackFile`), and the one that plays is the newest."""
+
     __tablename__ = "tracks"
     __table_args__ = (Index("ix_tracks_fingerprint", "fingerprint"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    uid: Mapped[str] = mapped_column(String(36), unique=True)  # HOMEMUSIC_TRACK_ID (Navidrome track PID)
     album_id: Mapped[int | None] = mapped_column(ForeignKey("albums.id", ondelete="SET NULL"), index=True)
-    path: Mapped[str] = mapped_column(String(1024), unique=True)  # relative to library/, forward slashes
-    nd_song_id: Mapped[str | None] = mapped_column(String(64), index=True)
     artist: Mapped[str] = mapped_column(String(512))
     title: Mapped[str] = mapped_column(String(512))
     album: Mapped[str | None] = mapped_column(String(512))
@@ -148,19 +189,59 @@ class Track(Base):
     year: Mapped[int | None] = mapped_column(Integer)
     genre: Mapped[str | None] = mapped_column(String(128))
     duration_s: Mapped[int | None] = mapped_column(Integer)
+    isrc: Mapped[str | None] = mapped_column(String(16), index=True)
+    # what the catalog calls the song ("dz:3135556"): one track per ref. None — the catalog does not know it
+    ref: Mapped[str | None] = mapped_column(String(64), unique=True)
+    explicit: Mapped[bool | None] = mapped_column(Boolean)
+    # who made the beat, where the track's name said so («(prod. by X)»): not a performer, not part of the name
+    # (app/library/titles.py)
+    producer: Mapped[str | None] = mapped_column(String(300))
+    fingerprint: Mapped[str] = mapped_column(String(1024))  # normalized "artist|title"
+    # what the catalog said of the song when the track was made (a `CatalogTrack`): its cover, its album and
+    # artists there. A track without a file is drawn from this; None — the catalog does not know the song
+    catalog: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # a listener put its name right (app/library/edits.py): the lists the catalog answers show this name then
+    renamed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # it has a cover of its own (`track_covers`); the key changes with the picture, for the caches of a page
+    cover_key: Mapped[str | None] = mapped_column(String(16))
+    # its files: given with a new track they are saved with it. Never read through here (a query names them)
+    files: Mapped[list[TrackFile]] = relationship(lazy="raise", passive_deletes=True, cascade="save-update, merge")
+
+
+class TrackFile(Base):
+    """A file of the library that plays a track. `uid` is written into the file as HOMEMUSIC_TRACK_ID (Navidrome's
+    track PID); `nd_song_id` — the song Navidrome made of the file, known after its scan."""
+
+    __tablename__ = "track_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
+    uid: Mapped[str] = mapped_column(String(36), unique=True)
+    path: Mapped[str] = mapped_column(String(1024), unique=True)  # relative to library/, forward slashes
+    nd_song_id: Mapped[str | None] = mapped_column(String(64), index=True)
     bitrate_kbps: Mapped[int | None] = mapped_column(Integer)
     codec: Mapped[str | None] = mapped_column(String(16))
-    isrc: Mapped[str | None] = mapped_column(String(16), index=True)
-    deezer_track_id: Mapped[str | None] = mapped_column(String(32), index=True)
-    explicit: Mapped[bool | None] = mapped_column(Boolean)
     source: Mapped[str | None] = mapped_column(String(32))  # hitmoz/hitmos_fm/ytdlp/upload/manual
     source_url: Mapped[str | None] = mapped_column(String(2048))
     source_upload_date: Mapped[date | None] = mapped_column(Date)
     acquired_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
-    fingerprint: Mapped[str] = mapped_column(String(1024))  # normalized "artist|title"
     warnings: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # the picture of its sound (app/library/acoustic.py): None — not drawn yet, empty — it could not be
+    chroma: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     added_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+# What plays a track, read with the track: the Navidrome song and the path of its newest file (none: the track has
+# no file, or Navidrome has not scanned it yet). Read-only — a file is changed through its own row.
+Track.nd_song_id = column_property(
+    select(TrackFile.nd_song_id).where(TrackFile.track_id == Track.id, TrackFile.nd_song_id.is_not(None))
+    .order_by(TrackFile.id.desc()).limit(1).correlate_except(TrackFile).scalar_subquery())
+Track.path = column_property(
+    select(TrackFile.path).where(TrackFile.track_id == Track.id)
+    .order_by(TrackFile.id.desc()).limit(1).correlate_except(TrackFile).scalar_subquery())
 
 
 class CatalogCache(Base):
@@ -200,10 +281,14 @@ class DownloadItem(Base):
     provider: Mapped[str | None] = mapped_column(String(32))
     chosen_candidate_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     candidates_json: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # the journal: its steps in order ({t, kind: info/ok/warn/bad, text, cand?}) — `jobs.downloads.step`
+    log_json: Mapped[list[Any]] = mapped_column(JSON, default=list, server_default="[]")
     error: Mapped[str | None] = mapped_column(Text)
     warnings: Mapped[list[Any]] = mapped_column(JSON, default=list)
     track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"))
     force: Mapped[bool] = mapped_column(Boolean, default=False)  # explicit re-download (new file next to locked one)
+    # taken off the «Загрузки» list by the user; the row stays: a playlist's order, an import and a mix lean on it
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -241,6 +326,40 @@ class Upload(Base):
     error: Mapped[str | None] = mapped_column(Text)
     track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # the picture of its sound and its length: by them it is told to be a recording the library has
+    chroma: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    duration_s: Mapped[float | None] = mapped_column(Float)
+
+
+class Upgrade(Base):
+    """A better file looked for in the place of a weak one (app/library/upgrade.py). `state`: queued — waiting its
+    turn; searching — being looked for; found — a file is kept aside (`staged_path`) for the listener to say;
+    replaced — it took the old file's place; none — nothing better (`note`: why); kept — the listener declined."""
+
+    __tablename__ = "upgrades"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("download_items.id", ondelete="SET NULL"))
+    state: Mapped[str] = mapped_column(String(16), default="queued")
+    # what is looked for: "better" — a better file of the track; "identify" — whether the track is the catalog's
+    # record `meta_json` (a download's meta of it), told by the sound of that record's file
+    kind: Mapped[str] = mapped_column(String(16), default="better")
+    meta_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    staged_path: Mapped[str | None] = mapped_column(String(1024))  # relative to staging/
+    codec: Mapped[str | None] = mapped_column(String(16))  # of the file found
+    bitrate_kbps: Mapped[int | None] = mapped_column(Integer)
+    likeness: Mapped[float | None] = mapped_column(Float)  # how alike the two files sound, 0…1
+    provider: Mapped[str | None] = mapped_column(String(32))
+    source_url: Mapped[str | None] = mapped_column(String(2048))
+    note: Mapped[str | None] = mapped_column(Text)
+    was_codec: Mapped[str | None] = mapped_column(String(16))  # of the file it had
+    was_kbps: Mapped[int | None] = mapped_column(Integer)
+    # where that file lies now, in the trash folder (absolute): heard beside the new one, and brought back, while kept
+    was_path: Mapped[str | None] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class AssistantTask(Base):
@@ -276,18 +395,6 @@ class AssistantChat(Base):
     messages: Mapped[list[Any]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
-
-
-class PendingPlaylistAdd(Base):
-    __tablename__ = "pending_playlist_adds"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    playlist_id: Mapped[str] = mapped_column(String(64), index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    download_item_id: Mapped[int] = mapped_column(ForeignKey("download_items.id", ondelete="CASCADE"), index=True)
-    position: Mapped[int] = mapped_column(Integer, default=0)
-    applied_song_id: Mapped[str | None] = mapped_column(String(64))  # anchor while an earlier item needs review
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Import(Base):
@@ -327,8 +434,9 @@ class ImportCollection(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
     selected: Mapped[bool] = mapped_column(Boolean, default=True)
     cover_url: Mapped[str | None] = mapped_column(String(1024))
-    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))
-    nd_song_ids: Mapped[list[Any]] = mapped_column(JSON, default=list)  # what the Navidrome playlist holds now
+    # a playlist of the service: the Hub's playlist made of it, and the tracks it was last given, in order
+    playlist_id: Mapped[int | None] = mapped_column(ForeignKey("playlists.id", ondelete="SET NULL"))
+    given: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
 
 class ImportItem(Base):
@@ -379,6 +487,7 @@ class PlayEvent(Base):
         Index("ix_play_events_user_target_ts", "user_id", "target_type", "ts", "id"),
         Index("ix_play_events_playback", "user_id", "device_id", "playback_id"),
         Index("ix_play_events_user_launch", "user_id", "launch_id"),
+        Index("ix_play_events_track", "track_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -388,6 +497,9 @@ class PlayEvent(Base):
     kind: Mapped[str] = mapped_column(String(16))  # start/skip/finish/like/unlike/dislike/undislike
     ref: Mapped[str | None] = mapped_column(String(64))  # catalog track
     nd_song_id: Mapped[str | None] = mapped_column(String(64))  # Navidrome song
+    # the Hub's track the event is about (`app.plays.attach_tracks`): `ref` and `nd_song_id` are what the client
+    # called it then — a song's id changes with its file, the track stays. None: a catalog track the Hub never kept
+    track_id: Mapped[int | None] = mapped_column(ForeignKey("tracks.id", ondelete="SET NULL"))
     target_type: Mapped[str] = mapped_column(String(16), default="track", server_default="track")
     nd_album_id: Mapped[str | None] = mapped_column(String(64), index=True)
     nd_artist_id: Mapped[str | None] = mapped_column(String(64), index=True)
@@ -402,6 +514,8 @@ class PlayEvent(Base):
     position_s: Mapped[float | None] = mapped_column(Float)
     duration_s: Mapped[float | None] = mapped_column(Float)
     context: Mapped[str | None] = mapped_column(String(128))  # mix:<id>, wave:<session>, album, playlist, search...
+    # the page the list was started on ("/playlist/12"), when the player says it: «История» names the list by it
+    page: Mapped[str | None] = mapped_column(String(128))
     client: Mapped[str] = mapped_column(String(32))  # app/<version>, pwa, navidrome
     received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     # analytics (INSIGHTS.md 6.5): every event of one launched list shares `launch_id` ("wave:<sid>" for a wave);
@@ -471,7 +585,9 @@ class MixSettings(Base):
 
 
 class Mix(Base):
-    """One «Микс дня» of a user: lives until the next one (MIXES.md 6)."""
+    """One «Микс дня» of a user: lives until the next one (MIXES.md 6). `kind` "weekly": an issue of «Открытия
+    недели» kept the same way — its tracks downloaded quietly, its playlist in Navidrome, the unheard ones gone with
+    the next issue."""
 
     __tablename__ = "mixes"
 
@@ -481,11 +597,25 @@ class Mix(Base):
     title: Mapped[str] = mapped_column(String(256))
     description: Mapped[str] = mapped_column(Text, default="")
     mode: Mapped[str] = mapped_column(String(16))
+    kind: Mapped[str] = mapped_column(String(16), default="daily", server_default="daily")  # daily/weekly
     nd_playlist_id: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), default="active")  # active/closed
     batch_id: Mapped[int | None] = mapped_column(ForeignKey("download_batches.id", ondelete="SET NULL"))
     stats_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # generators, timings (the report)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ForYouList(Base):
+    """A list of «Для вас» as a playlist of Navidrome (`app/for_you.py`): one per user and list — "weekly" or a kind
+    of `app.stats.AUTO`. `songs_json`: the songs it was last given."""
+
+    __tablename__ = "for_you_lists"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    nd_playlist_id: Mapped[str | None] = mapped_column(String(64))
+    songs_json: Mapped[list[Any]] = mapped_column(JSON, default=list, server_default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class MixItem(Base):
@@ -565,7 +695,7 @@ class WaveItem(Base):
 
 
 class SmartSession(Base):
-    """One run of the smart shuffle of a playlist or of «Понравившиеся» (MIXES.md 8): the order of the own songs
+    """One run of the smart shuffle of a playlist or of «Любимое» (MIXES.md 8): the order of the own songs
     and the recommendations the Hub put between them. `state_json` — what the session needs to go on after a
     restart (`app.mixes.smart`); the rest is for the analytics."""
 
@@ -630,3 +760,458 @@ class SmartHidden(Base):
     artist: Mapped[str] = mapped_column(String(256), default="", server_default="")
     title: Mapped[str] = mapped_column(String(256), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Lyrics(Base):
+    """The lyrics of a library track (app/lyrics): kept here so they open at once and without the internet."""
+
+    __tablename__ = "lyrics"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(8), index=True)  # word/synced/plain/none (looked for, not found)
+    source: Mapped[str | None] = mapped_column(String(16))  # file/lrclib/netease/ovh
+    # [{"t": ms, "text": str, "end"?: ms, "words"?: [{"t": ms, "text": str}]}] — a timed text
+    lines_json: Mapped[list[Any] | None] = mapped_column(JSON)
+    plain: Mapped[str | None] = mapped_column(Text)  # a text without timings
+    search_text: Mapped[str | None] = mapped_column(Text)  # the whole text, case-folded: the search inside lyrics
+    offset_ms: Mapped[int] = mapped_column(Integer, default=0)  # the user's shift of the timings
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)  # chosen by hand: the search leaves it alone
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrackLink(Base):
+    """A library track's id on a music service (app/links.py): what «Поделиться ссылкой» is made of."""
+
+    __tablename__ = "track_links"
+    __table_args__ = (Index("ix_track_links_external", "service", "external_id"),)
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    service: Mapped[str] = mapped_column(String(16), primary_key=True)  # spotify/yandex/ytm
+    external_id: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TgChat(Base):
+    """A chat the user's Telegram bot can send to (app/telegram_chats.py): the private one, a group, a channel."""
+
+    __tablename__ = "tg_chats"
+    __table_args__ = (UniqueConstraint("user_id", "chat_id", name="uq_tg_chats_user_chat"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    chat_id: Mapped[str] = mapped_column(String(32))  # Telegram's id
+    kind: Mapped[str] = mapped_column(String(16))  # private/group/supergroup/channel
+    title: Mapped[str] = mapped_column(String(256))
+    photo: Mapped[bytes | None] = mapped_column(LargeBinary)  # the chat's small picture (a JPEG)
+    photo_key: Mapped[str | None] = mapped_column(String(64))  # Telegram's id of that picture: changes with it
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class LyricsTranslation(Base):
+    """A track's lyrics in another language (app/lyrics/translations.py): made once, kept for everyone."""
+
+    __tablename__ = "lyrics_translations"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    lang: Mapped[str] = mapped_column(String(8), primary_key=True)  # ru/en/...
+    provider: Mapped[str | None] = mapped_column(String(16))  # llm/google/mymemory
+    lines_json: Mapped[list[Any] | None] = mapped_column(JSON)  # line for line with the text it was made of
+    source_sig: Mapped[str | None] = mapped_column(String(40))  # of that text: another text makes it stale
+    edited_json: Mapped[list[Any] | None] = mapped_column(JSON)  # the lines a listener corrected by hand
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrackCover(Base):
+    """A track's own cover (app/library/edits.py): a square JPEG, in its file too."""
+
+    __tablename__ = "track_covers"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    image: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class Edit(Base):
+    """A change a listener made to a track or an album (app/library/edits.py): who, when, and `changes_json`
+    {field: [what it was, what it is]}. The last one is shown beside the name; any can be read back."""
+
+    __tablename__ = "edits"
+    __table_args__ = (Index("ix_edits_target", "target_type", "target_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    target_type: Mapped[str] = mapped_column(String(8))  # track / album
+    target_id: Mapped[int] = mapped_column(Integer)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    changes_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ArtistBanner(Base):
+    """The wide picture over an artist's page (app/catalog/banners.py): kept on the Hub. No `image`: there is none —
+    looked for again some time after `checked_at`."""
+
+    __tablename__ = "artist_banners"
+
+    artist_ref: Mapped[str] = mapped_column(String(64), primary_key=True)
+    image: Mapped[bytes | None] = mapped_column(LargeBinary)  # a JPEG
+    key: Mapped[str | None] = mapped_column(String(16))  # changes with the picture, for the caches of a page
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrashedTrack(Base):
+    """A deleted track, while its file is kept in the trash (app/library/trash.py): what it was — the track, its
+    files and where they went, the places it had in playlists, its tags — to bring it back as it was."""
+
+    __tablename__ = "trashed_tracks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    track_id: Mapped[int] = mapped_column(Integer)  # the id it had: it gets it back while nothing has taken it
+    title: Mapped[str] = mapped_column(String(512))
+    artist: Mapped[str] = mapped_column(String(512))
+    album: Mapped[str | None] = mapped_column(String(512))
+    data_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    cover: Mapped[bytes | None] = mapped_column(LargeBinary)  # its own cover, if it had one
+    deleted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ForYouSeen(Base):
+    """The issue of a list of «Для вас» the user opened last (app/api/for_you.py): a newer one is «новый»."""
+
+    __tablename__ = "for_you_seen"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)  # mix / weekly
+    issue: Mapped[str] = mapped_column(String(32))
+
+
+class PlaylistCover(Base):
+    """A picture the user gave a playlist (app/api/playlists.py): shown instead of the one Navidrome makes."""
+
+    __tablename__ = "playlist_covers"
+
+    playlist_id: Mapped[int] = mapped_column(ForeignKey("playlists.id", ondelete="CASCADE"), primary_key=True)
+    image: Mapped[bytes] = mapped_column(LargeBinary)  # a square JPEG
+    key: Mapped[str] = mapped_column(String(16))  # changes with the picture: the page's cache follows it
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Tag(Base):
+    """A tag tracks are filtered by (app/tags.py). `group`: lang / genre — everyone's, set by the Hub itself; own —
+    a user's (`user_id`), set by hand."""
+
+    __tablename__ = "tags"
+    __table_args__ = (Index("ix_tags_group_user", "group", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    group: Mapped[str] = mapped_column(String(8))
+    name: Mapped[str] = mapped_column(String(64))
+    code: Mapped[str | None] = mapped_column(String(16))  # of a language (ja, en...), «instrumental»
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrackTag(Base):
+    """A tag on a track. `auto`: the Hub set it (and takes it off when it no longer holds)."""
+
+    __tablename__ = "track_tags"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True, index=True)
+    auto: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class TagRemoved(Base):
+    """A tag the Hub would set by itself, taken off this track by hand: it is not set again."""
+
+    __tablename__ = "tags_removed"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True)
+
+
+class TagSelection(Base):
+    """«Подборка по тегам»: a saved filter — where to look (`scope`: liked / playlist:<id> / library) and which tags
+    are wanted or left out. It holds no tracks: the list is made anew every time it is opened."""
+
+    __tablename__ = "tag_selections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    scope: Mapped[str] = mapped_column(String(80))
+    filter_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # tag id / "untagged" -> yes / no
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ListenHistory(Base):
+    """A listen brought in from another service's history («Статистика», app/stats.py): Spotify's «Extended streaming
+    history». It is only counted — mixes and the taste profile never read it. `key` names the track: "sp:<id>" or
+    "t:<artist|title>"; which library track it is, is told anew every time (a track downloaded later is found)."""
+
+    __tablename__ = "listen_history"
+    __table_args__ = (
+        UniqueConstraint("user_id", "ts", "key", name="uq_listen_history"),
+        Index("ix_listen_history_user_ts", "user_id", "ts"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    ts: Mapped[datetime] = mapped_column(DateTime)  # UTC, when the listen ended
+    ms: Mapped[int] = mapped_column(Integer)  # listened
+    key: Mapped[str] = mapped_column(String(200))
+    spotify_id: Mapped[str | None] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(512))
+    artist: Mapped[str] = mapped_column(String(512))
+    album: Mapped[str | None] = mapped_column(String(512))
+    source: Mapped[str] = mapped_column(String(16), default="spotify")
+
+
+class Playlist(Base):
+    """A playlist (ARCHITECTURE.md): the Hub's own, with tracks that may have no file yet. `kind`: "liked" —
+    «Любимое», one per user; "user" — made by hand or by an import. What third-party apps see of it is a mirror in
+    Navidrome (`nd_playlist_id`); `mirrored` — the songs the mirror was last given."""
+
+    __tablename__ = "playlists"
+    __table_args__ = (
+        Index("ix_playlists_user", "user_id", "kind"),
+        # «Любимое» and «Микс дня» are one per user: two requests at once cannot make two
+        Index("uq_playlists_one_of_a_kind", "user_id", "kind", unique=True, sqlite_where=text("kind IN ('liked', 'mix')")),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(8), default="user")
+    name: Mapped[str] = mapped_column(String(200))
+    nd_playlist_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    mirrored: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    nd_cover: Mapped[str | None] = mapped_column(String(128))  # the picture Navidrome makes of the mirror's albums
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PlaylistItem(Base):
+    """A track's place in a playlist. A track may stand in a playlist more than once."""
+
+    __tablename__ = "playlist_items"
+    __table_args__ = (Index("ix_playlist_items_order", "playlist_id", "position"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    playlist_id: Mapped[int] = mapped_column(ForeignKey("playlists.id", ondelete="CASCADE"))
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DiscoveryIssue(Base):
+    """One week's «Открытия недели» (app/mixes/discover.py): catalog tracks of artists the user has not heard.
+    Issues are kept — an old week can be opened again; a track that was in one is not picked for another."""
+
+    __tablename__ = "discovery_issues"
+    __table_args__ = (UniqueConstraint("user_id", "week", name="uq_discovery_issues"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    week: Mapped[date] = mapped_column(Date)  # the Monday it is of, in the users' local time
+    tracks_json: Mapped[list[Any]] = mapped_column(JSON, default=list)  # CatalogTrack dumps, in order
+    stats_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ArtistRelease(Base):
+    """A release of an artist the user follows (♥ on the artist's page) — the «Релизы» feed, app/releases.py."""
+
+    __tablename__ = "artist_releases"
+    __table_args__ = (
+        UniqueConstraint("user_id", "album_ref", name="uq_artist_releases"),
+        Index("ix_artist_releases_user_date", "user_id", "release_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    artist_ref: Mapped[str] = mapped_column(String(64))  # the followed artist it was found at
+    artist: Mapped[str] = mapped_column(String(512))
+    album_ref: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(512))
+    record_type: Mapped[str] = mapped_column(String(16), default="album")  # album | single | ep | compilation
+    release_date: Mapped[date] = mapped_column(Date)
+    cover_url: Mapped[str | None] = mapped_column(String(512))
+    nb_tracks: Mapped[int | None] = mapped_column(Integer)
+    found_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime)  # the user has opened the feed since
+    # its tracks as the catalog gave them (`CatalogTrack`); None: not asked for yet
+    tracks_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON(none_as_null=True))
+
+
+class ArtistReleaseExclusion(Base):
+    """A release the catalog files under an artist that is a namesake's (app/catalog/namesakes.py): for the whole
+    server. What it was is kept with it, to show it where it can be brought back."""
+
+    __tablename__ = "artist_release_exclusions"
+    __table_args__ = (UniqueConstraint("artist_ref", "album_ref", name="uq_artist_release_exclusions"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artist_ref: Mapped[str] = mapped_column(String(64))
+    artist: Mapped[str] = mapped_column(String(512))
+    album_ref: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(512))
+    record_type: Mapped[str | None] = mapped_column(String(16))
+    year: Mapped[int | None] = mapped_column(Integer)
+    cover_url: Mapped[str | None] = mapped_column(String(512))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ArtistReleaseCheck(Base):
+    """When the releases of a followed artist were last looked up."""
+
+    __tablename__ = "artist_release_checks"
+    __table_args__ = (UniqueConstraint("user_id", "artist_ref", name="uq_artist_release_checks"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    artist_ref: Mapped[str] = mapped_column(String(64))
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # the latest thing they released, however long ago: «Подписки» says it beside the artist
+    last_release_date: Mapped[date | None] = mapped_column(Date)
+    last_release_title: Mapped[str | None] = mapped_column(String(512))
+    picture_url: Mapped[str | None] = mapped_column(String(512))  # the artist's photo, as the catalog gave it
+
+
+class AppSetting(Base):
+    """A setting of the whole server that the admin changes in the app (the order of lyrics sources)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class Artist(Base):
+    """An artist as the Hub knows them (app/library/artists.py): the one name the library is written in."""
+
+    __tablename__ = "artists"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ArtistName(Base):
+    """A spelling an artist is known by: whose a bare name is, where nothing but the name says who made the music.
+    `key`: the spelling without the letters' case, one artist's only. `source`: where it came from (catalog /
+    library / manual)."""
+
+    __tablename__ = "artist_names"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(300))
+    key: Mapped[str] = mapped_column(String(300), unique=True)
+    source: Mapped[str] = mapped_column(String(16), default="library")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ArtistRef(Base):
+    """A catalog's own record of an artist ("dz:8874422"), and who that is here. An artist may have several."""
+
+    __tablename__ = "artist_refs"
+
+    ref: Mapped[str] = mapped_column(String(64), primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
+    tied_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrackArtist(Base):
+    """Who a track is by, in the order of its credits: the line in `Track.artist` is these artists' names."""
+
+    __tablename__ = "track_artists"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
+
+
+class AlbumArtist(Base):
+    """Whose an album is, as `TrackArtist` says of a track."""
+
+    __tablename__ = "album_artists"
+
+    album_id: Mapped[int] = mapped_column(ForeignKey("albums.id", ondelete="CASCADE"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), index=True)
+
+
+class ArtistLook(Base):
+    """How an artist is shown, as the listeners chose (app/library/looks.py): the round photo and the wide picture
+    over their page. `*_choice` None: as by itself. The pictures chosen are kept here (JPEG)."""
+
+    __tablename__ = "artist_looks"
+
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+    photo_choice: Mapped[str | None] = mapped_column(String(80))  # profile:<ref> / album / own
+    photo_image: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)  # a picture of one's own (kept though another is chosen)
+    photo_key: Mapped[str | None] = mapped_column(String(16))
+    banner_choice: Mapped[str | None] = mapped_column(String(320))  # name:<spelling> / none / own
+    banner_image: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    banner_key: Mapped[str | None] = mapped_column(String(16))
+    by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ArtistLink(Base):
+    """Two artists that are projects of one person: each is named on the other's page. `low_id` < `high_id`."""
+
+    __tablename__ = "artist_links"
+
+    low_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+    high_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+
+
+class ArtistApart(Base):
+    """Two artists a listener said are not one («это другой»): not offered to be joined again."""
+
+    __tablename__ = "artist_apart"
+
+    low_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+    high_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+
+
+class TrackName(Base):
+    """Another name a track is known by — the search reads them. `source`: renamed (the name it had) / file (what
+    its file called it) / manual."""
+
+    __tablename__ = "track_names"
+    __table_args__ = (UniqueConstraint("track_id", "key", name="uq_track_names"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(512))
+    key: Mapped[str] = mapped_column(String(512))
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Song(Base):
+    """A song that several tracks are recordings of (app/library/versions.py). `preferred_track_id`: the version a
+    list that shows the song once shows — said by hand, for everyone."""
+
+    __tablename__ = "songs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    preferred_track_id: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SongTrack(Base):
+    """A track that is a version of a song, and a word for what it is («старая версия», «Deluxe»). A track is a
+    version of one song at most; one that is nobody's version has no row."""
+
+    __tablename__ = "song_tracks"
+
+    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True)
+    song_id: Mapped[int] = mapped_column(ForeignKey("songs.id", ondelete="CASCADE"), index=True)
+    label: Mapped[str | None] = mapped_column(String(64))
+    joined_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+

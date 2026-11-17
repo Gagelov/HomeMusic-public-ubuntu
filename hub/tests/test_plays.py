@@ -14,7 +14,7 @@ import pytest
 import respx
 from sqlalchemy import select
 
-from tests.support import app_client
+from tests.support import app_client, filed_track
 
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
 
@@ -57,7 +57,7 @@ async def env(hub_env):
         with respx.mock(assert_all_called=False) as mock:
             mock.route(host="navidrome.test").mock(side_effect=nd_handler)
             async with app_client(app) as client:
-                await add_track("Кино", "Группа крови", "ndK", deezer_track_id="100")
+                await add_track("Кино", "Группа крови", "ndK", ref="dz:100")
                 await add_track("Кто-то", "Своё", "ndX")
                 yield {"client": client, "state": state}
 
@@ -65,10 +65,9 @@ async def env(hub_env):
 async def add_track(artist: str, title: str, nd_song_id: str, duration_s: int = 245, **kw) -> int:
     from app.db import session_scope
     from app.matching.normalize import fingerprint
-    from app.models import Track
 
     async with session_scope() as s:
-        t = Track(uid=str(uuid.uuid4()), path=f"{artist}/{title}.mp3", nd_song_id=nd_song_id, artist=artist,
+        t = filed_track(uid=str(uuid.uuid4()), path=f"{artist}/{title}.mp3", nd_song_id=nd_song_id, artist=artist,
                   title=title, duration_s=duration_s, fingerprint=fingerprint(artist, title), **kw)
         s.add(t)
         await s.flush()
@@ -266,135 +265,6 @@ async def test_own_pending_unlike_is_in_starred_state(env):
     assert (await c.get("/api/starred")).json()["refs"] == []
 
 
-async def test_catalog_favorite_download_is_idempotent_and_unlike_cancels_pending(env):
-    from app.db import session_scope
-    from app.models import DownloadBatch, Job
-
-    c = env["client"]
-    like = ev("like", event_id="catalog-like", ref="dz:987")
-    await post(c, like)  # Telemetry may win the race with the command.
-    body = {"track_refs": ["dz:987"], "star": True, "favorite_event_id": like["event_id"],
-            "favorite_ts": like["ts"], "favorite_client": like["client"]}
-    first = await c.post("/api/downloads", json=body)
-    assert first.status_code == 200, first.text
-    again = await c.post("/api/downloads", json=body)
-    assert again.status_code == 200 and again.json()["batch_id"] == first.json()["batch_id"]
-    unlike = ev("unlike", event_id="catalog-unlike", ref="dz:987")
-    await post(c, unlike)
-    response = await c.post("/api/star", json={"refs": ["dz:987"], "unstar": True,
-                                                "event_id": unlike["event_id"], "ts": unlike["ts"]})
-    assert response.status_code == 200, response.text
-    assert "dz:987" not in (await c.get("/api/starred")).json()["refs"]
-    async with session_scope() as s:
-        jobs = (await s.execute(select(Job).where(Job.kind == "expand_batch"))).scalars().all()
-        batches = (await s.execute(select(DownloadBatch).where(DownloadBatch.origin == "favorite-app"))).scalars().all()
-    assert len(jobs) == len(batches) == 1
-    assert jobs[0].payload_json["favorite_events"] == {"dz:987": "catalog-like"}
-    assert [e.event_id for e in await stored() if e.ref == "dz:987"] == ["catalog-like", "catalog-unlike"]
-
-
-async def test_late_catalog_like_does_not_enqueue_after_newer_unlike(env):
-    from app.db import session_scope
-    from app.models import Job
-
-    c = env["client"]
-    now = datetime.now(UTC)
-    await post(c, ev("unlike", at=now, event_id="newer", ref="dz:988"))
-    r = await c.post("/api/downloads", json={"track_refs": ["dz:988"], "star": True,
-        "favorite_event_id": "older", "favorite_ts": iso(now - timedelta(seconds=1))})
-    assert r.status_code == 200, r.text
-    assert "dz:988" not in (await c.get("/api/starred")).json()["refs"]
-    async with session_scope() as s:
-        assert not (await s.execute(select(Job).where(Job.kind == "expand_batch"))).scalars().all()
-
-
-async def test_compensation_before_expansion_cancels_quiet_download(env):
-    from app.db import session_scope
-    from app.jobs.downloads import create_items
-    from app.models import DownloadBatch, DownloadItem, Job
-    from app.providers.base import TrackQuery
-
-    c = env["client"]
-    r = await c.post("/api/downloads", json={"track_refs": ["dz:990"], "star": True,
-                                               "favorite_event_id": "original"})
-    assert r.status_code == 200, r.text
-    await post(c, ev("unlike", event_id="undo", ref="dz:990", reverts_event_id="original"))
-    async with session_scope() as s:
-        batch = await s.get(DownloadBatch, r.json()["batch_id"])
-        await create_items(s, batch, [(TrackQuery(artist="A", title="T"),
-                                      {"track_ref": "dz:990"}, None)], star=True,
-                           favorite_events={"dz:990": "original"})
-        item = (await s.execute(select(DownloadItem).where(DownloadItem.batch_id == batch.id))).scalar_one()
-        assert item.status == "cancelled" and item.query_json["star_cancelled"]
-        assert not (await s.execute(select(Job).where(Job.kind == "download_item"))).scalars().all()
-
-
-async def test_catalog_like_joins_explicit_download_without_changing_its_visibility(env):
-    from app.db import session_scope
-    from app.models import DownloadBatch, DownloadItem, User
-
-    c = env["client"]
-    async with session_scope() as s:
-        user = (await s.execute(select(User))).scalars().first()
-        batch = DownloadBatch(user_id=user.id, origin="catalog")
-        s.add(batch)
-        await s.flush()
-        item = DownloadItem(user_id=user.id, batch_id=batch.id, status="queued",
-                            query_json={"query": {}, "meta": {"track_ref": "dz:991"}, "requested": True})
-        s.add(item)
-        await s.flush()
-        item_id = item.id
-    r = await c.post("/api/downloads", json={"track_refs": ["dz:991"], "star": True,
-                                               "favorite_event_id": "joined"})
-    assert r.status_code == 200, r.text
-    unlike = ev("unlike", event_id="joined-unlike", ref="dz:991")
-    await post(c, unlike)
-    r = await c.post("/api/star", json={"refs": ["dz:991"], "unstar": True, "event_id": "joined-unlike"})
-    assert r.status_code == 200, r.text
-    async with session_scope() as s:
-        item = await s.get(DownloadItem, item_id)
-        assert item.status == "queued" and item.query_json["requested"]
-        assert not item.query_json["star"] and item.query_json["star_cancelled"]
-    assert [e.event_id for e in await stored() if e.ref == "dz:991"] == ["joined", "joined-unlike"]
-
-
-async def test_compensation_cancels_active_quiet_download(env):
-    from app.db import session_scope
-    from app.models import DownloadBatch, DownloadItem, User
-
-    c = env["client"]
-    async with session_scope() as s:
-        user = (await s.execute(select(User))).scalars().first()
-        batch = DownloadBatch(user_id=user.id, origin="catalog")
-        s.add(batch)
-        await s.flush()
-        item = DownloadItem(user_id=user.id, batch_id=batch.id, status="queued",
-                            query_json={"query": {}, "meta": {"track_ref": "dz:992"}, "star": True})
-        s.add(item)
-        await s.flush()
-        item_id = item.id
-    r = await c.post("/api/downloads", json={"track_refs": ["dz:992"], "star": True,
-                                               "favorite_event_id": "quiet"})
-    assert r.status_code == 200, r.text
-    await post(c, ev("unlike", event_id="quiet-undo", ref="dz:992", reverts_event_id="quiet"))
-    async with session_scope() as s:
-        item = await s.get(DownloadItem, item_id)
-        assert item.status == "cancelled" and item.query_json["star_cancelled"]
-
-
-async def test_compensation_arriving_before_catalog_command_does_not_enqueue(env):
-    from app.db import session_scope
-    from app.models import Job
-
-    c = env["client"]
-    await post(c, ev("unlike", event_id="early-undo", ref="dz:993", reverts_event_id="late-like"))
-    r = await c.post("/api/downloads", json={"track_refs": ["dz:993"], "star": True,
-                                               "favorite_event_id": "late-like"})
-    assert r.status_code == 200, r.text
-    async with session_scope() as s:
-        assert not (await s.execute(select(Job).where(Job.kind == "expand_batch"))).scalars().all()
-
-
 async def test_catalog_unlike_mirrors_to_navidrome_when_telemetry_arrived_first(env):
     c = env["client"]
     unlike = ev("unlike", event_id="owned-unlike", ref="dz:100")
@@ -424,6 +294,7 @@ async def test_scrobble_dedup_preserves_synthetic_likes_and_bounds_future(env):
 
 async def test_favorites_sync_still_runs_when_scrobble_import_fails(env, monkeypatch):
     from unittest.mock import AsyncMock
+
     from app import favorites, plays
     monkeypatch.setattr(plays, "import_scrobbles", AsyncMock(side_effect=TimeoutError()))
     sync = AsyncMock(return_value=0)
@@ -550,10 +421,10 @@ async def test_navidrome_scrobbles_become_finishes_without_doubles(env):
     assert await sync_navidrome() == 0
 
 
-async def test_import_likes_do_not_count_unless_liked_again(env):
+async def test_user_events_by_age_and_kind(env):
     from app.db import session_scope
     from app.models import Import, User
-    from app.plays import imported_likes, user_events
+    from app.plays import user_events
 
     c = env["client"]
     async with session_scope() as s:
@@ -562,7 +433,6 @@ async def test_import_likes_do_not_count_unless_liked_again(env):
     await post(c, ev("like", nd_song_id="ndX"), ev("finish", ref="dz:100", at=datetime.now(UTC) - timedelta(days=40)),
                ev("skip", ref="dz:100", position_s=5))
     async with session_scope() as s:
-        assert await imported_likes(s, uid) == {"ndK", "ndZ"}
         assert [e.kind for e in await user_events(s, uid, days=30)] == ["like", "skip"]
         assert [e.kind for e in await user_events(s, uid, days=60, kinds=["finish", "skip"])] == ["finish", "skip"]
 
@@ -573,54 +443,6 @@ async def test_plays_need_login(env):
     async with app_client(create_app(), login=None) as anon:
         assert (await anon.post("/api/plays/events", json={"events": []})).status_code == 401
         assert (await anon.get("/api/dislikes")).status_code == 401
-
-
-def test_migration_carries_dislikes_of_past_imports(tmp_path):
-    import sqlite3
-    from pathlib import Path
-
-    from alembic import command
-    from alembic.config import Config
-
-    import app.db
-
-    db = tmp_path / "hub.sqlite3"
-    root = Path(app.db.__file__).resolve().parent.parent
-    cfg = Config(str(root / "alembic.ini"))
-    cfg.set_main_option("script_location", str(root / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db.as_posix()}")
-    cfg.attributes["configure_logger"] = False
-    command.upgrade(cfg, "a7c3e9f2b1d4")
-    con = sqlite3.connect(db)
-    con.execute("INSERT INTO users (id, nd_username, nd_password_enc, is_admin, created_at) "
-                "VALUES (1, 'admin', 'x', 1, '2026-10-01 10:00:00')")
-    con.execute("INSERT INTO tracks (id, uid, path, nd_song_id, artist, title, fingerprint, warnings, acquired_at, "
-                "locked) VALUES (5, 'u5', 'a/b.mp3', 'ndA', 'А', 'Б', 'а|б', '[]', '2026-10-01 10:00:00', 0)")
-    for imp in (1, 2):  # the same dislike in two imports is one row, from the first import
-        con.execute("INSERT INTO imports (id, user_id, source, method, status, mode, keep_token, auth_json, "
-                    "options_json, created_at, updated_at) VALUES (?, 1, 'yandex', 'token', 'done', 'economy', 0, "
-                    "'{}', '{}', ?, ?)", (imp, f"2026-10-0{imp + 1} 10:00:00", f"2026-10-0{imp + 1} 10:00:00"))
-        con.execute("INSERT INTO import_collections (id, import_id, kind, external_id, title, position, selected, "
-                    "nd_song_ids) VALUES (?, ?, 'dislikes', 'dislikes', 'Не нравится', 0, 1, '[]')", (imp * 10, imp))
-        con.execute("INSERT INTO import_collections (id, import_id, kind, external_id, title, position, selected, "
-                    "nd_song_ids) VALUES (?, ?, 'likes', 'likes', 'Мне нравится', 1, 1, '[]')", (imp * 10 + 1, imp))
-    rows = [(10, "dz:1", None, '{"artist": "Х", "title": "Раз"}'), (20, "dz:1", None, "{}"),
-            (20, "dz:2", 5, '{"artist": "А", "title": "Б"}'), (20, None, None, "{}"),  # not found: no ref
-            (21, "dz:3", None, "{}")]  # a like
-    for i, (coll, ref, track_id, raw) in enumerate(rows):
-        con.execute("INSERT INTO import_items (import_id, collection_id, position, external_id, raw_json, ref, "
-                    "status, track_id) VALUES (?, ?, ?, ?, ?, ?, 'skipped', ?)",
-                    (coll // 10, coll, i, str(i), raw, ref, track_id))
-    con.commit()
-    con.close()
-    command.upgrade(cfg, "head")
-    con = sqlite3.connect(db)
-    got = con.execute("SELECT user_id, ref, nd_song_id, artist, title, source, created_at FROM dislikes "
-                      "ORDER BY ref").fetchall()
-    assert got == [(1, "dz:1", None, "Х", "Раз", "yandex_import", "2026-10-02 10:00:00"),
-                   (1, "dz:2", "ndA", "А", "Б", "yandex_import", "2026-10-03 10:00:00")]
-    con.close()
-    command.downgrade(cfg, "a7c3e9f2b1d4")
 
 
 async def test_late_accept_chain_has_separate_capability_and_preserves_original_date(env):

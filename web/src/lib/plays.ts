@@ -123,9 +123,9 @@ export function onPlayEvent(fn: (e: PlayEventIn) => void): () => void {
 export function playEvent(
   kind: PlayKind,
   target: PlayTarget,
-  extra: { position_s?: number | null; duration_s?: number | null; context?: string | null; event_id?: string; ts?: string; reverts_event_id?: string; playback_id?: string; device_id?: string; listened_ms?: number; track_metadata?: PlayEventIn['track_metadata']; account?: number | null; launch_id?: string | null; launch_origin?: LaunchOrigin | null } = {},
+  extra: { position_s?: number | null; duration_s?: number | null; context?: string | null; page?: string | null; event_id?: string; ts?: string; reverts_event_id?: string; playback_id?: string; device_id?: string; listened_ms?: number; track_metadata?: PlayEventIn['track_metadata']; account?: number | null; launch_id?: string | null; launch_origin?: LaunchOrigin | null } = {},
 ) {
-  if (!target.ref && !target.nd_song_id && !target.nd_album_id && !target.nd_artist_id) return false;
+  if (!target.track_id && !target.ref && !target.nd_song_id && !target.nd_album_id && !target.nd_artist_id) return false;
   const round = (x?: number | null) => (x == null || !Number.isFinite(x) ? null : Math.round(x * 10) / 10);
   const event: QueuedEvent = {
     _account: extra.account ?? currentAccount,
@@ -137,6 +137,7 @@ export function playEvent(
     nd_artist_id: target.nd_artist_id,
     target_data: target.target_data,
     reverts_event_id: extra.reverts_event_id,
+    track_id: target.track_id ?? null,
     ref: target.ref ?? null,
     nd_song_id: target.nd_song_id ?? null,
     playback_id: extra.playback_id,
@@ -146,6 +147,7 @@ export function playEvent(
     position_s: round(extra.position_s),
     duration_s: round(extra.duration_s),
     context: extra.context ?? null,
+    page: extra.page || null,
     client: 'pwa',
     ...(extra.launch_id ? { launch_id: extra.launch_id, launch_origin: extra.launch_origin ?? null } : {}),
   };

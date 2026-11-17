@@ -14,6 +14,7 @@ import respx
 
 from app.mixes import sources
 from app.mixes.sources import Hit, SourceDown
+from tests.support import filed_track
 from tests.test_ytdlp import ytm_response, ytm_row
 
 FIX = Path(__file__).parent / "fixtures" / "mixes"
@@ -128,6 +129,8 @@ async def test_lastfm_similar_artists_and_tags(db, respx_mock: respx.MockRouter)
 
     respx_mock.get(LASTFM).mock(side_effect=answer)
 
+    near = await sources.lastfm_near_artists("Кино")
+    assert near[0][0] == "Nautilus Pompilius" and 0 < near[0][1] <= 1 and near == sorted(near, key=lambda x: -x[1])
     assert (await sources.lastfm_similar_artists("Кино"))[:3] == ["Nautilus Pompilius", "ДДТ", "Виктор Цой"]
     assert await sources.lastfm_artist_tags("Кино") == ["russian rock", "post-punk", "rock", "russian", "80s"]
 
@@ -273,10 +276,9 @@ async def test_resolve_prefers_the_library(db) -> None:
     from app.db import session_scope
     from app.matching.normalize import fingerprint
     from app.mixes.resolve import resolve_hits
-    from app.models import Track
 
     async with session_scope() as s:
-        s.add(Track(uid=str(uuid.uuid4()), path="a/b.mp3", nd_song_id="ndOwn", artist="Своя группа", title="Песня",
+        s.add(filed_track(uid=str(uuid.uuid4()), path="a/b.mp3", nd_song_id="ndOwn", artist="Своя группа", title="Песня",
                     duration_s=200, fingerprint=fingerprint("Своя группа", "Песня")))
 
     [t] = await resolve_hits("lastfm", [Hit("Своя группа", "Песня", 201)])

@@ -1,4 +1,7 @@
-import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { useDesktop } from '../lib/desktop';
+import { imageUrl, retryImage } from '../lib/img';
 import { goBack } from '../lib/router';
 import { downloadStatusLabel, percent } from '../lib/format';
 import type { OwnedStatus } from '../api/types';
@@ -13,7 +16,7 @@ type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
 const VARIANTS: Record<Variant, string> = {
   primary: 'bg-accent text-on-accent hover:bg-accent-strong active:scale-[0.98] font-semibold disabled:bg-raised disabled:text-dim disabled:opacity-100',
-  secondary: 'bg-raised text-fg border border-line hover:bg-hover active:scale-[0.98]',
+  secondary: 'bg-raised text-fg hover:bg-hover active:scale-[0.98]',
   ghost: 'text-fg hover:bg-fg/5',
   danger: 'bg-danger/15 text-danger border border-danger/30 hover:bg-danger/25',
 };
@@ -56,7 +59,7 @@ export function IconButton({ icon, label, busy, size = 22, filled, className, di
       aria-label={label}
       title={label}
       className={cx(
-        'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-fg transition hover:bg-fg/10 active:scale-95 disabled:opacity-40',
+        'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-fg transition hover:scale-115 hover:brightness-125 focus-visible:bg-fg/10 active:scale-95 disabled:opacity-40',
         className,
       )}
       disabled={disabled || busy}
@@ -130,20 +133,68 @@ export function SkeletonRows({ n = 6 }: { n?: number }) {
   );
 }
 
+/** The loading of a page with a big head (`Hero` of pages/MediaLibrary.tsx): the head's own shape — the picture,
+ * the name in large, a line under it — and then rows, so that the page that comes does not look like another one.
+ * `round`: an artist. `buttons`: the row of buttons an artist's page has under its head. `center`: the picture is
+ * centred on a computer too (an album of the catalog). */
+export function HeroSkeleton({ round, buttons, center, rows = 8 }: { round?: boolean; buttons?: boolean; center?: boolean; rows?: number }) {
+  const desktop = useDesktop() && !center;
+  const shape = round ? 'rounded-full' : 'rounded-md';
+  return (
+    <div aria-hidden="true">
+      {desktop ? (
+        <div className="flex items-end gap-6 px-6 pb-5 pt-3">
+          <div className={cx('skeleton aspect-square w-48 shrink-0', shape)} />
+          <div className="min-w-0 flex-1 space-y-4 pb-1">
+            <div className="skeleton h-3.5 w-24 rounded" />
+            <div className="skeleton h-14 w-2/5 rounded-lg" />
+            <div className="skeleton h-3.5 w-52 rounded" />
+          </div>
+          <div className="skeleton h-14 w-14 shrink-0 rounded-full" />
+        </div>
+      ) : (
+        <div className="px-4 pb-3">
+          <div className="flex justify-center pb-4">
+            <div className={cx('skeleton aspect-square', center ? 'w-[min(56vw,240px)]' : 'w-52', shape)} />
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="min-w-0 flex-1 space-y-2.5">
+              <div className="skeleton h-6 w-3/5 rounded" />
+              <div className="skeleton h-3.5 w-2/5 rounded" />
+            </div>
+            <div className="skeleton h-14 w-14 shrink-0 rounded-full" />
+          </div>
+        </div>
+      )}
+      {buttons && (
+        <div className="flex items-center gap-2 px-4 pb-3 lg:px-6">
+          <div className="skeleton h-9 w-36 rounded-full" />
+          <div className="skeleton h-9 w-9 rounded-full" />
+        </div>
+      )}
+      <div className="lg:px-2">
+        <SkeletonRows n={rows} />
+      </div>
+    </div>
+  );
+}
+
 // --- layout -----------------------------------------------------------------------------------
 
-export function PageHeader({ title, back, right, sub }: { title: ReactNode; back?: string; right?: ReactNode; sub?: ReactNode }) {
+/** `hero`: the page has its own big head below (a cover in its own light, the name in large letters): the bar is
+ * only «back» and its buttons over that light — the name is not said twice, and the bar leaves with the page. */
+export function PageHeader({ title, back, right, sub, hero }: { title: ReactNode; back?: string; right?: ReactNode; sub?: ReactNode; hero?: boolean }) {
   return (
-    <header className="pt-safe sticky top-0 z-20 bg-bg/90 backdrop-blur">
+    <header className={cx('pt-safe z-20', hero ? 'relative' : 'sticky top-(--page-top) bg-bg/90 backdrop-blur')}>
       <div className="flex min-h-14 items-center gap-1 px-2">
         {back !== undefined ? (
-          <IconButton icon="back" label="Назад" onClick={() => goBack(back)} />
+          <IconButton icon="back" label="Назад" onClick={() => goBack(back)} className={hero ? 'ml-1 !h-10 !w-10 bg-bg/40' : undefined} />
         ) : (
           <span className="w-2" />
         )}
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-lg font-bold">{title}</h1>
-          {sub && <div className="truncate text-xs text-muted">{sub}</div>}
+          {!hero && <h1 className="truncate text-lg font-bold">{title}</h1>}
+          {!hero && sub && <div className="truncate text-xs text-muted">{sub}</div>}
         </div>
         {right}
       </div>
@@ -161,6 +212,17 @@ export function SectionTitle({ children, right }: { children: ReactNode; right?:
 }
 
 // --- badges -----------------------------------------------------------------------------------
+
+/** The mark of the track that is playing now: three bars that move while it plays and stand while it is paused. */
+export function PlayingBars({ on, className }: { on: boolean; className?: string }) {
+  return (
+    <span aria-hidden="true" className={cx('hm-bars shrink-0 text-accent', on && 'on', className)}>
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
 
 export function ExplicitBadge() {
   return (
@@ -236,6 +298,7 @@ export function Cover({
   className?: string;
   icon?: IconName;
 }) {
+  src = imageUrl(src);
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [src]);
   const style = size ? { width: size, height: size } : undefined;
@@ -249,12 +312,13 @@ export function Cover({
   }
   return (
     <img
+      key={src}
       src={src}
       alt={alt}
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"
-      onError={() => setFailed(true)}
+      onError={(e) => retryImage(e) || setFailed(true)}
       className={cx('shrink-0 bg-raised object-cover', shape, className)}
       style={style}
     />
@@ -277,11 +341,14 @@ export function Segmented<T extends string>({
   options,
   onChange,
   label,
+  after,
 }: {
   value: T;
   options: Array<{ value: T; label: string }>;
   onChange: (v: T) => void;
   label: string;
+  /** one more thing in the row, after the choices (it scrolls with them) */
+  after?: ReactNode;
 }) {
   return (
     <div role="tablist" aria-label={label} className="flex gap-2 overflow-x-auto no-scrollbar">
@@ -300,6 +367,7 @@ export function Segmented<T extends string>({
           {o.label}
         </button>
       ))}
+      {after}
     </div>
   );
 }
@@ -350,7 +418,11 @@ export function Sheet({ open, onClose, title, children, footer }: { open: boolea
     };
   }, [open, onClose]);
   if (!open) return null;
-  return (
+  // Drawn at the end of the document, not where it is asked for: a window over everything must not be inside what
+  // makes a layer of its own (a sticky bar, a column of the player, a row that moves) — there it is over that layer
+  // only, and whatever is drawn above the layer shows through it (the seek bar's hint over «Перевод текста», a sheet
+  // under the tab bar).
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" role="dialog" aria-modal="true" aria-label={title}>
       <button type="button" aria-label="Закрыть" className="absolute inset-0 bg-black/70" onClick={onClose} />
       <div className="anim-up pb-safe relative flex max-h-[88dvh] w-full max-w-lg flex-col rounded-t-2xl bg-surface sm:rounded-2xl">
@@ -361,7 +433,8 @@ export function Sheet({ open, onClose, title, children, footer }: { open: boolea
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</div>
         {footer && <div className="border-t border-line px-4 py-3">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -372,5 +445,30 @@ export function Notice({ kind = 'warn', children }: { kind?: 'warn' | 'error' | 
       <Icon name="alert" size={18} className="mt-0.5 shrink-0" />
       <div className="min-w-0">{children}</div>
     </div>
+  );
+}
+
+/** A line that may be too long for its place: cut with «…» as ever, and under the mouse it runs slowly to its end and
+ * back, so it can be read whole (25px a second, resting at both ends). A line that fits stays still. */
+export function Marquee({ children, className }: { children: ReactNode; className?: string }) {
+  const inner = useRef<HTMLSpanElement>(null);
+  const [shift, setShift] = useState(0);
+  return (
+    <span
+      className={cx('block min-w-0 overflow-hidden', className)}
+      onMouseEnter={() => {
+        const el = inner.current;
+        if (el) setShift(Math.max(0, el.scrollWidth - el.clientWidth));
+      }}
+      onMouseLeave={() => setShift(0)}
+    >
+      <span
+        ref={inner}
+        className={shift ? 'marquee-run inline-block whitespace-nowrap' : 'block truncate'}
+        style={shift ? ({ '--shift': `-${shift}px`, '--dur': `${Math.max(2.5, shift / 25)}s` } as CSSProperties) : undefined}
+      >
+        {children}
+      </span>
+    </span>
   );
 }

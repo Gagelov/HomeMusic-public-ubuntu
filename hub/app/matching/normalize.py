@@ -414,3 +414,12 @@ def fingerprint(artist: str, title: str) -> str:
 def is_russian_query(q: TrackQuery) -> bool:
     """Russian source order: Cyrillic in artist/title, or the user said lang="ru"."""
     return (q.lang or "").casefold().startswith("ru") or has_cyrillic(q.artist) or has_cyrillic(q.title)
+
+
+ISRC_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}\d{7}$")
+
+
+def clean_isrc(value: str | None) -> str | None:
+    """A recording's code as the catalog asks for it (no hyphens, capitals); None: not such a code."""
+    isrc = (value or "").replace("-", "").strip().upper()
+    return isrc if ISRC_RE.match(isrc) else None

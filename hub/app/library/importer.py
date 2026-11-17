@@ -10,7 +10,7 @@ import logging
 import os
 import shutil
 import uuid
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel
@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.library import tagger
 from app.library.layout import album_dirname, next_version_path, sanitize_component, track_filename, unique_path
+from app.library.tracks import by_ref, dz_id, dz_ref
 from app.matching.normalize import fingerprint, normalize_artist, normalize_title
-from app.models import Album, Track, utcnow
+from app.models import Album, Track, TrackFile, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ class ImportSpec(BaseModel):
     artist: str
     title: str
     artists: list[str] = []
+    artist_refs: list[str | None] = []  # the catalog's records of `artists`, in their order (None: not said)
+    producer: str | None = None  # who made the beat (taken out of the name where it carried it)
     album: str | None = None
     album_artist: str | None = None
     album_id: int | None = None  # existing Hub album (uploads, editor)
@@ -46,6 +49,8 @@ class ImportSpec(BaseModel):
     isrc: str | None = None
     explicit: bool | None = None
     deezer_track_id: str | None = None
+    ref: str | None = None  # the catalog track the file is of (a Deezer id alone is "dz:<id>")
+    track_id: int | None = None  # the track the file is of, when the Hub knows it already
     deezer_album_id: str | None = None
     upc: str | None = None
     cover: bytes | None = None
@@ -58,6 +63,7 @@ class ImportSpec(BaseModel):
     warnings: list[str] = []
     added_by: int | None = None
     force: bool = False  # explicit re-download: keep the old file, add a "[vN]" version next to it
+    chroma: bytes | None = None  # the picture of the file's sound, when it is drawn already (an upload)
 
 
 def album_reldir(album: Album) -> PurePosixPath:
@@ -116,8 +122,8 @@ async def get_or_create_album(s: AsyncSession, spec: ImportSpec) -> Album:
     return a
 
 
-def tagdata_for(track: Track, album: Album, *, cover: bytes | None = None, artists: list[str] | None = None,
-                track_total: int | None = None) -> tagger.TagData:
+def tagdata_for(track: Track, album: Album, file: TrackFile, *, cover: bytes | None = None,
+                artists: list[str] | None = None, track_total: int | None = None) -> tagger.TagData:
     return tagger.TagData(
         title=track.title,
         artist=track.artist,
@@ -132,14 +138,15 @@ def tagdata_for(track: Track, album: Album, *, cover: bytes | None = None, artis
         isrc=track.isrc,
         explicit=track.explicit,
         release_type=album.release_type,
-        track_uid=track.uid,
+        track_uid=file.uid,
         album_uid=album.uid,
-        source=track.source,
-        source_url=track.source_url,
-        source_date=track.source_upload_date,
-        acquired=track.acquired_at,
-        deezer_track_id=track.deezer_track_id,
+        source=file.source,
+        source_url=file.source_url,
+        source_date=file.source_upload_date,
+        acquired=file.acquired_at,
+        deezer_track_id=dz_id(track.ref),
         deezer_album_id=album.deezer_album_id,
+        producer=track.producer,
         cover=cover,
     )
 
@@ -166,8 +173,30 @@ def is_original(source_date: date | None, explicit: bool | None) -> bool:
 
 
 async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
-    """Tag `src` (a file in staging/), move it into the library and create the Track row (caller commits)."""
+    """Tag `src` (a file in staging/), move it into the library and make its track and file rows (caller
+    commits)."""
+    from app.library import artists, titles
+
+    # the name is the name: a guest written into it is one of the artists, the producer has a field of their own
+    spec.title, guests, producers = titles.clean(spec.title)
+    if guests:
+        spec.artist, spec.artists = titles.with_guests(spec.artist, spec.artists, guests)
+    spec.producer = spec.producer or (", ".join(producers) or None)
+    ref = spec.ref or dz_ref(spec.deezer_track_id)
+    met = await by_ref(s, ref)
+    # The library is taken before anything is written: SQLite has one writer, and a filing that wrote first (an
+    # artist the Hub did not know) and then waited for the library would keep the database from the very filing that
+    # has the library and waits to write — each waiting for the other until one of them gives up
     async with library_lock:
+        # who the music is by — by the catalog's records of them where the catalog said, else by the names — and the
+        # lines in their names: a spelling that is somebody's is filed under their name
+        refs = artists.beside(spec.artists, spec.artist_refs) or artists.refs_of(met.catalog if met else None)
+        spec.artist, by = await artists.credits(s, spec.artist, refs)
+        if spec.artists:
+            spec.artists = [a.name for a in [await artists.who(s, n, refs.get(artists.key(n))) for n in spec.artists] if a is not None]
+        album_by = None
+        if spec.album_artist:
+            spec.album_artist, album_by = await artists.credits(s, spec.album_artist, refs)
         album = await get_or_create_album(s, spec)
         cover = tagger.prepare_cover(spec.cover) if spec.cover else None
         album_dir_rel = album_reldir(album)
@@ -175,10 +204,10 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
         if cover is None and (album_dir / "cover.jpg").is_file():
             cover = (album_dir / "cover.jpg").read_bytes()
 
-        track = Track(
-            uid=str(uuid.uuid4()),
+        # a file of a song the Hub knows is one more file of that track: its tags, lyrics and places stay with it
+        known = await s.get(Track, spec.track_id) if spec.track_id else met
+        track = known or Track(
             album_id=album.id,
-            path="",
             artist=spec.artist,
             title=spec.title,
             album=album.title,
@@ -188,23 +217,42 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
             year=album.year,
             genre=spec.genre or album.genre,
             duration_s=spec.duration_s,
+            isrc=spec.isrc.upper() if spec.isrc else None,
+            ref=ref,
+            explicit=spec.explicit,
+            producer=spec.producer,
+            fingerprint=fingerprint(spec.artist, spec.title),
+            created_by=spec.added_by,
+        )
+        if known is not None:  # the file is filed under this album: the track follows its newest file
+            known.album_id, known.album, known.album_artist = album.id, album.title, album.album_artist
+            known.track_no, known.disc_no = spec.track_no or known.track_no, spec.disc_no or known.disc_no
+            known.year, known.genre = album.year or known.year, spec.genre or album.genre or known.genre
+            known.duration_s = spec.duration_s or known.duration_s
+            known.explicit = spec.explicit if spec.explicit is not None else known.explicit
+            known.producer = known.producer or spec.producer
+            if known.title == known.ref or not known.artist:
+                # met by its ref alone (a like that said nothing of the song): the file says what the song is
+                known.artist, known.title = spec.artist, spec.title
+                known.fingerprint = fingerprint(spec.artist, spec.title)
+                known.isrc = known.isrc or (spec.isrc.upper() if spec.isrc else None)
+        file = TrackFile(
+            uid=str(uuid.uuid4()),
+            path="",
             bitrate_kbps=spec.bitrate_kbps,
             codec=spec.codec,
-            isrc=spec.isrc.upper() if spec.isrc else None,
-            deezer_track_id=str(spec.deezer_track_id) if spec.deezer_track_id else None,
-            explicit=spec.explicit,
             source=spec.source,
             source_url=spec.source_url,
             source_upload_date=spec.source_upload_date,
             acquired_at=utcnow(),
             locked=is_original(spec.source_upload_date, spec.explicit),
-            fingerprint=fingerprint(spec.artist, spec.title),
             warnings=list(spec.warnings),
             added_by=spec.added_by,
+            chroma=spec.chroma,
         )
 
         await asyncio.to_thread(
-            tagger.write_tags, src, tagdata_for(track, album, cover=cover, artists=spec.artists,
+            tagger.write_tags, src, tagdata_for(track, album, file, cover=cover, artists=spec.artists,
                                                 track_total=spec.track_total)
         )
 
@@ -218,10 +266,21 @@ async def import_file(s: AsyncSession, src: Path, spec: ImportSpec) -> Track:
             await asyncio.to_thread(_write_cover_file, album_dir, cover)
             album.cover_path = (album_dir_rel / "cover.jpg").as_posix()
 
-        track.path = PurePosixPath(album_dir_rel, dest.name).as_posix()
+        file.path = PurePosixPath(album_dir_rel, dest.name).as_posix()
+        if file.chroma is None:  # the picture of its sound: the next file that is this recording is known by it
+            from app.library import acoustic
+
+            got = await acoustic.of_file(dest)
+            file.chroma = got[0] if got else None
         s.add(track)
         await s.flush()
-        log.info("imported %s", track.path, extra={"user_id": spec.added_by})
+        await artists.credit_track(s, track, by if track.artist == spec.artist else None)
+        if album_by and album.album_artist == spec.album_artist:
+            await artists.credit_album(s, album, album_by)
+        file.track_id = track.id
+        s.add(file)
+        await s.flush()
+        log.info("imported %s", file.path, extra={"user_id": spec.added_by})
         return track
 
 
@@ -233,7 +292,3 @@ def staging_dir_for(kind: str, key: str | int) -> Path:
 
 def cleanup_dir(d: Path) -> None:
     shutil.rmtree(d, ignore_errors=True)
-
-
-def now_local_date() -> date:
-    return datetime.now().date()

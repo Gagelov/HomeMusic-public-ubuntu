@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.api.schemas import FavoriteTarget, PlayEventIn
 from app.favorites import command, fold, reconcile, record, snapshot
 from app.models import FavoriteSubject, Import, NavidromeSync, PlayEvent, User
+from tests.support import filed_track
 
 NOW = datetime(2026, 10, 26, 12)
 
@@ -196,8 +197,8 @@ async def test_incomplete_snapshot_does_not_remove_state(ledger):
 async def test_v1_profile_counts_one_server_and_legacy_like_and_neutral_unlike(ledger):
     from app.db import session_scope
     from app.mixes.taste import build_profile
-    from app.plays import record_events
     from app.models import utcnow
+    from app.plays import record_events
 
     user, _ = ledger
     async with session_scope() as s:
@@ -243,37 +244,6 @@ async def test_missing_starred2_envelope_is_not_an_empty_snapshot():
     assert await nd.get_starred2() == {}
 
 
-@pytest.mark.parametrize("stage", ["queued", "searching", "downloading", "tagging", "importing", "needs_review"])
-async def test_pending_unlike_preserves_explicit_download_and_survives_stale_job(ledger, stage):
-    from app.db import session_scope
-    from app.favorites import download_requested
-    from app.jobs.downloads import update_item
-    from app.models import DownloadBatch, DownloadItem
-    user, other = ledger
-    async with session_scope() as s:
-        batches = [DownloadBatch(user_id=u.id, origin="catalog") for u in (user, other)]
-        s.add_all(batches)
-        await s.flush()
-        items = [DownloadItem(user_id=u.id, batch_id=b.id, status=stage,
-            query_json={"query": {}, "meta": {"track_ref": "dz:pending"}, "star": True, "requested": True})
-            for u, b in zip((user, other), batches)]
-        s.add_all(items)
-        await s.flush()
-        for item in items:
-            await download_requested(s, item)
-        stale = dict(items[0].query_json)
-        ids = [i.id for i in items]
-    async with session_scope() as s:
-        await command(s, user, [FavoriteTarget(ref="dz:pending")], liked=False, nd=AsyncMock())
-    await update_item(ids[0], query_json=stale)
-    async with session_scope() as s:
-        mine, theirs = [await s.get(DownloadItem, id_) for id_ in ids]
-        assert mine.status == stage and not mine.query_json["star"] and mine.query_json["star_cancelled"]
-        assert theirs.status == stage and theirs.query_json["star"]
-        assert not next(iter((await snapshot(s, user.id)).values())).liked
-        assert next(iter((await snapshot(s, other.id)).values())).liked
-
-
 async def test_pending_album_is_delivered_after_verified_library_binding(ledger):
     from app.db import session_scope
     from app.favorites import remember
@@ -293,14 +263,14 @@ async def test_pending_album_is_delivered_after_verified_library_binding(ledger)
 async def test_legacy_import_album_artist_provenance_is_recovered_without_restarring(ledger):
     from app.db import session_scope
     from app.favorites import recover_import_subjects
-    from app.models import Album, ImportCollection, ImportItem, Track
+    from app.models import Album, ImportCollection, ImportItem
     user, _ = ledger
     async with session_scope() as s:
         album = Album(uid="a9", title="Album", album_artist="A", deezer_album_id="9")
         imp = Import(user_id=user.id, source="yandex", method="token")
         s.add_all([album, imp])
         await s.flush()
-        s.add(Track(uid="t9", path="a/t.mp3", nd_song_id="song9", album_id=album.id,
+        s.add(filed_track(uid="t9", path="a/t.mp3", nd_song_id="song9", album_id=album.id,
                     artist="A", title="T", fingerprint="a|t"))
         collections = [ImportCollection(import_id=imp.id, kind=k, external_id=k, title=k) for k in ("albums", "artists")]
         s.add_all(collections)

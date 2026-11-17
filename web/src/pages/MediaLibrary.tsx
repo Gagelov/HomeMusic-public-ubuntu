@@ -1,16 +1,29 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Children, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { imageUrl, retryImage } from '../lib/img';
+import { ArtistPage } from './Artist';
 import { api } from '../api/client';
-import type { NdAlbumOut, NdArtistOut, NdSongOut } from '../api/types';
-import { playAll, TrackRow } from '../components/catalog';
+import type { NdAlbumOut, NdArtistOut, NdSongOut, TrackOut } from '../api/types';
+import { playAll, TrackRow, TrackTableHeader, type ListSort } from '../components/catalog';
 import { Icon } from '../components/Icon';
-import { LikeButton } from '../components/LikeButton';
-import { Button, Cover, Empty, ErrorState, IconButton, PageHeader, SectionTitle, SkeletonRows, Spinner, cx } from '../components/ui';
+import { ListBar } from '../components/ListBar';
+import { useListSearch, type Found } from '../components/ListSearch';
+import { CoverView, ownCover } from '../components/PlaylistMenu';
+import { SaveSelection, TagFilterChips } from '../components/Tags';
+import { ArtistLooksWindow } from '../components/ArtistLooks';
+import { ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
+import { Button, Cover, Empty, ErrorState, HeroSkeleton, IconButton, PageHeader, Sheet, SkeletonRows, Spinner, cx } from '../components/ui';
 import { fmtLength, tracksWord } from '../lib/format';
+import { playCount, usePlayCounts } from '../lib/stats';
+import { useDesktop } from '../lib/desktop';
 import { useHubEvent } from '../lib/events';
+import { cyclePageShuffle, useListen } from '../lib/listen';
 import { useAsync, useRememberScrollX } from '../lib/hooks';
-import { Link, enc, navigate } from '../lib/router';
+import { Link, enc, navigate, useRoute } from '../lib/router';
+import { filterActive, filterOfQuery, filterWords, passes, selectionsChanged, tagKey, useTags, type TagFilter } from '../lib/tags';
 import { attempt, confirmDialog } from '../lib/ui';
-import { useSmartForPage, useSmartPage } from '../lib/smartShuffle';
+import { openPlaylistMenu } from '../lib/playlistMenu';
+import { useSmartForPage, useSmartPage, useSmartPossible } from '../lib/smartShuffle';
+import { toggleLike, useLiked } from '../lib/stars';
 import { canWave, seedKey, startWave, useWave } from '../lib/wave';
 
 /** The Navidrome library as a player shows it, for the PWA in a plain browser (`STANDALONE`): inside the app these
@@ -25,24 +38,6 @@ export function NdAlbumCard({ album, showArtist = true }: { album: NdAlbumOut; s
       <div className="mt-2 line-clamp-2 text-sm font-medium leading-tight">{album.title}</div>
       <div className="mt-0.5 truncate text-xs text-muted">{[showArtist ? album.artist : null, album.year].filter(Boolean).join(' · ')}</div>
     </Link>
-  );
-}
-
-/** A horizontal row of album cards that remembers its scroll. */
-export function AlbumRow({ title, albums, rowKey, more }: { title: string; albums: NdAlbumOut[]; rowKey: string; more?: string }) {
-  const row = useRememberScrollX(rowKey);
-  if (!albums.length) return null;
-  return (
-    <section aria-label={title}>
-      <SectionTitle right={more ? <Link to={more} className="text-sm text-muted hover:text-fg">Все</Link> : undefined}>{title}</SectionTitle>
-      <div ref={row} className="no-scrollbar flex gap-4 overflow-x-auto px-4 pb-1">
-        {albums.map((a) => (
-          <div key={a.id} className="w-36 shrink-0">
-            <NdAlbumCard album={a} />
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -76,56 +71,160 @@ export function NdArtistBubble({ artist, radio = false }: { artist: NdArtistOut;
   );
 }
 
-/** «Слушать» and «Перемешать» for a whole list. */
-export function ListActions({ tracks, context, children }: { tracks: readonly NdSongOut[]; context?: string; children?: ReactNode }) {
-  const smart = useSmartForPage() && (context === 'playlist' || context === 'liked'); // «Перемешать» is the smart shuffle
-  if (!tracks.length && !children) return null;
+/** ▶ and the shuffle of a whole list, at the right of its name. The shuffle goes round as the player's — off, on,
+ * and for a playlist or «Любимое» the smart one; ▶ starts the list as the button says. */
+export function PlayPair({ tracks, context }: { tracks: readonly TrackOut[]; context?: string }) {
+  const canSmart = useSmartPossible() && (context === 'playlist' || context === 'liked');
+  const smart = useSmartForPage() && canSmart; // the shuffle is the smart one
+  const shuffleOn = useListen((s) => s.shuffle);
   return (
-    <div className="flex gap-2 px-4 pb-3 pt-1">
-      {tracks.length > 0 && (
-        <>
-          <Button variant="primary" icon="play" className="flex-1" onClick={() => playAll(tracks, { shuffle: false, context })}>
-            Слушать
-          </Button>
-          <Button icon={smart ? 'shuffleSmart' : 'shuffle'} className="flex-1" onClick={() => playAll(tracks, { shuffle: true, context })}>
-            Перемешать
-          </Button>
-        </>
-      )}
-      {children}
+    <div className="flex shrink-0 items-center gap-1">
+      <IconButton
+        icon={smart ? 'shuffleSmart' : 'shuffle'}
+        size={26}
+        aria-pressed={shuffleOn}
+        label={!shuffleOn ? 'Включить перемешивание' : smart ? 'Умное перемешивание включено — выключить' : canSmart ? 'Перемешивание включено — включить умное' : 'Перемешивание включено — выключить'}
+        onClick={() => cyclePageShuffle(canSmart)}
+        className={shuffleOn ? '!text-accent' : 'text-muted hover:text-fg'}
+      />
+      <button
+        type="button"
+        aria-label="Слушать"
+        title="Слушать"
+        onClick={() => playAll(tracks, { context })}
+        className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent transition hover:scale-105 active:scale-95"
+      >
+        <Icon name="play" size={26} filled className="translate-x-0.5" />
+      </button>
     </div>
   );
 }
 
-function SongList({ tracks, extra }: { tracks: readonly NdSongOut[]; extra?: (t: NdSongOut, i: number) => Parameters<typeof TrackRow>[0]['menuExtra'] }) {
+/** What else can be done with a list, in a row under its head (nothing: no row). */
+export function ListActions({ children }: { children?: ReactNode }) {
+  if (!Children.toArray(children).length) return null;
+  return <div className="flex flex-wrap items-center gap-2 px-4 pb-3 lg:px-6">{children}</div>;
+}
+
+/** `found`: the rows a search of the list left (`useListSearch`) — they keep their places in the whole list: the
+ * number shown, and what `extra` gets (a playlist removes a track by its place). */
+/** The rows of a list by «Дата добавления» (`sort`: null — the list's own order); each keeps its place in the list.
+ * Tracks of one moment (an import) keep the list's order, undated ones go last. */
+function byAdded<T extends { t: TrackOut; i: number }>(list: T[], sort: ListSort): T[] {
+  if (!sort) return list;
+  if (sort === 'most' || sort === 'least') return [...list].sort((a, b) => (playCount(b.t.nd_song_id) - playCount(a.t.nd_song_id)) * (sort === 'most' ? 1 : -1) || a.i - b.i);
+  const at = (t: TrackOut) => (t.added_at ? Date.parse(/T[\d:.]+$/.test(t.added_at) ? t.added_at + 'Z' : t.added_at) : NaN);
+  return [...list].sort((a, b) => {
+    const x = at(a.t);
+    const y = at(b.t);
+    if (Number.isNaN(x) || Number.isNaN(y)) return Number.isNaN(x) === Number.isNaN(y) ? a.i - b.i : Number.isNaN(x) ? 1 : -1;
+    return (sort === 'new' ? y - x : x - y) || a.i - b.i;
+  });
+}
+
+/** The rows of a list that the search and the tag filter leave (null: neither is on — the whole list). */
+export function useShown(tracks: readonly TrackOut[], found: Found[] | null, filter: TagFilter): Found[] | null {
+  const tags = useTags();
+  return useMemo(() => {
+    if (!filterActive(filter)) return found;
+    const base: Found[] = found ?? tracks.map((_, index) => ({ index }));
+    return base.filter((f) => {
+      const id = tracks[f.index] ? tagKey(tracks[f.index]) : null;
+      return passes(id ? tags.map[id] : undefined, filter, tags.byId);
+    });
+  }, [tracks, found, filter, tags.map, tags.byId]);
+}
+
+/** The tracks as the page shows them: what ▶ of the page plays. */
+export const inOrder = <T extends TrackOut>(tracks: readonly T[], sort: ListSort): readonly T[] => (sort ? byAdded(tracks.map((t, i) => ({ t, i })), sort).map((r) => r.t) : tracks);
+
+export function SongList<T extends TrackOut>({ tracks, extra, found, sort, onSort, period }: { period?: { label: string; of: Record<string, number> }; tracks: readonly T[]; extra?: (t: T, i: number) => Parameters<typeof TrackRow>[0]['menuExtra']; found?: Found[] | null; sort: ListSort; onSort: (next: ListSort) => void }) {
+  const setSort = onSort;
+  const dated = useMemo(() => tracks.some((t) => t.added_at), [tracks]);
+  const counts = usePlayCounts();
+  const rows = useMemo(() => {
+    const list = found ? found.map((f) => ({ t: tracks[f.index], i: f.index, line: f.line })) : tracks.map((t, i) => ({ t, i, line: undefined as string | undefined }));
+    return byAdded(list, sort);
+  }, [tracks, found, sort, counts]);
+  // what plays on from a row: a track known by its name alone has nothing to play
+  const queue = useMemo(() => (found || sort ? rows.map((r) => r.t) : tracks).filter((t) => !t.unknown), [rows, tracks, found, sort]);
+  if (found && !rows.length) return <p className="px-4 py-10 text-center text-sm text-muted">Ничего не подходит — ни под поиск, ни под выбранные теги.</p>;
   return (
     <ul>
-      {tracks.map((t, i) => (
+      {rows.length > 0 && <li><TrackTableHeader numbered album tags plays playsLabel={period?.label} added={dated} sort={sort} onSort={setSort} /></li>}
+      {rows.map(({ t, i, line }, at) => (
         <li key={`${t.ref}:${i}`}>
-          <TrackRow track={t} queue={tracks} link={false} showAlbum menuExtra={extra?.(t, i)} />
+          <TrackRow track={t} queue={queue} link={false} showAlbum showTags showPlays playsOf={period ? (period.of[t.nd_song_id ?? ''] ?? 0) : undefined} showAdded={dated} menuExtra={extra?.(t, i)} index={sort ? at + 1 : i + 1} />
+          {line !== undefined && (
+            <div className="-mt-1 flex items-center gap-1.5 truncate pb-2 pl-16 pr-4 text-xs text-muted">
+              <Icon name="lyrics" size={13} className="shrink-0 text-accent" />
+              <span className="truncate">{line ? `«${line}»` : 'найдено в тексте'}</span>
+            </div>
+          )}
         </li>
       ))}
     </ul>
   );
 }
 
-function Hero({ cover, round, title, sub, right }: { cover?: string | null; round?: boolean; title: string; sub?: ReactNode; right?: ReactNode }) {
-  return (
-    <div className="flex flex-col items-center gap-3 px-4 pb-4 pt-2 text-center">
-      <Cover src={cover} round={round} icon={round ? 'user' : 'disc'} alt={title} className="aspect-square w-52 shadow-2xl" />
-      <div className="min-w-0">
-        <h2 className="line-clamp-2 text-2xl font-bold leading-tight">{title}</h2>
-        {sub && <div className="mt-1 text-sm text-muted">{sub}</div>}
+/** The head of a list: its picture in its own light (the cover, blurred, fading into the page; the accent's for a
+ * list with no cover), then its name with ▶ and the shuffle of `tracks` at the right. `art`: a picture of the page's
+ * own in place of the cover («Любимое»: the heart). `onCover`: a tap on the picture (it opens large). */
+export function Hero({ cover, round, title, sub, right, kicker, art, tracks, context, onCover }: { cover?: string | null; round?: boolean; title: string; sub?: ReactNode; right?: ReactNode; kicker?: string; art?: ReactNode; tracks?: readonly TrackOut[]; context?: string; onCover?: () => void }) {
+  const desktop = useDesktop();
+  const play = tracks?.length ? <PlayPair tracks={tracks} context={context} /> : null;
+  const picture = (size: string) =>
+    art ? (
+      <div className={cx('aspect-square shrink-0 overflow-hidden rounded-md shadow-2xl', size)}>{art}</div>
+    ) : onCover ? (
+      <button type="button" onClick={onCover} aria-label="Открыть обложку" title="Открыть обложку" className={cx('shrink-0 transition active:scale-[0.98]', size)}>
+        <Cover src={cover} round={round} icon={round ? 'user' : 'disc'} alt={title} className="aspect-square w-full shadow-2xl" />
+      </button>
+    ) : (
+      <Cover src={cover} round={round} icon={round ? 'user' : 'disc'} alt={title} className={cx('aspect-square shrink-0 shadow-2xl', size)} />
+    );
+  // it reaches up under the bar with «back»
+  const light = (
+    <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 -top-20 bottom-0 -z-10 overflow-hidden [mask-image:linear-gradient(black_35%,transparent)]">
+      {cover ? <img key={cover} src={imageUrl(cover)} alt="" referrerPolicy="no-referrer" onError={retryImage} className="h-full w-full scale-150 object-cover opacity-50 blur-3xl" /> : <div className="h-full w-full bg-accent/25" />}
+    </div>
+  );
+  if (desktop)
+    return (
+      <div className="relative isolate flex items-end gap-6 px-6 pb-5 pt-3">
+        {light}
+        {picture('w-48')}
+        <div className="min-w-0 flex-1">
+          {kicker && <div className="text-sm text-muted">{kicker}</div>}
+          <h2 data-list-title className="line-clamp-2 break-words text-6xl font-black leading-[1.05] tracking-tight">{title}</h2>
+          {sub && <div className="mt-3 text-sm text-muted">{sub}</div>}
+        </div>
+        {right}
+        {play}
       </div>
-      {right}
+    );
+  return (
+    <div className="relative isolate px-4 pb-3">
+      {light}
+      <div className="flex justify-center pb-4">{picture('w-52')}</div>
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 data-list-title className="line-clamp-2 text-2xl font-bold leading-tight">{title}</h2>
+          {sub && <div className="mt-1 text-sm text-muted">{sub}</div>}
+        </div>
+        {play}
+      </div>
+      {right && <div className="pt-3">{right}</div>}
     </div>
   );
 }
 
+const plays = <T extends TrackOut>(tracks: readonly T[]): T[] => tracks.filter((t) => !t.unknown);
+
 // --- pages -------------------------------------------------------------------------------------------------
 
 export function LikedPage() {
-  const res = useAsync((s) => api.ndLiked(s), []);
+  const res = useAsync((s) => api.ndLiked(s), [], true, 'liked');
   useSmartPage('liked', null);
   useHubEvent('library', () => res.reload(true));
   useHubEvent('import', () => res.reload(true));
@@ -143,82 +242,201 @@ export function LikedPage() {
       window.removeEventListener('hm:hub-favorite', changed);
     };
   }, [res.reload]);
-  const [q, setQ] = useState('');
-  const songs = res.data?.songs ?? [];
-  const shown = useMemo(() => {
-    const needle = q.trim().toLocaleLowerCase('ru');
-    return needle ? songs.filter((t) => `${t.title} ${t.artist} ${t.album_title ?? ''}`.toLocaleLowerCase('ru').includes(needle)) : songs;
-  }, [songs, q]);
+  // «Вам нравится» of an artist's page (`/liked?artist=<name>&ref=<ref>`): the liked tracks that artist is on
+  const route = useRoute();
+  const by = route.query.get('artist');
+  const byRef = route.query.get('ref');
+  const songs = useMemo(() => {
+    const all = res.data?.songs ?? [];
+    if (!by) return all;
+    const want = by.trim().toLocaleLowerCase('ru');
+    return all.filter((t) => (!!byRef && (t.artist_ref === byRef || !!t.artist_refs?.includes(byRef))) || (t.artists?.length ? t.artists : [t.artist]).some((a) => a.trim().toLocaleLowerCase('ru') === want));
+  }, [res.data, by, byRef]);
+  const length = useMemo(() => songs.reduce((sum, t) => sum + (t.duration_s ?? 0), 0), [songs]);
+  const title = by ? `Вам нравится · ${by}` : 'Любимое';
+  const back = by ? (byRef ? `/artist/${enc(byRef)}` : '/library') : '/library';
+  const search = useListSearch(songs);
+  const [sort, setSort] = useState<ListSort>(null);
+  const [filter, setFilter] = useState<TagFilter>({});
+  const [saving, setSaving] = useState(false);
+  const shown = useShown(songs, search.found, filter);
+  const songIds = useMemo(() => songs.map(tagKey), [songs]);
+  const playing = plays(inOrder(shown ? shown.map((f) => songs[f.index]) : songs, sort));
 
   return (
     <div>
-      <PageHeader title="Понравившиеся" back="/library" sub={res.data ? tracksWord(songs.length) : undefined} right={<IconButton icon="refresh" label="Обновить" onClick={() => res.reload(true)} />} />
+      {saving && <SaveSelection scope="liked" filter={filter} onClose={() => setSaving(false)} onSaved={(r) => navigate(`/selection/${r.id}`)} />}
+      <ListBar title={title} back={back} tracks={playing} context="liked" offline={by ? undefined : { key: 'liked', to: '/liked', tracks: plays(songs) }} search={songs.length ? search : undefined} tags={songs.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : songs.length } : undefined} />
+      {res.data && !search.alone && (
+        <Hero
+          kicker={by ? 'Из «Любимого»' : 'Плейлист'}
+          title={title}
+          art={
+            <div className="flex h-full w-full items-center justify-center bg-accent/20 text-accent">
+              <Icon name="heart" size={84} filled />
+            </div>
+          }
+          sub={[tracksWord(songs.length), length ? fmtLength(length) : null].filter(Boolean).join(' · ')}
+          tracks={playing}
+          context="liked"
+        />
+      )}
       {res.loading ? (
-        <SkeletonRows />
+        res.data ? <SkeletonRows /> : <HeroSkeleton />
       ) : res.error ? (
         <ErrorState text={res.error} onRetry={() => res.reload()} />
-      ) : !songs.length && !res.data?.albums.length && !res.data?.artists.length ? (
-        <Empty icon="heart" title="Пока ничего" text="Ставьте ♥ трекам, альбомам и исполнителям — они соберутся здесь." />
+      ) : !songs.length ? (
+        <Empty icon="heart" title="Пока ничего" text="Нажмите «+» у трека — он окажется здесь." />
       ) : (
         <>
-          <ListActions tracks={shown} context="liked" />
-          {songs.length > 8 && (
-            <div className="px-4 pb-2">
-              <input className="input" type="search" placeholder="Найти среди понравившихся" aria-label="Найти среди понравившихся" value={q} onChange={(e) => setQ(e.target.value)} />
-            </div>
-          )}
-          <SongList tracks={shown} />
-          {!q && <AlbumRow title="Альбомы" albums={res.data?.albums ?? []} rowKey="liked:albums" />}
-          {!q && (res.data?.artists.length ?? 0) > 0 && (
-            <section aria-label="Исполнители">
-              <SectionTitle>Исполнители</SectionTitle>
-              <ArtistRow artists={res.data?.artists ?? []} rowKey="liked:artists" />
-            </section>
-          )}
+          <TagFilterChips filter={filter} onChange={setFilter} count={shown ? shown.length : songs.length} />
+          <SongList tracks={songs} found={shown} sort={sort} onSort={setSort} />
         </>
       )}
     </div>
   );
 }
 
-export function ArtistRow({ artists, rowKey, radio }: { artists: NdArtistOut[]; rowKey: string; radio?: boolean }) {
-  const row = useRememberScrollX(rowKey);
+/** «Подборка по тегам» (`/selection/<id>`): a saved filter over «Любимое», a playlist or the whole library — its
+ * tracks are found anew each time. `/selection/library?yes=…&no=…` is the same over the whole library, not saved
+ * yet (the page of tags opens it). The filter can be changed here and saved again. */
+export function SelectionPage({ id }: { id: string }) {
+  const route = useRoute();
+  const tags = useTags();
+  const unsaved = id === 'library';
+  const sel = useAsync(async (s) => (unsaved ? null : ((await api.tagSelections(s)).find((x) => String(x.id) === id) ?? null)), [id]);
+  const scope = unsaved ? 'library' : sel.data?.scope;
+  const src = useAsync(
+    async (s) => {
+      if (!scope) return null;
+      if (scope === 'liked') return { title: 'Любимое', tracks: (await api.ndLiked(s)).songs };
+      if (scope.startsWith('playlist:')) {
+        const p = await api.playlist(scope.slice(9), s);
+        return { title: p.name, tracks: p.tracks };
+      }
+      return { title: 'Вся библиотека', tracks: await api.ndSongs(s) };
+    },
+    [scope],
+  );
+  const [filter, setFilter] = useState<TagFilter>({});
+  const [sort, setSort] = useState<ListSort>(null);
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const saved = sel.data?.filter;
+  useEffect(() => {
+    setFilter(unsaved ? filterOfQuery(route.query) : (saved ?? {}));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, saved]);
+  const tracks = useMemo(() => src.data?.tracks ?? [], [src.data]);
+  const search = useListSearch(tracks);
+  const shown = useShown(tracks, search.found, filter);
+  const songIds = useMemo(() => tracks.map(tagKey), [tracks]);
+  const changed = !unsaved && !!saved && JSON.stringify(Object.entries(saved).sort()) !== JSON.stringify(Object.entries(filter).sort());
+  const name = unsaved ? 'Вся библиотека' : (sel.data?.name ?? 'Подборка');
+
+  const save = async () => {
+    if (!sel.data) return;
+    setBusy(true);
+    const r = await attempt(() => api.tagSelectionSave(sel.data!.id, { name: sel.data!.name, scope: sel.data!.scope, filter }), 'Подборка обновлена');
+    setBusy(false);
+    if (r) {
+      sel.setData(r);
+      selectionsChanged();
+    }
+  };
+  const drop = async () => {
+    if (!sel.data || !(await confirmDialog({ title: `Удалить подборку «${sel.data.name}»?`, body: 'Треки и их теги останутся.', okLabel: 'Удалить', danger: true }))) return;
+    if (await attempt(() => api.tagSelectionDelete(sel.data!.id), 'Подборка удалена')) {
+      selectionsChanged();
+      navigate('/tags', { replace: true });
+    }
+  };
+
+  if (sel.loading || src.loading) return (<><PageHeader hero title="Подборка" back="/tags" /><HeroSkeleton /></>);
+  if (!unsaved && !sel.data) return (<><PageHeader hero title="Подборка" back="/tags" /><ErrorState text={sel.error ?? 'Подборка не найдена'} onRetry={() => sel.reload()} /></>);
+  if (!src.data) return (<><PageHeader hero title={name} back="/tags" /><ErrorState text={src.error ?? 'Не удалось получить треки'} onRetry={() => src.reload()} /></>);
+  const list = shown ? shown.map((f) => tracks[f.index]) : tracks;
   return (
-    <div ref={row} className="no-scrollbar flex gap-3 overflow-x-auto px-4 pb-1">
-      {artists.map((a) => (
-        <NdArtistBubble key={a.id} artist={a} radio={radio} />
-      ))}
+    <div>
+      {saving && <SaveSelection scope="library" filter={filter} onClose={() => setSaving(false)} onSaved={(r) => navigate(`/selection/${r.id}`, { replace: true })} />}
+      <ListBar title={name} back="/tags" tracks={inOrder(list, sort)} context="selection" search={search} tags={{ songIds, filter, onChange: setFilter, onSave: unsaved ? () => setSaving(true) : undefined, count: list.length }} />
+      {!search.alone && <Hero
+        kicker={unsaved ? 'Фильтр по тегам' : 'Подборка по тегам'}
+        title={name}
+        art={
+          <div className="flex h-full w-full items-center justify-center bg-accent/20 text-accent">
+            <Icon name="filter" size={84} />
+          </div>
+        }
+        sub={[unsaved ? null : src.data.title, filterActive(filter) ? filterWords(filter, tags.byId) : 'теги не выбраны', `${tracksWord(list.length)}${list.length ? ` · ${fmtLength(list.reduce((n, t) => n + (t.duration_s ?? 0), 0))}` : ''}`].filter(Boolean).join(' · ')}
+        tracks={inOrder(list, sort)}
+        context="selection"
+      />}
+      <ListActions>
+        {!unsaved && changed && filterActive(filter) && (
+          <Button small variant="primary" busy={busy} onClick={() => void save()}>
+            Сохранить изменения
+          </Button>
+        )}
+        {!unsaved && <IconButton icon="trash" size={24} label="Удалить подборку" onClick={() => void drop()} className="text-muted hover:text-danger" />}
+      </ListActions>
+      <TagFilterChips filter={filter} onChange={setFilter} count={list.length} />
+      <SongList tracks={tracks} found={shown ?? (filterActive(filter) ? [] : null)} sort={sort} onSort={setSort} />
     </div>
   );
 }
 
 export function PlaylistPage({ id }: { id: string }) {
-  const res = useAsync((s) => api.playlist(id, s), [id]);
+  const res = useAsync((s) => api.playlist(id, s), [id], true, `playlist:${id}`);
   const p = res.data;
   useSmartPage(`playlist:${id}`, p?.name ?? null);
+  const desktop = useDesktop();
+  // the playlist is the Hub's: every track stands in its place, whether the library has its file yet or not
+  const all = useMemo(() => p?.tracks ?? [], [p]);
+  const search = useListSearch(all);
+  const [sort, setSort] = useState<ListSort>(null);
+  const [viewing, setViewing] = useState(false);
+  const [filter, setFilter] = useState<TagFilter>({});
+  const [saving, setSaving] = useState(false);
+  const shown = useShown(all, search.found, filter);
+  const songIds = useMemo(() => all.map(tagKey), [all]);
+  const closeCover = useCallback(() => setViewing(false), []);
+  // its name or its picture changed (the playlist's menu, the picture's window), or it is gone: the Hub says so
+  useHubEvent('library', () => res.reload(true));
+  useHubEvent('import', () => res.reload(true)); // a transfer settled its playlists
 
   const remove = async (i: number, t: NdSongOut) => {
     if (await attempt(() => api.removeFromPlaylist(id, [i]), `«${t.title}» убран из плейлиста`))
-      res.setData((prev) => (prev ? { ...prev, song_count: prev.song_count - 1, duration_s: Math.max(0, prev.duration_s - (t.duration_s ?? 0)), tracks: prev.tracks.filter((_, j) => j !== i) } : prev));
-  };
-  const drop = async () => {
-    if (!p || !(await confirmDialog({ title: `Удалить плейлист «${p.name}»?`, body: 'Песни останутся в библиотеке.', okLabel: 'Удалить', danger: true }))) return;
-    if (await attempt(() => api.deletePlaylist(id), 'Плейлист удалён')) navigate('/playlists', { replace: true });
+      res.setData((prev) => (prev ? { ...prev, song_count: prev.song_count - (t.owned ? 1 : 0), duration_s: Math.max(0, prev.duration_s - (t.duration_s ?? 0)), tracks: prev.tracks.filter((_, j) => j !== i) } : prev));
   };
 
-  if (res.loading) return (<><PageHeader title="Плейлист" back="/playlists" /><SkeletonRows /></>);
-  if (!p) return (<><PageHeader title="Плейлист" back="/playlists" /><ErrorState text={res.error ?? 'Плейлист не найден'} onRetry={() => res.reload()} /></>);
+  if (res.loading && !p) return (<><PageHeader hero title="Плейлист" back="/library" /><HeroSkeleton /></>);
+  if (!p) return (<><PageHeader hero title="Плейлист" back="/library" /><ErrorState text={res.error ?? 'Плейлист не найден'} onRetry={() => res.reload()} /></>);
+  const cover = p.cover_url ? `${p.cover_url}&size=600` : p.tracks[0]?.cover_url;
+  const playing = plays(inOrder(shown ? shown.map((f) => all[f.index]) : all, sort));
   return (
     <div>
-      <PageHeader title={p.name} back="/playlists" right={<IconButton icon="trash" label="Удалить плейлист" onClick={drop} />} />
-      <Hero
-        cover={p.tracks[0]?.cover_url}
+      <ListBar title={p.name} back="/library" tracks={playing} context="playlist"
+        // the playlist's own menu — its name, its picture, deleting it — here as where the playlists are listed; a
+        // list the Hub makes («Микс дня») has nothing to edit, and no menu
+        extra={p.editable !== false && <IconButton icon="more" label="Плейлист: переименовать, обложка, удалить" onClick={(e) => openPlaylistMenu({ id, name: p.name, cover_url: p.cover_url }, desktop ? { x: e.clientX, y: e.clientY } : undefined)} />}
+        offline={{ key: `playlist:${id}`, to: `/playlist/${id}`, tracks: plays(all) }} search={all.length ? search : undefined} tags={all.length ? { songIds, filter, onChange: setFilter, onSave: () => setSaving(true), count: shown ? shown.length : all.length } : undefined} />
+      {viewing && <CoverView src={cover} title={p.name} playlistId={id} own={ownCover(p.cover_url)} onClose={closeCover} />}
+      {!search.alone && <Hero
+        kicker="Плейлист"
+        onCover={() => setViewing(true)}
+        cover={cover}
         title={p.name}
-        sub={[tracksWord(p.song_count), p.duration_s ? fmtLength(p.duration_s) : null].filter(Boolean).join(' · ')}
-      />
-      <ListActions tracks={p.tracks} context="playlist" />
-      {p.tracks.length ? (
-        <SongList tracks={p.tracks} extra={(t, i) => [{ icon: 'x', label: 'Убрать из плейлиста', onClick: () => void remove(i, t) }]} />
+        sub={[tracksWord(all.length), p.duration_s ? fmtLength(p.duration_s) : null].filter(Boolean).join(' · ')}
+        tracks={playing}
+        context="playlist"
+      />}
+      {all.length ? (
+        <>
+          {saving && <SaveSelection scope={`playlist:${id}`} filter={filter} onClose={() => setSaving(false)} onSaved={(r) => navigate(`/selection/${r.id}`)} />}
+          <TagFilterChips filter={filter} onChange={setFilter} count={shown ? shown.length : all.length} />
+          <SongList tracks={all} found={shown} sort={sort} onSort={setSort} extra={(t, i) => [{ icon: 'x', label: 'Убрать из плейлиста', onClick: () => void remove(i, t) }]} />
+        </>
       ) : (
         <Empty icon="playlist" title="Плейлист пуст" text="Добавляйте треки через ⋯ → «Добавить в плейлист»." />
       )}
@@ -227,7 +445,7 @@ export function PlaylistPage({ id }: { id: string }) {
 }
 
 export function ArtistsPage() {
-  const res = useAsync((s) => api.ndArtists(s), []);
+  const res = useAsync((s) => api.ndArtists(s), [], true, 'nd-artists');
   const [q, setQ] = useState('');
   const shown = useMemo(() => {
     const needle = q.trim().toLocaleLowerCase('ru');
@@ -271,61 +489,136 @@ const albumsWord = (n: number) => {
   return `${n} ${w}`;
 };
 
+/** A library artist (`/lib/artist/<id>`). The Hub says who they are in the catalog — by its own records of their
+ * tracks, so a name spelt otherwise there («Mikhail Krug» for «Михаил Круг») is still the same person — and the page
+ * is then the catalog's (`pages/Artist.tsx`). An artist the catalog does not know (a friend's band, a file with a
+ * name of its own) has the same page drawn of the library: the round picture, «Подписаться», the wave, their tracks
+ * the library has and their albums in a row. */
 export function NdArtistPage({ id }: { id: string }) {
-  const res = useAsync((s) => api.ndArtist(id, s), [id]);
+  const res = useAsync((s) => api.ndArtist(id, s), [id], true, `nd-artist:${id}`);
   const { starting } = useWave();
-  if (res.loading) return (<><PageHeader title="Исполнитель" back="/artists" /><SkeletonRows /></>);
-  if (!res.data) return (<><PageHeader title="Исполнитель" back="/artists" /><ErrorState text={res.error ?? 'Исполнитель не найден'} onRetry={() => res.reload()} /></>);
-  const { artist, albums } = res.data;
+  const d = res.data;
+  const target = { targetType: 'artist' as const, ndId: id, data: { name: d?.artist.name ?? '' } };
+  const followed = useLiked(target);
+  const [busy, setBusy] = useState(false);
+  const row = useRememberScrollX(`nd-artist:${id}`);
+  const names = useArtistCard(d && !d.catalog_ref ? d.artist.name : null);
+  const [naming, setNaming] = useState<'names' | 'projects' | 'looks' | 'menu' | null>(null);
+  if (res.loading && !d) return (<><PageHeader hero title="Исполнитель" back="/artists" /><HeroSkeleton round buttons /></>);
+  if (!d) return (<><PageHeader hero title="Исполнитель" back="/artists" /><ErrorState text={res.error ?? 'Исполнитель не найден'} onRetry={() => res.reload()} /></>);
+  if (d.catalog_ref) return <ArtistPage refId={d.catalog_ref} />;
+  const { artist, albums } = d;
+  const tracks = d.tracks ?? [];
+  const follow = async () => {
+    setBusy(true);
+    try {
+      await toggleLike(target);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div>
-      <PageHeader
-        title={artist.name}
-        back="/artists"
-        right={<LikeButton targetType="artist" ndId={artist.id} title={artist.name} data={{ name: artist.name }} />}
-      />
+      <ListBar title={artist.name} back="/artists" tracks={tracks} context="artist" />
       <Hero
-        cover={artist.cover_url ?? albums[0]?.cover_url}
+        kicker="Исполнитель"
+        cover={artist.cover_url ?? albums[0]?.cover_url ?? tracks[0]?.cover_small_url}
         round
         title={artist.name}
-        sub={albumsWord(albums.length)}
-        right={
-          canWave() && (
-            <Button
-              variant="primary"
-              icon="wave"
-              busy={starting === seedKey({ nd_artist_id: artist.id })}
-              onClick={() => void startWave({ nd_artist_id: artist.id }, 'radio')}
-            >
-              Радио по исполнителю
-            </Button>
-          )
-        }
+        sub={[tracks.length ? tracksWord(tracks.length) : null, albums.length ? albumsWord(albums.length) : null, 'только в медиатеке'].filter(Boolean).join(' · ')}
+        tracks={tracks}
+        context="artist"
       />
-      <div className="grid grid-cols-2 gap-4 px-4 pb-4 sm:grid-cols-3">
-        {albums.map((a) => (
-          <NdAlbumCard key={a.id} album={a} showArtist={false} />
-        ))}
+      <div className="flex items-center px-4 pb-3 lg:px-6">
+        {/* the buttons go sideways where they do not fit; the ⋯ stays at the right edge, whatever the width */}
+        <div className="no-scrollbar -my-1 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1 pr-5 [mask-image:linear-gradient(to_right,#000_calc(100%-1.25rem),transparent)] [&>*]:shrink-0">
+        <button
+          type="button"
+          onClick={() => void follow()}
+          disabled={busy}
+          aria-pressed={followed}
+          className={cx('flex h-9 items-center gap-1.5 rounded-full border px-4 text-sm font-semibold transition active:scale-95', followed ? 'border-accent text-accent' : 'border-fg/40 text-fg hover:border-fg')}
+        >
+          {busy ? <Spinner size={14} /> : followed && <Icon name="check" size={15} stroke={3} />}
+          {followed ? 'Вы подписаны' : 'Подписаться'}
+        </button>
+        {canWave() && (
+          <button
+            type="button"
+            disabled={starting === seedKey({ nd_artist_id: artist.id })}
+            onClick={() => void startWave({ nd_artist_id: artist.id }, 'radio')}
+            className="flex h-9 items-center gap-1.5 rounded-full border border-fg/40 px-4 text-sm font-semibold text-fg transition hover:border-fg active:scale-95 disabled:opacity-60"
+          >
+            <Icon name="wave" size={16} className="text-accent" />
+            Волна по исполнителю
+          </button>
+        )}
+        <ArtistProjects card={names.card} />
+        </div>
+        {names.card && (
+          <button type="button" onClick={() => setNaming('menu')} aria-label="Ещё" title="Ещё" className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted hover:text-fg">
+            <Icon name="more" size={24} />
+            {artistHint(names.card) && <span aria-hidden="true" className="absolute right-2 top-2 h-2 w-2 rounded-full bg-info" />}
+          </button>
+        )}
       </div>
+      <Sheet open={naming === 'menu'} onClose={() => setNaming(null)} title={artist.name}>
+        <div className="-mx-1">
+          {([['names', 'edit', <span className="flex items-center gap-2">Имя и написания{artistHint(names.card) && <><span aria-hidden="true" className="h-2 w-2 rounded-full bg-info" /><span className="text-[13px] text-info">есть похожий исполнитель</span></>}</span>], ['projects', 'user', 'Другие проекты…'], ['looks', 'image', 'Фото и обложка']] as const).map(([which, icon, label]) => (
+            <button key={which} type="button" onClick={() => setNaming(which)} className="flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5">
+              <Icon name={icon} size={21} className="text-muted" />
+              {label}
+            </button>
+          ))}
+        </div>
+      </Sheet>
+      <ArtistWindow which={naming === 'names' || naming === 'projects' ? naming : null} card={names.card} onChange={names.set} onClose={() => setNaming(null)} />
+      {naming === 'looks' && names.card && <ArtistLooksWindow artistId={names.card.id} onChanged={() => res.reload()} onClose={() => setNaming(null)} />}
+
+      {tracks.length > 0 && (
+        <section aria-label="Треки">
+          <h2 className="flex items-baseline gap-2 px-4 pb-1 pt-3 text-lg font-bold lg:px-6">
+            Треки
+            <span className="text-xs font-normal text-dim">в медиатеке</span>
+          </h2>
+          {tracks.map((t, i) => (
+            <TrackRow key={t.ref} track={t} number={i + 1} queue={tracks} />
+          ))}
+        </section>
+      )}
+      {albums.length > 0 && (
+        <section aria-label="Альбомы" className="pb-4">
+          <h2 className="px-4 pb-2 pt-5 text-lg font-bold lg:px-6">Альбомы</h2>
+          <div ref={row} className="no-scrollbar flex gap-4 overflow-x-auto px-4 pb-1 lg:px-6">
+            {albums.map((a) => (
+              <div key={a.id} className="w-36 shrink-0 lg:w-44">
+                <NdAlbumCard album={a} showArtist={false} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {!tracks.length && !albums.length && <Empty icon="user" title="Здесь пока пусто" text="В медиатеке нет треков этого исполнителя." />}
     </div>
   );
 }
 
 export function NdAlbumPage({ id }: { id: string }) {
-  const res = useAsync((s) => api.ndAlbum(id, s), [id]);
-  if (res.loading) return (<><PageHeader title="Альбом" back="/library" /><SkeletonRows /></>);
-  if (!res.data) return (<><PageHeader title="Альбом" back="/library" /><ErrorState text={res.error ?? 'Альбом не найден'} onRetry={() => res.reload()} /></>);
+  const res = useAsync((s) => api.ndAlbum(id, s), [id], true, `nd-album:${id}`);
+  if (res.loading) return (<><PageHeader hero title="Альбом" back="/library" /><HeroSkeleton /></>);
+  if (!res.data) return (<><PageHeader hero title="Альбом" back="/library" /><ErrorState text={res.error ?? 'Альбом не найден'} onRetry={() => res.reload()} /></>);
   const a = res.data;
   const tracks = a.tracks ?? [];
   return (
     <div>
       <PageHeader
+        hero
         title={a.title}
         sub={a.artist}
         back="/library"
-        right={<LikeButton targetType="album" ndId={a.id} title={a.title} data={{ name: a.title, artist: a.artist }} />}
       />
       <Hero
+        kicker="Альбом"
         cover={a.cover_url?.replace(/size=\d+/, 'size=600')}
         title={a.title}
         sub={
@@ -340,12 +633,14 @@ export function NdAlbumPage({ id }: { id: string }) {
             {[a.year, tracksWord(a.song_count), a.duration_s ? fmtLength(a.duration_s) : null].filter(Boolean).map((x) => ` · ${x}`)}
           </>
         }
+        tracks={tracks}
+        context="album"
       />
-      <ListActions tracks={tracks} context="album" />
       <ul>
+        {tracks.length > 0 && <li><TrackTableHeader numbered /></li>}
         {tracks.map((t, i) => (
           <li key={`${t.nd_song_id}:${i}`}>
-            <TrackRow track={t} number={t.track_no ?? i + 1} queue={tracks} link={false} />
+            <TrackRow track={t} index={t.track_no ?? i + 1} queue={tracks} link={false} />
           </li>
         ))}
       </ul>

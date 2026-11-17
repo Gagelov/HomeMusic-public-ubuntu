@@ -14,7 +14,7 @@ import pytest
 import respx
 from sqlalchemy import select
 
-from tests.support import FakeDeezer, FakeProvider, app_client, cand
+from tests.support import FakeDeezer, FakeProvider, app_client, by_songs, cand, filed_track, tids
 
 
 def track(artist: str, title: str, duration_s: int | None = 200, **extra) -> dict:
@@ -89,6 +89,12 @@ async def env(hub_env, monkeypatch):
             name = p.get("name") or state["playlists"].get(pid, {}).get("name")
             state["playlists"][pid] = {"name": name, "songs": p.get_list("songId")}  # with an id: replaces
             return reply(playlist={"id": pid, "name": name})
+        if ep == "getPlaylist":
+            pl = state["playlists"].get(p["id"])
+            if pl is None:
+                return reply()
+            return reply(playlist={"id": p["id"], "name": pl["name"], "songCount": len(pl["songs"]),
+                                   "entry": [{"id": x, "title": x, "artist": "?"} for x in pl["songs"]]})
         if ep == "updatePlaylist":
             state["playlists"][p["playlistId"]]["songs"] += p.get_list("songIdToAdd")
             return reply()
@@ -119,17 +125,33 @@ async def env(hub_env, monkeypatch):
 
 
 async def add_library_track(raw: dict, nd_song_id: str) -> int:
+    from sqlalchemy import select
+
     from app.db import session_scope
     from app.matching.normalize import fingerprint
-    from app.models import Track
+    from app.models import Track, TrackFile
 
     async with session_scope() as s:
-        t = Track(uid=str(uuid.uuid4()), path=f"{raw['artist']}/{raw['title']}.mp3", nd_song_id=nd_song_id,
+        # as the importer does: a file of a song the Hub knows already (it waits in a playlist) joins that track
+        known = (await s.execute(select(Track).where(
+            Track.fingerprint == fingerprint(raw["artist"], raw["title"])).order_by(Track.id).limit(1))).scalar_one_or_none()
+        if known is not None:
+            s.add(TrackFile(track_id=known.id, uid=str(uuid.uuid4()), path=f"{raw['artist']}/{raw['title']}.mp3",
+                            nd_song_id=nd_song_id))
+            await s.flush()
+            return known.id
+        t = filed_track(uid=str(uuid.uuid4()), path=f"{raw['artist']}/{raw['title']}.mp3", nd_song_id=nd_song_id,
                   artist=raw["artist"], title=raw["title"], duration_s=raw["duration_s"],
                   fingerprint=fingerprint(raw["artist"], raw["title"]))
         s.add(t)
         await s.flush()
         return t.id
+
+
+async def playlist_tracks(c, name: str) -> list[tuple[str, str | None]]:
+    """The Hub's playlist of this name: (title, the Navidrome song of its file or None) of its tracks, in order."""
+    pid = next(x["id"] for x in (await c.get("/api/playlists")).json() if x["name"] == name)
+    return [(x["title"], x["nd_song_id"]) for x in (await c.get(f"/api/playlists/{pid}")).json()["tracks"]]
 
 
 async def run_imports(max_jobs: int = 50) -> None:
@@ -277,15 +299,16 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     assert rows[playlist, "Город золотой"]["nd_song_id"] == "ndA"
     assert rows[imp["collections"][4]["id"], "Что-то"]["status"] == "skipped"  # a dislike is only kept
 
-    # the playlist holds what the library has, in Yandex's order; ♥ — again one by one from the oldest like
-    assert state["playlists"] == {"pl1": {"name": "Дорога", "songs": ["ndA", "ndB"]}}
+    # the playlist is the Hub's: every matched track in Yandex's order, the one the library has no file of in its
+    # place. ♥ — one by one from the oldest like
+    # the song the catalog does not know stands in its place too: a track known by its name alone
+    assert await playlist_tracks(c, "Дорога") == [("Группа крови", None), ("Город золотой", "ndA"), ("Нет такого", None), ("Осень", "ndB")]
     assert state["star_log"][-2:] == [("star", ["ndA"]), ("star", ["ndB"])]
     assert state["stars"] == ["ndA", "ndB"]
     # the liked track the library lacks shows ♥ by its catalog ref
     stars = (await c.get("/api/starred")).json()
-    assert {k: stars[k] for k in ("song_ids", "album_ids", "artist_ids", "refs")} == {
+    assert {k: sorted(stars[k]) for k in ("song_ids", "album_ids", "artist_ids", "refs")} == {
         "song_ids": ["ndA", "ndB"], "album_ids": [], "artist_ids": [], "refs": ["dz:100"]}
-    assert len(stars["subjects"]) == 3 and all(x["provenance"] == "import" for x in stars["subjects"])
     assert await jobs("download_item") == []
 
     # listened to: downloaded now (the user's own work), quietly, ♥ by the download. The app's `start` of it
@@ -296,7 +319,7 @@ async def test_economy_import_likes_and_playlists_in_order(env):
     [job] = await jobs("download_item")
     assert job.priority == 0
     [dl] = (await c.get("/api/downloads")).json()
-    assert (dl["star"], dl["import_id"], dl["track_ref"]) == (True, imp["id"], "dz:100")
+    assert (dl["quiet"], dl["import_id"], dl["track_ref"]) == (True, imp["id"], "dz:100")
     assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {"queued"}
 
     # the download is over: the playlist is rewritten in order with it
@@ -306,7 +329,7 @@ async def test_economy_import_likes_and_playlists_in_order(env):
         item.status, item.track_id = "done", track_id
         await imports_done(s, [item])
     await run_imports()
-    assert state["playlists"]["pl1"]["songs"] == ["ndC", "ndA", "ndB"]
+    assert await playlist_tracks(c, "Дорога") == [("Группа крови", "ndC"), ("Город золотой", "ndA"), ("Нет такого", None), ("Осень", "ndB")]
     assert {x["status"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {"done"}
     # ♥ in Yandex's order: Группа крови was liked after Город золотой and before Осень, so Осень is starred again after it
     assert state["star_log"][-3:] == [("unstar", ["ndC", "ndB"]), ("star", ["ndC"]), ("star", ["ndB"])]
@@ -320,6 +343,47 @@ async def test_economy_import_likes_and_playlists_in_order(env):
         await sync_likes(s, await s.get(Import, imp["id"]))
     assert state["stars"] == ["ndC", "ndB"]
     assert {x["status"] for x in await items(c, imp, collection_id=likes) if x["title"] == "Город золотой"} == {"skipped"}
+
+
+async def test_what_waits_shows_in_its_playlist_and_extras_follow_the_tracks(env):
+    from app.db import session_scope
+    from app.jobs.downloads import imports_done
+    from app.models import DownloadItem
+
+    c, state = env["client"], env["state"]
+    imp = await prepared(c)
+    mine = (await c.post("/api/playlists", json={"name": "Моё"})).json()["id"]  # a playlist of the user's own
+    await c.post(f"/api/playlists/{mine}/add", json={"track_ids": await tids("ndB")})  # Осень is in it
+    tag = (await c.post("/api/tags", json={"name": "из Яндекса"})).json()["id"]
+    r = await c.post(f"/api/imports/{imp['id']}/start", json={
+        "collection_ids": [x["id"] for x in imp["collections"]], "mode": "economy",
+        "star": True, "playlist_ids": [mine], "tag_ids": [tag]})
+    assert r.status_code == 200, r.text
+    await run_imports()
+
+    # the playlist that came with the import: the track the library has no file of stands in its place
+    # the song the catalog does not know stands in its place too: a track known by its name alone
+    assert await playlist_tracks(c, "Дорога") == [("Группа крови", None), ("Город золотой", "ndA"), ("Нет такого", None), ("Осень", "ndB")]
+
+    # «После переноса»: what the library has got its place in the other playlist (once), its tag and its ♥
+    assert await playlist_tracks(c, "Моё") == [("Осень", "ndB"), ("Город золотой", "ndA")]
+    tags = await by_songs((await c.get("/api/tags")).json()["map"])
+    assert tag in tags["ndA"] and tag in tags["ndB"]
+    assert {"ndA", "ndB"} <= set(state["stars"])
+
+    # the track that waited gets its file: it gets the same; nothing is done twice
+    await c.post("/api/plays/events", json={"events": [{
+        "event_id": "s1", "ts": "2026-10-23T10:00:00Z", "kind": "start", "ref": "dz:100", "client": "app/1.6.0"}]})
+    [dl] = (await c.get("/api/downloads")).json()
+    track_id = await add_library_track(KROVI, "ndC")
+    async with session_scope() as s:
+        item = await s.get(DownloadItem, dl["id"])
+        item.status, item.track_id = "done", track_id
+        await imports_done(s, [item])
+    await run_imports()
+    assert await playlist_tracks(c, "Дорога") == [("Группа крови", "ndC"), ("Город золотой", "ndA"), ("Нет такого", None), ("Осень", "ndB")]
+    assert await playlist_tracks(c, "Моё") == [("Осень", "ndB"), ("Город золотой", "ndA"), ("Группа крови", "ndC")]
+    assert tag in (await by_songs((await c.get("/api/tags")).json()["map"]))["ndC"] and "ndC" in state["stars"]
 
 
 async def test_likes_are_downloaded_from_the_oldest(env):
@@ -353,7 +417,7 @@ async def test_full_import_downloads_in_the_background(env):
     [job] = await jobs("download_item")
     assert job.priority < 0
     [dl] = (await c.get("/api/downloads")).json()
-    assert dl["star"] and dl["import_id"] == imp["id"]
+    assert dl["quiet"] and dl["import_id"] == imp["id"]
     assert {x["download_item_id"] for x in await items(c, imp) if x["title"] == "Группа крови" and x["kind"] == "track"} == {dl["id"]}
     assert imp["stats"]["downloading"] == 1
     # the liked album is only matched (download_albums is off), the playlist exists already
@@ -366,7 +430,7 @@ async def test_full_import_downloads_in_the_background(env):
     [job] = await jobs("download_item")
     assert job.priority == 0
     [dl] = (await c.get("/api/downloads")).json()
-    assert not dl["star"]
+    assert not dl["quiet"]
 
 
 async def test_second_import_reuses_the_matches(env):  # two whole imports: ~2x a scenario
@@ -397,9 +461,8 @@ async def test_not_found_track_is_picked_by_hand(env):
     assert row["title"] == "Нет такого"
     r = await c.post(f"/api/imports/items/{row['id']}/pick")
     assert r.status_code == 200, r.text
-    dl_id = r.json()["download_item_id"]
-    dl = (await c.get(f"/api/downloads/{dl_id}")).json()
-    assert (dl["title"], dl["star"], dl["import_id"]) == ("Нет такого", False, imp["id"])  # a visible download
+    dl = (await c.get(f"/api/downloads/{r.json()['download_item_id']}")).json()
+    assert (dl["title"], dl["quiet"], dl["import_id"]) == ("Нет такого", False, imp["id"])  # a visible download
     assert (await jobs("download_item"))[0].priority == 0
     # picked by hand: the row leaves «not found» (it would come back after a reload) and counts as sure
     assert await items(c, imp, match="not_found") == []
@@ -493,7 +556,7 @@ async def test_sign_in_by_code(env):
     assert r.status_code == 200, r.text
     imp = r.json()
     assert imp["status"] == "auth" and imp["auth"]["user_code"] == "abcd1234"
-    assert set(imp["auth"]) == {"user_code", "verification_url", "expires_at"}  # the device code stays in the Hub
+    assert imp["auth"]["kind"] == "device" and "device_code" not in imp["auth"]  # the device code stays in the Hub
     await run_imports()
     assert (await c.get(f"/api/imports/{imp['id']}")).json()["status"] == "auth"
 
@@ -587,3 +650,180 @@ async def test_dislikes_of_the_service_become_the_users_dislikes(env):
     assert (rows["Группа крови"]["ref"], rows["Группа крови"]["source"]) == ("dz:100", "yandex_import")
     assert (rows["Город золотой"]["nd_song_id"], rows["Город золотой"]["source"]) == ("ndA", "yandex_import")
     assert await jobs("download_item") == [] and state["stars"] == []  # still never downloaded nor ♥
+
+
+# --- Spotify playlists exported to CSV (Exportify) ----------------------------------------------------
+
+CSV_HEAD = "Track URI,Track Name,Artist Name(s),Album Name,Track Duration (ms),ISRC,Added At"
+JAPAN_CSV = "\n".join([
+    CSV_HEAD,
+    # the catalog knows this recording under other names: only the ISRC finds it
+    'spotify:track:aaa,"血液型","キノ, Guest",Album,245000,RUA1D8800001,2024-09-08T10:00:00Z',
+    "spotify:track:bbb,Нет такого,Неизвестный,,180000,,2024-09-08T10:00:01Z",
+    "spotify:track:ccc,Город золотой,Аквариум,,190000,,2024-09-08T10:00:02Z",
+    "spotify:track:aaa,duplicate row,キノ,,245000,RUA1D8800001,",
+    ",,,,,,",
+]).encode()
+
+
+def test_spotify_csv_is_read_as_a_playlist():
+    from app.imports.sources import spotify_csv
+    from app.imports.sources.base import SourceError
+
+    snap = spotify_csv.parse([("C:\\dl\\My_Japan_mix.csv", b"\xef\xbb\xbf" + JAPAN_CSV),
+                              ("Liked_Songs.csv", JAPAN_CSV)])
+    likes, playlist = snap.collections  # the likes first
+    assert (likes.kind, likes.title) == ("likes", "Любимые треки")
+    assert (playlist.kind, playlist.title, playlist.external_id) == ("playlist", "My Japan mix", "csv:my japan mix")
+    assert [i.external_id for i in playlist.items] == ["aaa", "bbb", "ccc"]  # the order; no duplicates, no blanks
+    first = playlist.items[0].raw
+    assert first == {"artist": "キノ, Guest", "artists": ["キノ", "Guest"], "title": "血液型", "album": "Album",
+                     "duration_s": 245, "isrc": "RUA1D8800001", "liked_at": "2024-09-08T10:00:00Z"}
+    assert "isrc" not in playlist.items[1].raw
+    assert spotify_csv.clean_isrc("ru-a1d-88-00001") == "RUA1D8800001" and spotify_csv.clean_isrc("../x") is None
+    for bad in ([], [("x.csv", b"a,b\n1,2\n")], [("x.csv", CSV_HEAD.encode())]):
+        with pytest.raises(SourceError):
+            spotify_csv.parse(bad)
+
+
+async def test_spotify_csv_import_matches_by_isrc(env):
+    from app.services import svc
+
+    c = env["client"]
+    r = await c.post("/api/imports/csv", files=[("files", ("JAPAN.csv", JAPAN_CSV, "text/csv"))])
+    assert r.status_code == 200, r.text
+    imp = r.json()
+    assert (imp["source"], imp["method"], imp["status"], imp["account"]) == ("spotify", "csv", "preview", "JAPAN")
+    assert not imp["has_token"] and env["state"]["fetches"] == []  # no sign-in, nothing is fetched
+    [coll] = imp["collections"]
+    assert (coll["kind"], coll["title"], coll["count"], coll["owned"]) == ("playlist", "JAPAN", 3, 1)
+
+    r = await c.post(f"/api/imports/{imp['id']}/start", json={"collection_ids": [coll["id"]], "mode": "full"})
+    assert r.status_code == 200, r.text
+    await run_imports()
+    rows = {x["title"]: x for x in await items(c, imp)}
+    assert (rows["血液型"]["match"], rows["血液型"]["ref"], rows["血液型"]["status"]) == ("exact", "dz:100", "queued")
+    assert svc.deezer.by_isrc == 1
+    assert (rows["Нет такого"]["match"], rows["Город золотой"]["match"]) == ("not_found", "owned")
+    [dl] = (await c.get("/api/downloads")).json()
+    assert dl["import_id"] == imp["id"]
+
+    assert (await c.post(f"/api/imports/{imp['id']}/sync")).status_code == 409  # a file is not read again
+    r = await c.post("/api/imports/csv", files=[("files", ("x.csv", b"not,a,playlist\n", "text/csv"))])
+    assert r.status_code == 400 and "Exportify" in r.json()["detail"]
+
+
+async def test_isrc_of_another_edit_falls_back_to_the_names(env):
+    """A reused code on a recording of another length is not trusted: the names decide."""
+    from app.imports.resolve import catalog_track
+
+    r = await catalog_track({"artist": "キノ", "artists": ["キノ"], "title": "血液型", "duration_s": 400,
+                             "isrc": "RUA1D8800001"})
+    assert r.match == "not_found"
+    r = await catalog_track({"artist": "Кино", "artists": ["Кино"], "title": "Группа крови", "duration_s": 245,
+                             "isrc": "XX0000000000"})
+    assert (r.match, r.ref) == ("exact", "dz:100")
+
+
+async def test_vk_sign_in_waits_for_the_code_typed_in_the_hub(env, monkeypatch):
+    """VK: the login and the password start the sign-in, the code VK sends is typed in the Hub; the password is kept
+    (encrypted) only while the code is awaited, and never shown."""
+    from app.db import session_scope
+    from app.imports.sources import vk
+    from app.imports.sources.base import SnapCollection, SnapItem, Snapshot
+    from app.models import Import
+
+    c = env["client"]
+    asked: list[dict] = []
+    answers = [vk.NeedCode("ВК отправил код в SMS на +7 *** 12"), vk.NeedCode("Код не подошёл", wrong=True), "tok"]
+
+    async def sign_in(login, password, *, code=None, captcha=None):
+        asked.append({"login": login, "password": password, "code": code, "captcha": captcha})
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    async def fetch(token):
+        assert token == "tok"
+        return Snapshot(account="Алён К", collections=[SnapCollection(
+            kind="playlist", external_id="audios", title="ВКонтакте", items=[SnapItem(external_id="7_1", raw=GOROD)])])
+
+    monkeypatch.setattr(vk, "sign_in", sign_in)
+    monkeypatch.setattr(vk, "fetch", fetch)
+
+    assert (await c.post("/api/imports", json={"source": "vk", "method": "password", "login": "me"})).status_code == 400
+    r = await c.post("/api/imports", json={"source": "vk", "method": "password", "login": " me ", "password": "pw"})
+    assert r.status_code == 200, r.text
+    imp = r.json()
+    assert imp["status"] == "auth" and imp["auth"]["kind"] == "code" and "+7 *** 12" in imp["auth"]["hint"]
+    assert "pw" not in r.text and "login" not in imp["auth"]
+    async with session_scope() as s:
+        kept = (await s.get(Import, imp["id"])).auth_json
+        assert kept["password"] != "pw" and kept["login"] != "me"  # encrypted
+    await run_imports()  # the job only watches the time
+    assert (await c.get(f"/api/imports/{imp['id']}")).json()["status"] == "auth"
+
+    imp = (await c.post(f"/api/imports/{imp['id']}/auth", json={"code": "000000"})).json()
+    assert imp["status"] == "auth" and imp["auth"]["wrong"]
+    imp = (await c.post(f"/api/imports/{imp['id']}/auth", json={"code": " 123456 "})).json()
+    assert imp["status"] == "fetching" and imp["auth"] is None and imp["has_token"]
+    assert asked == [{"login": "me", "password": "pw", "code": None, "captcha": None},
+                     {"login": "me", "password": "pw", "code": "000000", "captcha": None},
+                     {"login": "me", "password": "pw", "code": "123456", "captcha": None}]
+    async with session_scope() as s:
+        assert (await s.get(Import, imp["id"])).auth_json == {}  # the password is gone with the sign-in
+    assert (await c.post(f"/api/imports/{imp['id']}/auth", json={"code": "1"})).status_code == 409
+
+    await run_imports()
+    imp = (await c.get(f"/api/imports/{imp['id']}")).json()
+    assert imp["status"] == "preview" and imp["account"] == "Алён К"
+    assert [(x["kind"], x["title"], x["count"]) for x in imp["collections"]] == [("playlist", "ВКонтакте", 1)]
+
+
+async def test_vk_refusal_ends_the_import_and_a_captcha_is_passed_on(env, monkeypatch):
+    from app.imports.sources import vk
+    from app.imports.sources.base import SourceError
+
+    c = env["client"]
+    answers: list = [SourceError("ВК не принял логин или пароль")]
+
+    async def sign_in(login, password, *, code=None, captcha=None):
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    monkeypatch.setattr(vk, "sign_in", sign_in)
+    r = await c.post("/api/imports", json={"source": "vk", "method": "password", "login": "me", "password": "no"})
+    assert r.status_code == 400 and "логин или пароль" in r.json()["detail"]
+
+    answers += [vk.NeedCaptcha("https://id.vk.com/captcha?x=1"), SourceError("ВК временно закрыл вход")]
+    imp = (await c.post("/api/imports", json={"source": "vk", "method": "password", "login": "me", "password": "pw"})).json()
+    assert imp["auth"]["kind"] == "captcha" and imp["auth"]["verification_url"] == "https://id.vk.com/captcha?x=1"
+    imp = (await c.post(f"/api/imports/{imp['id']}/auth", json={"captcha": "passed"})).json()
+    assert imp["status"] == "failed" and "закрыл вход" in imp["error"] and imp["auth"] is None
+
+
+async def test_a_playlist_of_an_import_deleted_by_the_user_is_not_made_again(env):
+    """The import made the playlist; the user deleted it. A later rewrite (a track of it was downloaded) leaves it
+    gone, and lets the collection go."""
+    from app.db import session_scope
+    from app.imports import apply
+    from app.models import Import, ImportCollection
+
+    c = env["client"]
+    imp = await prepared(c)
+    r = await c.post(f"/api/imports/{imp['id']}/start",
+                     json={"collection_ids": [x["id"] for x in imp["collections"]], "mode": "economy"})
+    assert r.status_code == 200, r.text
+    await run_imports()
+    made = next(x for x in (await c.get("/api/playlists")).json() if x["name"] == "Дорога")
+    assert (await c.delete(f"/api/playlists/{made['id']}")).status_code == 200
+
+    async with session_scope() as s:
+        await apply.sync_playlists(s, await s.get(Import, imp["id"]))
+    assert "Дорога" not in [x["name"] for x in (await c.get("/api/playlists")).json()]
+    async with session_scope() as s:
+        coll = (await s.execute(select(ImportCollection).where(ImportCollection.title == "Дорога"))).scalar_one()
+        assert not coll.selected and coll.playlist_id is None

@@ -1,10 +1,11 @@
 """An import's life: sign-in → fetch (a snapshot of the collection) → preview → matching in batches → apply.
 
 Job kinds (all below the user's work in the queue: `PRIORITY_IMPORT`):
-- `import_auth`      — waits for the user to confirm the sign-in code, then fetches
+- `import_auth`      — waits for the user to confirm the sign-in code, then fetches (Yandex); for VK, whose code the
+                       user types here (`answer_auth`), only ends a sign-in nobody finished
 - `import_fetch`     — reads the collection from the service into collections and items, checks the library
 - `import_resolve`   — matches a batch of rows (`resolve.py`) and acts on them (`apply.py`), queues the next batch
-- `import_playlists` — writes the Navidrome playlists and the ♥ in the service's order (coalesced: one per import)
+- `import_playlists` — settles the Hub's playlists and the ♥ in the service's order (coalesced: one per import)
 - `import_finish`    — when the downloads are over: the last rewrite, ★ albums and artists, the token goes
 
 Modes: `economy` — playlists and ♥ at once from what the library has, the rest is listened to from the sources
@@ -23,6 +24,7 @@ from typing import Any
 from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import links
 from app.api.schemas import (
     ImportAuthOut,
     ImportCollectionOut,
@@ -35,10 +37,10 @@ from app.db import session_scope
 from app.events import bus
 from app.imports import apply
 from app.imports.resolve import CatalogDown, resolve_album, resolve_artist, resolve_track
-from app.imports.sources import yandex
+from app.imports.sources import vk, yandex
 from app.imports.sources.base import ITEM_KIND, AuthPending, Snapshot, SourceError
 from app.jobs.queue import PRIORITY_IMPORT, PermanentError, RetryLater, enqueue, handler, notify, on_final_failure
-from app.library.owned import find_existing
+from app.library.owned import find_owned
 from app.models import DownloadItem, Import, ImportCollection, ImportItem, Job, utcnow
 from app.security import decrypt, encrypt
 
@@ -57,10 +59,6 @@ ACTIVE = ("auth", "fetching", "running")
 
 
 # --- state + events --------------------------------------------------------------------------------------
-
-
-async def get_import(s: AsyncSession, import_id: int) -> Import | None:
-    return await s.get(Import, import_id)
 
 
 def _free_bytes() -> int | None:
@@ -130,6 +128,9 @@ async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
     if imp.status == "auth" and a.get("user_code"):
         auth = ImportAuthOut(user_code=a["user_code"], verification_url=a["verification_url"],
                              expires_at=a["expires_at"])
+    elif imp.status == "auth" and a.get("kind"):
+        auth = ImportAuthOut(kind=a["kind"], hint=a.get("hint"), wrong=bool(a.get("wrong")),
+                             verification_url=a.get("verification_url") or "", expires_at=a["expires_at"])
     return ImportOut(
         id=imp.id, source=imp.source, method=imp.method, status=imp.status, mode=imp.mode, account=imp.account,
         has_token=bool(imp.token_enc), keep_token=imp.keep_token,
@@ -137,7 +138,7 @@ async def import_out(s: AsyncSession, imp: Import) -> ImportOut:
         stats=await stats(s, imp, list(colls)),
         collections=[ImportCollectionOut(id=c.id, kind=c.kind, title=c.title, selected=c.selected,
                                          count=counts.get(c.id, (0, 0))[0], owned=counts.get(c.id, (0, 0))[1],
-                                         cover_url=c.cover_url, nd_playlist_id=c.nd_playlist_id) for c in colls],
+                                         cover_url=c.cover_url, playlist_id=str(c.playlist_id) if c.playlist_id else None) for c in colls],
         created_at=imp.created_at, started_at=imp.started_at, finished_at=imp.finished_at,
     )
 
@@ -148,7 +149,8 @@ def item_out(it: ImportItem, kind: str, nd_song_id: str | None = None, dl: Downl
         id=it.id, collection_id=it.collection_id, position=it.position, kind=ITEM_KIND.get(kind, "track"),
         artist=raw.get("artist") or raw.get("name") or "", title=raw.get("title") or raw.get("name") or "",
         album=raw.get("album"), duration_s=raw.get("duration_s"), cover_url=raw.get("cover_url"), ref=it.ref,
-        match=it.match, score=it.score, status=it.status, nd_song_id=nd_song_id, download_item_id=it.download_item_id,
+        match=it.match, score=it.score, status=it.status, nd_song_id=nd_song_id,
+        track_id=it.track_id if ITEM_KIND.get(kind, "track") == "track" else None, download_item_id=it.download_item_id,
         download_status=dl.status if dl else None, error=dl.error if dl else None,
     )
 
@@ -182,8 +184,77 @@ async def enqueue_once(s: AsyncSession, kind: str, import_id: int, *, delay_s: f
 # --- creating an import ------------------------------------------------------------------------------------
 
 
+VK_AUTH_S = 15 * 60  # how long a sign-in to VK waits for its code; the password is kept (encrypted) only so long
+
+
+def _vk_asks(imp: Import, e: Exception, *, login: str, password: str) -> None:
+    """VK wants a code or its captcha passed: the import waits for the user's answer (`answer_auth`)."""
+    was = imp.auth_json or {}
+    captcha = isinstance(e, vk.NeedCaptcha)
+    imp.status = "auth"
+    imp.auth_json = {
+        "kind": "captcha" if captcha else "code",
+        "hint": "ВК просит подтвердить, что вы не робот" if captcha else e.hint,
+        "verification_url": e.url if captcha else "",
+        "wrong": bool(getattr(e, "wrong", False)),
+        "login": encrypt(login), "password": encrypt(password),
+        "expires_at": was.get("expires_at") or (utcnow() + timedelta(seconds=VK_AUTH_S)).isoformat(),
+    }
+
+
+async def _create_vk(s: AsyncSession, user_id: int, *, method: str, token: str | None, login: str | None,
+                     password: str | None) -> Import:
+    imp = Import(user_id=user_id, source="vk", method=method, status="fetching", auth_json={}, options_json={})
+    if method == "token":
+        if not (token or "").strip():
+            raise SourceError("Вставьте токен")
+        imp.token_enc = encrypt(token.strip())
+    elif method == "password":
+        login, password = (login or "").strip(), password or ""
+        if not login or not password:
+            raise SourceError("Введите логин и пароль от ВК")
+        try:
+            imp.token_enc = encrypt(await vk.sign_in(login, password))
+        except (vk.NeedCode, vk.NeedCaptcha) as e:
+            _vk_asks(imp, e, login=login, password=password)
+    else:
+        raise SourceError("Неизвестный способ")
+    s.add(imp)
+    await s.flush()
+    if imp.status == "auth":  # ends the sign-in if its code never comes
+        await enqueue(s, "import_auth", {"import_id": imp.id}, delay_s=VK_AUTH_S, priority=PRIORITY_IMPORT)
+    else:
+        await enqueue(s, "import_fetch", {"import_id": imp.id}, priority=PRIORITY_IMPORT)
+    return imp
+
+
+async def answer_auth(s: AsyncSession, imp: Import, *, code: str | None, captcha: str | None) -> None:
+    """The user's answer to what VK asked at the sign-in: the code, or what its captcha page gave. The sign-in is made
+    again with it; VK may ask once more (a wrong code, a captcha after the code)."""
+    auth = dict(imp.auth_json or {})
+    if imp.source != "vk" or imp.status != "auth" or not auth.get("login"):
+        raise SourceError("Этот вход ничего не ждёт")
+    if utcnow().isoformat() > auth["expires_at"]:
+        imp.status, imp.error, imp.auth_json = "failed", "Вход не завершён вовремя — начните заново", {}
+        return
+    login, password = decrypt(auth["login"]), decrypt(auth["password"])
+    try:
+        token = await vk.sign_in(login, password, code=(code or "").strip() or None,
+                                 captcha=(captcha or "").strip() or None)
+    except (vk.NeedCode, vk.NeedCaptcha) as e:
+        _vk_asks(imp, e, login=login, password=password)
+        return
+    except SourceError as e:
+        imp.status, imp.error, imp.auth_json = "failed", str(e), {}
+        return
+    imp.token_enc, imp.auth_json, imp.status = encrypt(token), {}, "fetching"
+    await enqueue(s, "import_fetch", {"import_id": imp.id}, priority=PRIORITY_IMPORT)
+
+
 async def create(s: AsyncSession, user_id: int, *, source: str, method: str, token: str | None = None,
-                 url: str | None = None) -> Import:
+                 url: str | None = None, login: str | None = None, password: str | None = None) -> Import:
+    if source == "vk":
+        return await _create_vk(s, user_id, method=method, token=token, login=login, password=password)
     if source != "yandex":
         raise SourceError("Этот сервис пока не поддерживается")
     imp = Import(user_id=user_id, source=source, method=method, status="fetching", auth_json={}, options_json={})
@@ -205,11 +276,24 @@ async def create(s: AsyncSession, user_id: int, *, source: str, method: str, tok
         imp.token_enc = encrypt(token.strip())
     elif method == "profile":
         imp.account = yandex.profile_login(url or "")
+    elif method == "link":  # one open playlist, read by its link: «Подтянуть новое» reads it again
+        yandex.link_target(url or "")
+        imp.auth_json = {"url": (url or "").strip()}
     else:
         raise SourceError("Неизвестный способ")
     s.add(imp)
     await s.flush()
     await enqueue(s, "import_fetch", {"import_id": imp.id}, priority=PRIORITY_IMPORT)
+    return imp
+
+
+async def create_from_snapshot(s: AsyncSession, user_id: int, *, source: str, method: str, snap: Snapshot) -> Import:
+    """An import whose collection came with the request (a file): no sign-in, no fetch — straight to the preview."""
+    imp = Import(user_id=user_id, source=source, method=method, status="preview", account=snap.account,
+                 auth_json={}, options_json={})
+    s.add(imp)
+    await s.flush()
+    await store_snapshot(s, imp, snap)
     return imp
 
 
@@ -221,6 +305,12 @@ async def handle_auth(job: Job) -> None:
         if imp is None or imp.status != "auth":
             return
         auth = dict(imp.auth_json or {})
+        source = imp.source
+    if source == "vk":  # its code is typed in the Hub: nothing to ask VK about, only the time to watch
+        if utcnow().isoformat() > auth.get("expires_at", ""):
+            await set_status(import_id, "failed", error="Вход не завершён вовремя — начните заново", auth_json={})
+            return
+        raise RetryLater(60, "vk sign-in waits for the user")
     try:
         token = await yandex.device_poll(decrypt(auth["device_code"]))
     except AuthPending as e:
@@ -248,6 +338,12 @@ async def handle_auth(job: Job) -> None:
 
 async def fetch_snapshot(imp: Import) -> Snapshot:
     token = decrypt(imp.token_enc) if imp.token_enc else None
+    if imp.source == "vk":
+        if not token:
+            raise SourceError("Вход в ВК не сохранён — войдите заново")
+        return await vk.fetch(token)
+    if imp.method == "link":
+        return await asyncio.to_thread(yandex.fetch_link, (imp.auth_json or {}).get("url") or "")
     login = imp.account if imp.method == "profile" else None
     return await asyncio.to_thread(yandex.fetch, token, login)
 
@@ -264,7 +360,7 @@ async def store_snapshot(s: AsyncSession, imp: Import, snap: Snapshot) -> int:
         coll = colls.get(sc.external_id)
         if coll is None:
             coll = ImportCollection(import_id=imp.id, kind=sc.kind, external_id=sc.external_id, title=sc.title,
-                                    selected=sc.selected, nd_song_ids=[])
+                                    selected=sc.selected)
             s.add(coll)
             await s.flush()
         coll.title, coll.position, coll.cover_url = sc.title, pos, sc.cover_url
@@ -280,7 +376,7 @@ async def store_snapshot(s: AsyncSession, imp: Import, snap: Snapshot) -> int:
                 s.add(it)
                 fresh += 1
                 if sc.kind in ("likes", "playlist", "dislikes"):
-                    lib = await find_existing(s, artist=si.raw.get("artist") or "", title=si.raw.get("title") or "",
+                    lib = await find_owned(s, artist=si.raw.get("artist") or "", title=si.raw.get("title") or "",
                                               duration_s=si.raw.get("duration_s"))
                     if lib is not None:
                         it.match, it.track_id, it.score = "owned", lib.id, 1.0
@@ -331,14 +427,15 @@ async def _fetch_failed(job: Job, exc: Exception) -> None:
 
 
 async def start(s: AsyncSession, imp: Import, *, collection_ids: list[int], mode: str, download_albums: bool,
-                keep_token: bool) -> None:
+                keep_token: bool, extra: dict[str, Any] | None = None) -> None:
     if imp.status != "preview":
         raise PermanentError("Импорт уже запущен")
     for c in (await s.execute(select(ImportCollection).where(ImportCollection.import_id == imp.id))).scalars():
         c.selected = c.id in collection_ids
     imp.mode = mode
     imp.keep_token = keep_token
-    imp.options_json = {**(imp.options_json or {}), "download_albums": download_albums}
+    imp.options_json = {**(imp.options_json or {}), "download_albums": download_albums,
+                        "extra": extra or {}}  # «После переноса»: `apply.apply_extras`
     imp.status = "running"
     imp.started_at = utcnow()
     await enqueue(s, "import_resolve", {"import_id": imp.id}, priority=PRIORITY_IMPORT)
@@ -350,7 +447,7 @@ async def _next_batch(s: AsyncSession, imp: Import) -> list[tuple[ImportItem, Im
         .join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
         .where(ImportItem.import_id == imp.id, ImportItem.status == "pending", ImportCollection.selected.is_(True))
     )).all()
-    # likes from the oldest: each downloaded one then lands on top of «Понравившиеся» (`apply.sync_likes`)
+    # likes from the oldest: each downloaded one then lands on top of «Любимое» (`apply.sync_likes`)
     rows = sorted(rows, key=lambda r: (KIND_ORDER.get(r[1].kind, 9), r[1].position,
                                        -r[0].position if r[1].kind == "likes" else r[0].position))
     return [(it, c) for it, c in rows[:RESOLVE_BATCH]]
@@ -419,6 +516,7 @@ async def handle_playlists(job: Job) -> None:
         await apply.refresh_items(s, imp)
         await apply.sync_playlists(s, imp)
         await apply.sync_likes(s, imp)
+        await apply.apply_extras(s, imp)
     publish(imp)
 
 
@@ -439,6 +537,7 @@ async def handle_finish(job: Job) -> None:
             return
         await apply.sync_playlists(s, imp)
         await apply.sync_likes(s, imp)
+        await apply.apply_extras(s, imp)
         await apply.star_albums_artists(s, imp)
         imp.status = "done"
         imp.finished_at = utcnow()
@@ -496,10 +595,11 @@ async def downloads_done(s: AsyncSession, items: list[DownloadItem]) -> None:
 async def remove(s: AsyncSession, imp: Import) -> None:
     """The import and its rows go; the music, the ♥ and the playlists stay. Its queued downloads are cancelled."""
     await apply.cancel_downloads(s, imp)
+    await links.collect(s)  # the service ids of its tracks stay with the tracks
     await s.execute(delete(ImportItem).where(ImportItem.import_id == imp.id))
     await s.execute(delete(ImportCollection).where(ImportCollection.import_id == imp.id))
     await s.delete(imp)
 
 
-__all__ = ["ACTIVE", "create", "download_all", "downloads_done", "get_import", "import_out", "item_out", "listened",
+__all__ = ["ACTIVE", "create", "create_from_snapshot", "download_all", "downloads_done", "import_out", "item_out", "listened",
            "remove", "start"]

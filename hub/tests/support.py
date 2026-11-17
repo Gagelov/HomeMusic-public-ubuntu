@@ -123,6 +123,15 @@ class FakeDeezer:
             raise CatalogNotFound(f"track/{id_}")
         return self.track
 
+    async def get_track_by_isrc(self, isrc):
+        if self.down:
+            raise RuntimeError("deezer is down")
+        self.by_isrc = getattr(self, "by_isrc", 0) + 1
+        return self.track if isrc == self.track.isrc else None
+
+    async def get_album_credited(self, id_):
+        return await self.get_album(id_)
+
     async def get_album(self, id_):
         return self.album
 
@@ -172,8 +181,54 @@ class FakeDeezer:
     async def chart_artists(self, limit=30):
         return [self.artist("2", "Земфира"), self.artist("1", "Кино")]
 
+    async def get_artist_related(self, id_):
+        return [self.artist("2", "Земфира")] if str(id_) == "1" else []
+
     async def get_artist_top(self, id_, limit=10):
         return [self.track.model_copy(update={"artist_ref": "dz:1"})] if str(id_) == "1" else []
 
     async def aclose(self):
         pass
+
+
+FILE_FIELDS = ("uid", "path", "nd_song_id", "bitrate_kbps", "codec", "source", "source_url", "source_upload_date", "chroma",
+               "acquired_at", "locked", "warnings", "added_by")
+
+
+def filed_track(**fields):
+    """A track with the file that plays it, as one object to `s.add`: the file's fields (`path`, `nd_song_id`,
+    `source`…) go to its `TrackFile`, the rest to the `Track`."""
+    import uuid
+
+    from app.models import Track, TrackFile
+
+    file = {k: fields.pop(k) for k in FILE_FIELDS if k in fields}
+    file.setdefault("uid", str(uuid.uuid4()))
+    file.setdefault("path", f"{file['uid']}.mp3")
+    if "added_by" in file:
+        fields.setdefault("created_by", file["added_by"])
+    return Track(**fields, files=[TrackFile(**file)])
+
+
+async def tids(*songs: str) -> list[int]:
+    """The Hub's track ids of these Navidrome songs, in order (one the Hub has no file of is left out)."""
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import TrackFile
+
+    async with session_scope() as s:
+        by_song = dict((await s.execute(select(TrackFile.nd_song_id, TrackFile.track_id))).all())
+    return [by_song[x] for x in songs if x in by_song]
+
+
+async def by_songs(tag_map: dict) -> dict[str, list[int]]:
+    """A map of tags by the Hub's track ids (`GET /api/tags`), told by the Navidrome songs of the tracks' files."""
+    from sqlalchemy import select
+
+    from app.db import session_scope
+    from app.models import TrackFile
+
+    async with session_scope() as s:
+        songs = dict((await s.execute(select(TrackFile.track_id, TrackFile.nd_song_id))).all())
+    return {songs[int(k)]: v for k, v in tag_map.items() if songs.get(int(k))}

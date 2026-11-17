@@ -1,15 +1,18 @@
+import { openTelegramSetup } from '../lib/telegram';
 import { useEffect, useState, type ReactNode } from 'react';
-import { api } from '../api/client';
-import type { SoulseekStatusOut } from '../api/types';
 import { STANDALONE } from '../lib/embedded';
 import { useSession } from '../lib/session';
-import { Icon, type IconName } from '../components/Icon';
-import { PageHeader, Spinner, cx } from '../components/ui';
+import { api } from '../api/client';
+import { useDislikes } from '../lib/dislikes';
+import { tracksWord } from '../lib/format';
 import { useAsync } from '../lib/hooks';
-import { notifyPermission, requestNotifyPermission, type NotifyPermission } from '../lib/notify';
+import { useKeptLists } from '../lib/offline';
+import { BrandIcon } from '../components/BrandIcon';
+import { Icon, type IconName } from '../components/Icon';
+import { PageHeader, cx } from '../components/ui';
+import { notifyPermission, requestNotifyPermission, useActiveDownloads, type NotifyPermission } from '../lib/notify';
 import { Link } from '../lib/router';
-import { setSmartEnabled, useSmartEnabled } from '../lib/smartShuffle';
-import { attempt, confirmDialog, toast } from '../lib/ui';
+import { confirmDialog, toast } from '../lib/ui';
 
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -27,7 +30,16 @@ export function MorePage() {
   const { me, logout } = useSession();
   const [perm, setPerm] = useState<NotifyPermission>(notifyPermission);
   const [canInstall, setCanInstall] = useState(!!deferredInstall);
-  const smart = useSmartEnabled();
+  const downloads = useActiveDownloads();
+  // what stands now behind the lines: asked once the menu opens, kept between visits — a line waits for none of it
+  const quality = useAsync((s) => (STANDALONE ? api.quality(s) : Promise.resolve(null)), [], true, 'menu:quality');
+  const telegram = useAsync(() => api.telegram(), [], true, 'menu:telegram');
+  const listenbrainz = useAsync((s) => (STANDALONE ? api.listenbrainz(s) : Promise.resolve(null)), [], true, 'menu:listenbrainz');
+  const kept = useKeptLists().tracks;
+  const hiddenCount = useDislikes().length;
+  const waiting = (quality.data?.rows ?? []).filter((r) => r.state === 'found').length;
+  const weak = quality.data?.weak ?? 0;
+  const linked = (d: { connected: boolean } | null | undefined, name?: string | null) => (d ? (d.connected ? (name || 'подключён') : 'не подключён') : undefined);
   const standalone = window.matchMedia('(display-mode: standalone)').matches;
 
   useEffect(() => {
@@ -59,135 +71,145 @@ export function MorePage() {
     if (await confirmDialog({ title: 'Выйти из аккаунта?', okLabel: 'Выйти' })) await logout();
   };
 
-  const permText: Record<NotifyPermission, string> = {
-    granted: 'Включены',
-    denied: 'Запрещены в настройках браузера',
-    default: 'Нажмите, чтобы включить',
-    unsupported: 'Не поддерживаются этим браузером',
+  // what stands now, in a word, at the right of the line
+  const permText: Record<NotifyPermission, string> = { granted: 'включены', denied: 'запрещены', default: 'выключены', unsupported: 'недоступны' };
+  const notifications = () => {
+    if (perm === 'default') return void enableNotifications();
+    toast(perm === 'granted' ? 'Уведомления включены. Выключить их можно в настройках сайта в браузере.' : perm === 'denied' ? 'Уведомления запрещены. Разрешите их в настройках сайта в браузере.' : 'Этот браузер не умеет показывать уведомления.', 'info');
   };
 
   return (
-    <div>
-      <PageHeader title="Ещё" />
-      <div className="mx-4 mb-4 flex items-center gap-3 rounded-xl bg-surface p-4">
-        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-accent text-lg font-bold uppercase text-on-accent">{me.username.slice(0, 1)}</span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-semibold">{me.username}</div>
-          <div className="truncate text-xs text-muted">
-            {me.is_admin ? 'Администратор' : 'Пользователь'}
-            {me.email ? ` · ${me.email}` : ''}
-            {me.google_email ? ` · Google: ${me.google_email}` : ''}
-          </div>
+    <div className="pb-6">
+      <PageHeader title="Меню" />
+      {/* a line says one thing: what it is — and, at its right, what stands now. What a group is about is said by
+          its heading; a computer has the groups in two columns */}
+      <div className="grid items-start gap-5 px-4 lg:grid-cols-2 lg:px-6">
+        <div className="space-y-5">
+          <Group>
+            <li className="flex min-h-[4.25rem] items-center gap-3.5 pl-3.5 pr-2">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-accent text-lg font-bold uppercase text-on-accent">{me.username.slice(0, 1)}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-semibold">{me.username}</span>
+                <span className="block truncate text-[13px] text-muted">{[me.is_admin ? 'Администратор' : 'Пользователь', me.email, me.google_email ? `Google: ${me.google_email}` : null].filter(Boolean).join(' · ')}</span>
+              </span>
+              <button type="button" onClick={doLogout} aria-label="Выйти из аккаунта" title="Выйти из аккаунта" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-danger hover:bg-danger/10">
+                <Icon name="logout" size={20} />
+              </button>
+            </li>
+          </Group>
+          {STANDALONE && (
+            <Group>
+              <Item icon="sparkle" tint="bg-[#8b6cf6]" to="/assistant" title="Ассистент" />
+              <Item icon="download" tint="bg-[#3d8ef0]" to="/downloads" title="Загрузки" value={downloads > 0 ? (downloads > 99 ? '99+' : String(downloads)) : undefined} />
+              <Item icon="folder" tint="bg-[#ef8b3a]" to="/files" title={me.is_admin ? 'Все файлы' : 'Мои файлы'} />
+              <Item icon="sliders" tint="bg-[#30b85c]" to="/quality" title="Качество звука" value={waiting ? `ждут решения: ${waiting}` : weak ? `слабых: ${weak}` : undefined} />
+            </Group>
+          )}
+          {STANDALONE && (
+            <Group>
+              <Item icon="chart" tint="bg-[#2ba6bc]" to="/stats" title="Статистика" />
+              <Item icon="history" tint="bg-[#7b61d9]" to="/history" title="История" />
+              <Item icon="user" tint="bg-[#a45ad6]" to="/taste" title="Мои исполнители" />
+              {me.artist_map && <Item icon="wave" tint="bg-[#d5483f]" to="/map" title="Карта похожих" />}
+              <Item icon="download" tint="bg-[#1f9d55]" to="/offline" title="Офлайн" value={kept ? tracksWord(kept) : undefined} />
+              <Item icon="ban" tint="bg-[#b0483f]" to="/hidden" title="Скрытое" value={hiddenCount ? String(hiddenCount) : undefined} />
+            </Group>
+          )}
+        </div>
+        <div className="space-y-5">
+          <Group title="Импорт и интеграции">
+            <Item icon="transfer" brand="yandex" to="/import?from=yandex" title="Яндекс Музыка" />
+            <Item icon="transfer" brand="vk" to="/import?from=vk" title="ВКонтакте" />
+            <Item icon="transfer" brand="spotify" to="/import?from=spotify" title="Spotify" />
+            {STANDALONE && <Item icon="wave" brand="listenbrainz" to="/listenbrainz" title="ListenBrainz" value={linked(listenbrainz.data, listenbrainz.data?.user)} />}
+            <Item icon="send" brand="telegram" title="Telegram" value={telegram.data?.connected && !telegram.data.ready ? 'не завершён' : linked(telegram.data, telegram.data?.bot_username ? `@${telegram.data.bot_username}` : null)} onClick={() => openTelegramSetup()} />
+          </Group>
+          {(me.is_admin || me.public_music_url) && (
+            <Group title="Сервер">
+              {me.is_admin && <Item icon="lyrics" tint="bg-[#c2528b]" to="/lyrics-sources" title="Тексты песен" />}
+              {me.is_admin && <Item icon="user" tint="bg-[#3d8ef0]" to="/admin" title="Пользователи и приглашения" />}
+              {me.is_admin && (
+                <Item
+                  icon="wave"
+                  brand="lastfm"
+                  title="Last.fm"
+                  value={me.artist_map ? 'ключ задан' : 'ключ не задан'}
+                  onClick={() =>
+                    toast(
+                      me.artist_map
+                        ? 'Ключ Last.fm задан: работают карта исполнителей, число слушателей и «похожее» в миксах'
+                        : 'Без ключа Last.fm нет карты исполнителей, числа слушателей и «похожего» по Last.fm в миксах. Ключ бесплатный (last.fm/api/account/create): впишите его в LASTFM_API_KEY в .env и перезапустите хаб',
+                      'info',
+                    )
+                  }
+                />
+              )}
+              {me.public_music_url && <Item icon="external" tint="bg-[#ef8b3a]" href={me.public_music_url} title="Navidrome" />}
+            </Group>
+          )}
+          <Group title="Это устройство">
+            <Item icon="bell" tint="bg-[#d9534f]" title="Уведомления" value={permText[perm]} onClick={notifications} />
+            {canInstall && !standalone && <Item icon="install" tint="bg-[#30b85c]" title="Установить приложение" onClick={install} />}
+            {/* the player is here: in the browser, and the app's own on Android */}
+            <Item icon="install" tint="bg-[#1f9d55]" href="/app/latest.apk" title="Приложение для Android" />
+          </Group>
         </div>
       </div>
 
-      <ul className="mx-4 overflow-hidden rounded-xl bg-surface">
-        {STANDALONE && <Item icon="sparkle" to="/assistant" title="Ассистент" sub="Скриншот, список или просьба — найдёт и скачает" />}
-        {STANDALONE && (
-          <Item
-            icon="shuffleSmart"
-            title="Умное перемешивание в режимах"
-            sub="Кнопка перемешивания в плейлисте и «Понравившихся» добавляет рекомендации"
-            onClick={() => setSmartEnabled(!smart)}
-            right={<Switch on={smart} />}
-          />
-        )}
-        <Item icon="upload" to="/upload" title="Загрузить файлы" sub="Свои аудиофайлы с телефона" />
-        <Item icon="playlist" to="/playlists" title="Плейлисты" sub="Ваши плейлисты в Navidrome" />
-        <Item icon="transfer" to="/import" title="Перенести музыку" sub="Из Яндекс Музыки и Spotify: ♥, плейлисты, альбомы" />
-        {me.is_admin && <Item icon="user" to="/admin" title="Пользователи и приглашения" sub="Расходы на ИИ, песни, коды для новых людей" />}
-        {me.is_admin && <SoulseekSettings />}
-        {/* the player is here: in the browser, and the app's own on Android */}
-        <Item icon="install" href="/app/latest.apk" title="Приложение для Android" sub="HomeMusic: офлайн, плеер в шторке, тот же аккаунт" />
-        {me.public_music_url && <Item icon="external" href={me.public_music_url} title="Navidrome" sub="Веб-интерфейс библиотеки" />}
-        <Item
-          icon="bell"
-          title="Уведомления"
-          sub={permText[perm]}
-          onClick={perm === 'default' ? enableNotifications : undefined}
-          right={perm === 'granted' ? <Icon name="check" size={20} className="text-accent" /> : undefined}
-        />
-        {canInstall && !standalone && <Item icon="install" title="Установить приложение" sub="На домашний экран, с «Поделиться» → HomeMusic" onClick={install} />}
-        <Item icon="logout" title="Выйти" onClick={doLogout} danger />
-      </ul>
-
-      <p className="px-6 py-6 text-center text-xs text-dim">HomeMusic · личный музыкальный сервис</p>
+      <p className="px-6 pt-6 text-center text-xs text-dim">HomeMusic · личный музыкальный сервис</p>
     </div>
   );
 }
 
-const SOULSEEK_STATE: Record<SoulseekStatusOut['state'], string> = {
-  disabled: 'Источник выключен',
-  unreachable: 'slskd недоступен',
-  auth_error: 'Ошибка ключа API',
-  connecting: 'Вход в сеть Soulseek',
-  disconnected: 'Нет подключения к сети Soulseek',
-  ready: 'Подключён к сети Soulseek',
-};
-
-function SoulseekSettings() {
-  const res = useAsync((signal) => api.soulseekStatus(false, signal), []);
-  const [busy, setBusy] = useState(false);
-  const run = async () => {
-    if (busy) return;
-    setBusy(true);
-    const result = await attempt(() => api.soulseekStatus(true));
-    if (result) res.setData(result);
-    setBusy(false);
-  };
-  const status = res.data;
-  // Soulseek is off unless its account is configured: nothing to check then
-  if (!status || status.state === 'disabled') return null;
-  const summary = status?.search_error ? 'Пробный поиск не ответил'
-    : status?.search_matches != null ? `Поиск ответил: ${status.search_matches} файлов`
-    : status ? SOULSEEK_STATE[status.state] : 'Проверить подключение и поиск';
+/** Lines that belong together: one card, its heading over it in small. */
+function Group({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <Item icon="search" title="Проверить Soulseek" onClick={run}
-      sub={busy ? 'Проверяем…' : summary}
-      right={busy ? <Spinner size={18} /> : undefined} />
+    <section>
+      {title && <h2 className="px-3.5 pb-1.5 text-[13px] text-muted">{title}</h2>}
+      <ul className="overflow-hidden rounded-2xl bg-surface">{children}</ul>
+    </section>
   );
 }
 
-function Switch({ on }: { on: boolean }) {
-  return (
-    <span role="switch" aria-checked={on} className={cx('relative h-6 w-10 shrink-0 rounded-full transition-colors', on ? 'bg-accent' : 'bg-line')}>
-      <span className={cx('absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all', on ? 'left-[18px]' : 'left-0.5')} />
-    </span>
-  );
-}
-
+/** A line of the menu: a mark, a name, then — at the right — what stands now (`value`: a count, a word) and the way
+ * in. One line of text: what the place is for is said by the place itself. The rule between two lines starts where
+ * the names do, not at the card's edge. */
 function Item({
   icon,
+  tint,
   title,
-  sub,
+  value,
   to,
   href,
   onClick,
-  right,
-  danger,
+  brand,
 }: {
+  /** the mark of a music service instead of the icon (components/BrandIcon) */
+  brand?: string;
+  /** the colour of the line's mark (a class of the background; grey without one) */
+  tint?: string;
   icon: IconName;
   title: string;
-  sub?: string;
+  value?: string;
   to?: string;
   href?: string;
   onClick?: () => void;
-  right?: ReactNode;
-  danger?: boolean;
 }) {
   const inner = (
     <>
-      <Icon name={icon} size={22} className={danger ? 'text-danger' : 'text-muted'} />
-      <span className="min-w-0 flex-1">
-        <span className={cx('block', danger && 'text-danger')}>{title}</span>
-        {sub && <span className="block truncate text-xs text-muted">{sub}</span>}
+      <span className={cx('flex h-[1.875rem] w-[1.875rem] shrink-0 items-center justify-center rounded-lg text-white', brand ? 'bg-fg/10' : (tint ?? 'bg-[#6b7684]'))}>
+        {brand ? <BrandIcon service={brand} size={19} /> : <Icon name={icon} size={17} />}
       </span>
-      {right ?? ((to || href || onClick) && <Icon name={href ? 'external' : 'chevron'} size={18} className="text-dim" />)}
+      <span className="flex min-h-12 min-w-0 flex-1 items-center gap-2 border-b border-fg/[0.07] pr-3.5 group-last/item:border-0">
+        <span className="min-w-0 flex-1 truncate">{title}</span>
+        {value && <span className="max-w-[55%] shrink-0 truncate text-sm text-muted">{value}</span>}
+        <Icon name={href ? 'external' : 'chevron'} size={16} className="shrink-0 text-dim" />
+      </span>
     </>
   );
-  const cls = 'flex min-h-16 w-full items-center gap-4 px-4 py-2 text-left hover:bg-fg/5';
+  const cls = 'flex w-full items-center gap-3 pl-3.5 text-left hover:bg-fg/5';
   return (
-    <li className="border-b border-line/60 last:border-0">
+    <li className="group/item">
       {to ? (
         <Link to={to} className={cls}>
           {inner}
@@ -196,12 +218,10 @@ function Item({
         <a href={href} target="_blank" rel="noopener noreferrer" className={cls}>
           {inner}
         </a>
-      ) : onClick ? (
+      ) : (
         <button type="button" onClick={onClick} className={cls}>
           {inner}
         </button>
-      ) : (
-        <div className={cls}>{inner}</div>
       )}
     </li>
   );

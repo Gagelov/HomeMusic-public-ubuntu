@@ -1,28 +1,38 @@
-"""What a matched import row does in HomeMusic: ♥ in Navidrome, Navidrome playlists in the service's order, downloads.
+"""What a matched import row does in HomeMusic: a track of the Hub, its place in the playlists, its ♥, its download.
 
-- ♥: the Hub stars the import's liked songs itself, in the service's order (`sync_likes`): one by one from the oldest
-  like, and a song downloaded later gets its place by starring the likes newer than it again. Likes are downloaded
-  oldest first, so a new song mostly lands on top and costs one star.
-- Playlists: the whole playlist is rewritten in the service's order (`set_playlist_songs`) from what the library
-  has, at most every `core.PLAYLISTS_DELAY_S` while downloads come in — never on every track.
+- A row is a track of the Hub at once (`track_of`): a matched one is named as the catalog names it — whether the
+  library has its file yet or not; one the catalog does not know is a track known by its name alone
+  (`tracks.by_name`) — there is nothing of it to play until the user gives it a file (`pick`), yet it is liked, put
+  into playlists and tagged like any other.
+- Playlists: a playlist of the service is a playlist of the Hub (`sync_playlists`), whole: every track in the
+  service's order and with the date it was added there; it is settled at most every `core.PLAYLISTS_DELAY_S` while
+  downloads come in — never on every track.
+- ♥: the liked tracks are in «Любимое» in the service's order (`favorites.project_liked`); in Navidrome the Hub stars
+  the liked songs itself, in that order (`sync_likes`): one by one from the oldest like, and a song downloaded later
+  gets its place by starring the likes newer than it again. Likes are downloaded oldest first, so a new song mostly
+  lands on top and costs one star.
 - Downloads are the Hub's own business (`DownloadItem.query_json["import"]`): low priority, not shown as downloads;
-  they carry no ♥ of their own (`star`): the import stars its likes in order.
+  each is of the catalog's track the row was matched with (`queue_track`), as a download asked for from the search.
+- «После переноса» (`apply_extras`): what the user asked for every transferred track — tags, other playlists, a ♥.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.catalog.models import split_ref
+from app.catalog.models import CATALOGS, CatalogTrack, split_ref
+from app.favorites import parse_time
 from app.imports.resolve import Resolution
 from app.jobs.queue import PRIORITY_IMPORT, enqueue
-from app.library.owned import ACTIVE_STATUSES, find_existing
+from app.library.owned import ACTIVE_STATUSES, find_owned
 from app.matching.normalize import normalize_artist
+from app.mixes.resolve import remembered_track
 from app.models import (
     Album,
     DownloadBatch,
@@ -32,6 +42,7 @@ from app.models import (
     ImportItem,
     Track,
     User,
+    utcnow,
 )
 from app.providers.base import TrackQuery
 
@@ -102,7 +113,23 @@ async def _batch(s: AsyncSession, imp: Import) -> DownloadBatch:
 def track_query(raw: dict[str, Any]) -> TrackQuery:
     main = (raw.get("artists") or [raw.get("artist") or ""])[0]
     return TrackQuery(artist=main or raw.get("artist") or "", title=raw.get("title") or "", album=raw.get("album"),
-                      duration_s=raw.get("duration_s"))
+                      duration_s=raw.get("duration_s"), isrc=raw.get("isrc"))
+
+
+async def pick(s: AsyncSession, imp: Import, it: ImportItem) -> DownloadItem:
+    """A row that was not found (or found wrong): a visible download by its names, without the catalog match — the
+    user picks the file on its page, as for any download that needs review. The file of a row the catalog does not
+    know is the file of the row's track (`tracks.by_name`): the track stays where it stands — in its playlists, in
+    «Любимое» — and plays from then on."""
+    meta: dict[str, Any] = {}
+    if it.match == "not_found" and (track := await track_of(s, it, imp.user_id)) is not None:
+        it.track_id = track.id
+        meta["track_id"] = track.id
+    qj = {"query": track_query(it.raw_json or {}).model_dump(), "meta": meta, "import": {"id": imp.id, "item": it.id},
+          "requested": True}  # a like gets its ♥ from the import, in order (`sync_likes`)
+    dl = await new_download(s, imp, qj, 0)
+    it.download_item_id, it.status, it.ref = dl.id, "queued", None
+    return dl
 
 
 async def new_download(s: AsyncSession, imp: Import, query_json: dict[str, Any], priority: int) -> DownloadItem:
@@ -126,15 +153,23 @@ async def queue_track(s: AsyncSession, imp: Import, it: ImportItem, kind: str, *
     if twin is not None:
         it.download_item_id, it.status = twin, "queued"
         return True
+    from app.jobs.downloads import meta_from_catalog, query_from_track
+
     raw = it.raw_json or {}
     src, id_ = split_ref(it.ref)
-    meta: dict[str, Any] = {"track_ref": it.ref}
-    if src == "dz":
-        meta["deezer_track_id"] = id_
-    if raw.get("artists"):
-        meta["artists"] = raw["artists"]
-    qj: dict[str, Any] = {"query": track_query(raw).model_dump(), "meta": meta,
-                          "import": {"id": imp.id, "item": it.id}}
+    cat = await remembered_track(it.ref) if src in ("dz", "ym") else None
+    if cat is not None:
+        # the download is of the catalog's track the row was matched with — its names, its artists with their
+        # records — as one asked for from the search is: what the service called the song found it, no more
+        q, meta = query_from_track(cat), meta_from_catalog(cat)
+        q = q.model_copy(update={"isrc": q.isrc or raw.get("isrc"), "duration_s": q.duration_s or raw.get("duration_s")})
+    else:
+        q, meta = track_query(raw), {"track_ref": it.ref}
+        if src == "dz":
+            meta["deezer_track_id"] = id_  # who it is by, the catalog says when the download asks it (`complete_meta`)
+        elif raw.get("artists"):
+            meta["artists"] = raw["artists"]  # no catalog keeps a record of it: the service's names are all there is
+    qj: dict[str, Any] = {"query": q.model_dump(), "meta": meta, "import": {"id": imp.id, "item": it.id}}
     dl = await new_download(s, imp, qj, priority)
     it.download_item_id, it.status = dl.id, "queued"
     return True
@@ -154,7 +189,7 @@ async def queue_album(s: AsyncSession, imp: Import, it: ImportItem) -> int:
         return 0
     n = 0
     for t in album.tracks or []:
-        if await find_existing(s, artist=t.artist, title=t.title, duration_s=t.duration_s, isrc=t.isrc,
+        if await find_owned(s, artist=t.artist, title=t.title, duration_s=t.duration_s, isrc=t.isrc,
                                deezer_track_id=t.id if t.source == "dz" else None):
             continue
         qj = {"query": query_from_track(t).model_dump(), "meta": meta_from_catalog(t, album),
@@ -205,7 +240,7 @@ async def refresh_items(s: AsyncSession, imp: Import) -> None:
     for it in waiting:
         raw = it.raw_json or {}
         src, id_ = split_ref(it.ref) if it.ref else ("", "")
-        lib = await find_existing(s, artist=raw.get("artist") or "", title=raw.get("title") or "",
+        lib = await find_owned(s, artist=raw.get("artist") or "", title=raw.get("title") or "",
                                   duration_s=raw.get("duration_s"), deezer_track_id=id_ if src == "dz" else None)
         if lib is not None:
             it.status, it.track_id = "done", lib.id
@@ -240,32 +275,90 @@ def like_order(items: list[ImportItem], songs: dict[int, str]) -> list[str]:
     return list(out)
 
 
+async def track_of(s: AsyncSession, it: ImportItem, user_id: int) -> Track | None:
+    """The Hub's track of an import's row: the track of the catalog track the row was matched with, made if the Hub
+    has none. It is named as the catalog names it, by the record kept when the row was matched. Where no record was
+    kept (a match of older days), the track is named as the service called the song until the catalog is asked
+    (`fill_catalog`): the service's words are not the catalog's and are not kept as such. The catalog is not asked
+    here — rows are gone through by the hundred, inside a transaction. A row the catalog does not know is the track
+    known by its name alone (`tracks.by_name`). None: a row not matched yet, or one that says nothing of its song."""
+    from app.library import tracks as registry
+
+    if it.track_id and (track := await s.get(Track, it.track_id)) is not None:
+        return track
+    src, _, ident = (it.ref or "").partition(":")
+    if src not in CATALOGS or not ident:
+        raw = it.raw_json or {}
+        if it.match != "not_found" or not raw.get("title"):
+            return None
+        q = track_query(raw)
+        return await registry.by_name(s, artist=q.artist, title=q.title, album=q.album, duration_s=q.duration_s,
+                                      isrc=q.isrc, user_id=user_id)
+    if (track := await registry.by_ref(s, it.ref)) is not None:
+        return track
+    if src in ("dz", "ym") and (cat := await remembered_track(it.ref)) is not None:
+        return await registry.of_catalog(s, cat, user_id=user_id)
+    raw = it.raw_json or {}
+    if not raw.get("title"):
+        return None
+    said = CatalogTrack(ref=it.ref, source=src, id=ident, title=raw["title"], artist=raw.get("artist") or "",
+                        artists=raw.get("artists") or [], album_title=raw.get("album"),
+                        duration_s=raw.get("duration_s"), isrc=raw.get("isrc"), cover_url=raw.get("cover_url"),
+                        cover_small_url=raw.get("cover_url"))
+    return await registry.of_catalog(s, said, user_id=user_id, word=src != "dz")
+
+
 async def sync_playlists(s: AsyncSession, imp: Import) -> None:
-    user = await s.get(User, imp.user_id)
-    if user is None:
-        return
+    """The playlists of the service become playlists of the Hub: every row is its track, in its place, in the
+    service's order and with the date it was added there — whether the library has its file yet or not, and whether
+    the catalog knows the song or not (`track_of`). A row not matched yet waits; one the user left out is not
+    there."""
+    from app import playlists
+    from app.models import naive
+    from app.playlists_mirror import enqueue_mirror
+
     colls = (await s.execute(select(ImportCollection).where(
         ImportCollection.import_id == imp.id, ImportCollection.kind == "playlist",
         ImportCollection.selected.is_(True)))).scalars().all()
-    if not colls:
-        return
-    nd = _nd(user)
-    try:
-        for c in colls:
-            items = list((await s.execute(select(ImportItem).where(ImportItem.collection_id == c.id))).scalars())
-            want = playlist_order(items, await _song_ids(s, items))
-            if c.nd_playlist_id is None:
-                pl = await nd.create_playlist(c.title, want[:300])
-                c.nd_playlist_id = pl.get("id")
-                if c.nd_playlist_id and len(want) > 300:
-                    await nd.set_playlist_songs(c.nd_playlist_id, want)
-            elif want != list(c.nd_song_ids or []):
-                await nd.set_playlist_songs(c.nd_playlist_id, want)
-            c.nd_song_ids = want
-    except Exception as e:
-        log.warning("import %s: playlists: %r", imp.id, e)
-    finally:
-        await nd.aclose()
+    for c in colls:
+        items = list((await s.execute(select(ImportItem).where(ImportItem.collection_id == c.id)
+                                      .order_by(ImportItem.position, ImportItem.id))).scalars())
+        want: list[int] = []
+        dates: dict[int, datetime] = {}
+        for it in items:
+            if it.status in ("skipped", "pending"):
+                continue
+            if it.track_id is None and (track := await track_of(s, it, imp.user_id)) is not None:
+                it.track_id = track.id
+            if it.track_id is None or it.track_id in dates:
+                continue
+            want.append(it.track_id)
+            dates[it.track_id] = naive(parse_time((it.raw_json or {}).get("liked_at"))) or utcnow()
+        p = await playlists.own(s, imp.user_id, c.playlist_id) if c.playlist_id else None
+        if p is None:
+            if c.given:
+                # the playlist was made of this collection and is gone: the user deleted it. It is not made again —
+                # the collection is let go, its tracks stay in the library
+                c.selected, c.playlist_id = False, None
+                continue
+            if not want:
+                continue
+            p = await playlists.create(s, imp.user_id, c.title)
+            c.playlist_id = p.id
+        elif want == list(c.given or []):
+            continue
+        for track_id in want:
+            await playlists.add(s, p, [track_id], at=dates[track_id])
+        # the service's order for its tracks; what the user put in by hand stays after them
+        rows = await playlists.items(s, p.id)
+        first = {t.id: i.id for i, t in reversed(rows)}
+        await playlists.reorder(s, p, [first[t] for t in want if t in first])
+        c.given = want
+        await enqueue_mirror(s, p.id)
+    if colls:
+        from app.lyrics.service import enqueue_scan_once
+
+        await enqueue_scan_once(s, delay_s=30)
     await s.flush()
 
 
@@ -290,7 +383,7 @@ _likes_lock = asyncio.Lock()
 
 
 async def sync_likes(s: AsyncSession, imp: Import) -> None:
-    """♥ of the import's likes in the service's order. Navidrome lists «Понравившиеся» by the time of the star, newest
+    """♥ of the import's likes in the service's order. Navidrome lists «Любимое» by the time of the star, newest
     first, so the songs are starred one by one from the oldest like; a song that arrives later (a download) is starred
     with the likes newer than it again (`restar_plan`). A song the user has unstarred since is left alone."""
     user = await s.get(User, imp.user_id)
@@ -328,6 +421,54 @@ async def sync_likes(s: AsyncSession, imp: Import) -> None:
         from app.events import bus
 
         bus.publish(imp.user_id, "library", {"kind": "starred", "song_ids": again})
+
+
+async def apply_extras(s: AsyncSession, imp: Import) -> None:
+    """«После переноса» (`options_json["extra"]`): the tracks of the chosen likes and playlists that the library has
+    now get what was asked for them all — a ♥, a place in other playlists, tags. Each track once (`raw_json["extra"]`),
+    as it arrives: an «Экономно» import brings a track when it is listened to."""
+    extra = (imp.options_json or {}).get("extra") or {}
+    star, playlist_ids, tag_ids = bool(extra.get("star")), list(extra.get("playlist_ids") or []), list(extra.get("tag_ids") or [])
+    if not (star or playlist_ids or tag_ids):
+        return
+    items = [i for i in (await s.execute(
+        select(ImportItem).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+        .where(ImportItem.import_id == imp.id, ImportItem.status == "done", ImportItem.track_id.is_not(None),
+               ImportCollection.kind.in_(("likes", "playlist")), ImportCollection.selected.is_(True))
+        .order_by(ImportCollection.id, ImportItem.position))).scalars() if not (i.raw_json or {}).get("extra")]
+    ready = items  # the library has them: what is asked is the track's own, as for a file the user uploaded
+    user = await s.get(User, imp.user_id)
+    if not ready or user is None:
+        return
+    track_ids = list(dict.fromkeys(i.track_id for i in ready))
+    try:
+        if tag_ids:
+            from app import tags
+
+            await tags.assign_tracks(s, imp.user_id, track_ids, tag_ids)
+        if playlist_ids:
+            from app.jobs.downloads import into_playlists
+
+            await into_playlists(s, imp.user_id, playlist_ids, track_ids)
+        if star:
+            from app.api.schemas import FavoriteTarget
+            from app.favorites import command
+
+            # through the favorites journal, as a ♥ set by hand: «Любимое» and mixes see it the same way. The like is
+            # the track's own: Navidrome gets the ♥ once its scan has found the file (`deliver_pending`)
+            await command(s, user, [FavoriteTarget(track_id=t) for t in track_ids], liked=True, client="hub",
+                          context="import")
+    except Exception as e:  # the next settling of the import tries these tracks again
+        log.warning("import %s: extras: %r", imp.id, e)
+        return
+    for i in ready:
+        i.raw_json = {**(i.raw_json or {}), "extra": True}
+    await s.flush()
+    if star or playlist_ids:
+        from app.events import bus
+
+        bus.publish(imp.user_id, "library", {"kind": "playlist", "playlist_id": playlist_ids[0] if playlist_ids else None,
+                                             "star": star})
 
 
 async def album_owned(s: AsyncSession, ref: str | None) -> bool:
@@ -408,12 +549,6 @@ def _user_likes(user_id: int):
                    Import.status.in_(("running", "done")), ImportItem.ref.is_not(None)))
 
 
-async def pending_like_refs(s: AsyncSession, user_id: int) -> list[str]:
-    """Catalog refs the user liked in another service that wait for a listen or a download (shown with ♥)."""
-    rows = (await s.execute(_user_likes(user_id).where(ImportItem.status.in_(("waiting", "queued"))))).scalars()
-    return list(dict.fromkeys(i.ref for i in rows if i.ref))
-
-
 async def unlike_refs(s: AsyncSession, user_id: int, refs: list[str]) -> None:
     """♥ taken off a track liked in another service: it is no longer liked nor downloaded for that."""
     for it in (await s.execute(_user_likes(user_id).where(ImportItem.ref.in_(refs),
@@ -422,7 +557,5 @@ async def unlike_refs(s: AsyncSession, user_id: int, refs: list[str]) -> None:
             dl = await s.get(DownloadItem, it.download_item_id)
             if dl is not None and dl.status == "queued" and not (dl.query_json or {}).get("requested"):
                 dl.status = "cancelled"
-            elif dl is not None:
-                dl.query_json = {k: v for k, v in (dl.query_json or {}).items() if k != "star"}
         it.status = "skipped"
     await s.flush()

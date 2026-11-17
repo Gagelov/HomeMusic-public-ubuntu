@@ -24,6 +24,12 @@ is resumed by the Hub instead of reaching the player, and seeks and the next req
 the track being played goes first: copies loaded ahead (the app's precache, `X-HomeMusic-Prefetch`) wait while one
 for a played track downloads.
 
+What a queue plays next is loaded ahead (`load_ahead`, asked for by the web player with `GET /api/listen?ahead=`):
+opening a source is what takes seconds (YouTube: some twenty), so a switch must find the file opened. The next
+track is copied whole. The ones after it are opened and copied only as far as their start (`HEAD_BYTES`): a
+listener who skips through the queue hears each at once, one who does not has cost the source next to nothing. A
+copy stopped at its start goes on when the track is played or becomes the next one.
+
 For a metered network the stream can be asked for the light variant (`quality="mobile"`, `app.light`): the Opus copy
 of the file when it is heavy (the copy of a catalog track is made from its server copy). Copies are made ahead of
 time (`warm_light`: a mix's songs, a wave's tracks); a stream that finds none ready waits a moment, then serves the
@@ -60,9 +66,9 @@ from app.jobs.downloads import (
     query_from_track,
     search_provider,
 )
-from app.library.owned import find_existing
-from app.models import Track
+from app.library.owned import find_owned
 from app.matching.select import rank_candidates
+from app.models import Track
 from app.net import Priority, in_background, make_client, priority_context
 from app.providers.base import FILE_REF, Candidate, StreamSource, TrackQuery, file_ref
 from app.services import svc
@@ -91,6 +97,8 @@ LOCAL_MEDIA_TYPES = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".mp4": "audio/m
                      ".ogg": "audio/ogg", ".webm": "audio/webm", ".flac": "audio/flac"}
 COPY_NAME = "stream"  # a server copy, in the folder of its ref under LOCAL_DIR
 COPY_CHUNK = 64 * 1024  # what a stream reads from a server copy at once
+HEAD_BYTES = 512 * 1024  # the start of a track loaded ahead: some ten seconds of a heavy file, more of a light one
+HEAD_KEEP_S = 20 * 60  # how long a copy stopped at its start waits for the rest to be wanted
 COPY_RESUMES = 4  # a dropped upstream connection is resumed this many times in a row (with no progress between)
 # A request this far past what a server copy has waits for it; a seek farther ahead goes to the upstream itself
 SEEK_WAIT_BYTES = 2 * 2**20
@@ -153,6 +161,14 @@ class _Copy:
     readers: int = 0  # streams of a played track reading it
     task: asyncio.Task | None = None
     cond: asyncio.Condition = field(default_factory=asyncio.Condition)
+    # loaded ahead as a start only: the download stops at this many bytes until the rest is wanted (`go`)
+    limit: int | None = None
+    go: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def whole(self) -> None:
+        """The rest of the file is wanted now."""
+        self.limit = None
+        self.go.set()
 
     def settled(self) -> bool:
         return self.done or self.failed is not None
@@ -556,6 +572,19 @@ async def _warm(ref: str) -> None:
         _missed[ref] = time.monotonic() + (MISS_TTL_S if e.status == 404 else TRANSIENT_TTL_S)
 
 
+def load_ahead(c: Choice, *, whole: bool) -> None:
+    """A queue plays this pick soon: its file is opened and copied to the Hub's disk now, behind the copies of
+    played tracks. `whole`: it plays next — all of it; else only its start, enough for a switch to it to sound at
+    once. A source with no plain HTTP audio has no start to take: its file is downloaded only when it plays next."""
+    if c.kind != "full" or c.candidate is None:
+        return  # a library file is on disk already; a preview needs no opening
+    if _downloads_only(c):
+        if whole and c.ref not in _fetching:
+            _spawn(_predownload(c), background=True)
+        return
+    _server_copy(c, background=True, head=not whole)
+
+
 async def reset() -> None:
     """Forget picks in memory, stop the prefetch and server copies, close the clients (app shutdown, tests)."""
     global _http, _media, _wake, _calm
@@ -605,6 +634,8 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
     otherwise all sources at once and nothing opened (the stream opens it). `remembered`: a remembered pick
     may be used."""
     t0 = time.monotonic()
+    if ref.startswith(UPLOAD_REF + ":"):
+        return await _resolve_upload(ref)
     try:
         src, id_ = split_ref(ref)
     except ValueError as e:
@@ -613,7 +644,8 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
         return await _resolve_file(ref, probe=probe, remembered=remembered)
     if src == "nd":
         return await _resolve_song(ref, id_)
-    if not (src == "dz" and svc.deezer is not None or src == "hm" and "hitmoz" in svc.providers):
+    if not (src == "dz" and svc.deezer is not None or src == "ym" and svc.yandex is not None
+            or src == "hm" and "hitmoz" in svc.providers):
         raise ListenError(400, "Этот трек нельзя послушать")
     choice = await _remembered(ref) if remembered else None
     if choice is not None and full_only and choice.kind == "preview":
@@ -624,7 +656,7 @@ async def _resolve(ref: str, *, probe: bool, remembered: bool, full_only: bool =
     if choice is None:
         if not remembered:
             await cache_delete(_key(ref))
-        choice = await (_resolve_deezer(ref, id_, probe, full_only=full_only) if src == "dz" else _resolve_hitmoz(ref, id_, probe))
+        choice = await (_resolve_hitmoz(ref, id_, probe) if src == "hm" else _resolve_catalog(ref, probe, full_only=full_only))
         how = "probed" if probe else "searched"
         if full_only and choice.kind == "preview":
             raise ListenError(503, "Полная версия пока недоступна. Повторите позже или выберите другой источник.")
@@ -660,6 +692,25 @@ async def _resolve_file(ref: str, *, probe: bool, remembered: bool) -> Choice:
     return choice
 
 
+UPLOAD_REF = "up"  # "up:<upload>": a file brought to the Hub that is not in the library yet («Загрузить файлы»)
+
+
+async def _resolve_upload(ref: str) -> Choice:
+    """An uploaded file waiting to be brought in: it plays as it lies in staging."""
+    from app.library.recognize import names_of
+    from app.models import Upload
+
+    ident = ref.split(":", 1)[1]
+    async with session_scope() as s:
+        u = await s.get(Upload, int(ident)) if ident.isdigit() else None
+        found = (u.staging_path, u.probed_tags_json or {}, u.orig_name, u.duration_s) if u is not None and u.status == "uploaded" else None
+    path = get_settings().staging_dir / found[0] if found else None
+    if not found or path is None or not path.is_file():
+        raise ListenError(404, "Этого файла уже нет среди загруженных")
+    artist, title = names_of(found[1], found[2])
+    return Choice(ref, "library", artist, title, round(found[3]) if found[3] else None, path=path)
+
+
 async def _resolve_song(ref: str, song_id: str) -> Choice:
     """A song only the library has (`nd:<song>`, in a mix): its file."""
     async with session_scope() as s:
@@ -673,16 +724,16 @@ async def _resolve_song(ref: str, song_id: str) -> Choice:
     return choice
 
 
-async def _resolve_deezer(ref: str, id_: str, probe: bool, *, full_only: bool = False) -> Choice:
-    assert svc.deezer is not None
+async def _resolve_catalog(ref: str, probe: bool, *, full_only: bool = False) -> Choice:
+    """A track of a catalog (Deezer, Yandex): the catalog says what the song is, the Hub's sources have the file."""
     try:
-        t = await svc.deezer.get_track(id_)
+        t = await svc.track(ref)
     except CatalogNotFound as e:
         raise ListenError(404, "Трек не найден в каталоге") from e
     except Exception as e:
         raise ListenError(502, f"Каталог недоступен: {e}") from e
     q = query_from_track(t)
-    query = {**q.model_dump(), "deezer_track_id": t.id}
+    query = {**q.model_dump(), **({"deezer_track_id": t.id} if t.source == "dz" else {})}
     # An owned song never waits for optional album/name metadata from external services.
     path, nd_song_id = await _library_file(query)
     if path:
@@ -795,7 +846,7 @@ async def _resolve_hitmoz(ref: str, id_: str, probe: bool) -> Choice:
 async def _library_file(query: dict) -> tuple[Path | None, str | None]:
     """The owned file of this track and its Navidrome song id."""
     async with session_scope() as s:
-        t = await find_existing(s, artist=query["artist"], title=query["title"], duration_s=query.get("duration_s"),
+        t = await find_owned(s, artist=query["artist"], title=query["title"], duration_s=query.get("duration_s"),
                                 isrc=query.get("isrc"), deezer_track_id=query.get("deezer_track_id"))
         rel, nd_song_id = (t.path, t.nd_song_id) if t else (None, None)
     path = get_settings().library_dir / rel if rel else None
@@ -928,12 +979,15 @@ def _same_file(a: Candidate | None, b: Candidate | None) -> bool:
     return a is not None and b is not None and (a.provider, a.provider_id) == (b.provider, b.provider_id)
 
 
-def _server_copy(c: Choice, *, background: bool) -> _Copy:
+def _server_copy(c: Choice, *, background: bool, head: bool = False) -> _Copy:
     """The server copy of the picked file: being downloaded or on disk, else started now. A played track's request
-    lifts a copy loaded ahead."""
+    lifts a copy loaded ahead. `head`: only the start of the file is wanted for now (`HEAD_BYTES`); any other
+    request has a copy that stopped there go on to the end."""
     cp = _copies.get(c.ref)
     if cp is not None and _same_file(cp.cand, c.candidate) and cp.failed is None and (
             not cp.done or cp.path.is_file()):
+        if not head:
+            cp.whole()
         if not background:
             cp.prio.foreground()
             _stir()
@@ -944,7 +998,9 @@ def _server_copy(c: Choice, *, background: bool) -> _Copy:
         del _copies[ref]
     assert c.candidate is not None
     cp = _Copy(c.candidate, get_settings().staging_dir / LOCAL_DIR / _local_name(c.ref) / COPY_NAME,
-               Priority(background))
+               Priority(background), limit=HEAD_BYTES if head else None)
+    if not head:
+        cp.go.set()
     cp.task = _spawn(_download_copy(c, cp), prio=cp.prio)
     _copies[c.ref] = cp
     _stir()
@@ -1017,6 +1073,8 @@ async def _download_copy(c: Choice, cp: _Copy) -> None:
                     cp.have += len(chunk)
                     drops = 0
                     await cp.changed()
+                    if cp.limit is not None and cp.have >= cp.limit:
+                        break  # the start is here: the source is let go of until the rest is wanted
             except httpx.TransportError as e:
                 drops += 1
                 if drops > COPY_RESUMES:
@@ -1025,6 +1083,12 @@ async def _download_copy(c: Choice, cp: _Copy) -> None:
                 continue
             finally:
                 await resp.aclose()
+            if cp.limit is not None and cp.have >= cp.limit and (cp.size is None or cp.have < cp.size):
+                try:  # stopped at the start: it goes on from this byte when the track is played or is the next one
+                    await asyncio.wait_for(cp.go.wait(), HEAD_KEEP_S)
+                except TimeoutError:
+                    raise ListenError(503, "Начало файла не понадобилось") from None
+                continue
             if cp.size is None or cp.have >= cp.size:
                 cp.size = cp.have
                 cp.done = True

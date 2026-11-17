@@ -48,6 +48,9 @@ ytdlp:
   sleep_requests_s: 1.0
   sleep_downloads_s: 5.0
   refusal_cooldown_s: 900
+  # The clients YouTube is asked as (yt-dlp's player_client). Empty: yt-dlp's own choice, which follows what
+  # YouTube changes. Pin one (e.g. [mweb]) only if the default stops working for your address.
+  player_clients: []
 
 matching:
   artist_min_ratio: 0.90

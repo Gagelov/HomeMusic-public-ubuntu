@@ -23,7 +23,8 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel
 
-from app.catalog.cache import cached
+from app.catalog import namesakes
+from app.catalog.cache import cache_delete, cached
 from app.catalog.models import (
     ArtistPage,
     CatalogAlbum,
@@ -99,6 +100,7 @@ def map_album(d: dict[str, Any], artist: dict[str, Any] | None = None) -> Catalo
     rd = _parse_date(d.get("release_date"))
     rt = d.get("record_type")
     genres = (d.get("genres") or {}).get("data") or []
+    _, names, refs = _artist_names({**d, "artist": art}) if d.get("contributors") else ("", [], [])
     return CatalogAlbum(
         ref=make_ref("dz", d["id"]),
         source="dz",
@@ -106,6 +108,8 @@ def map_album(d: dict[str, Any], artist: dict[str, Any] | None = None) -> Catalo
         title=d.get("title") or "",
         artist=art.get("name") or "",
         artist_ref=make_ref("dz", art["id"]) if art.get("id") else None,
+        artists=names,
+        artist_refs=refs,
         record_type=rt if rt in RECORD_TYPES else "album",
         release_date=rd,
         year=rd.year if rd else None,
@@ -118,22 +122,24 @@ def map_album(d: dict[str, Any], artist: dict[str, Any] | None = None) -> Catalo
     )
 
 
-def _artist_names(d: dict[str, Any]) -> tuple[str, list[str]]:
-    """Main artist name and all credited names (track `artist` first, then other Main, then featured)."""
-    main = (d.get("artist") or {}).get("name") or ""
+def _artist_names(d: dict[str, Any]) -> tuple[str, list[str], list[str | None]]:
+    """Main artist name, all credited names (track `artist` first, then other Main, then featured) and their refs."""
+    art = d.get("artist") or {}
+    main = art.get("name") or ""
     contributors = d.get("contributors") or []
     ordered = sorted(contributors, key=lambda c: c.get("role", "Main") != "Main")  # stable
-    names = [main] if main else []
+    ids: dict[str, Any] = {main: art.get("id")} if main else {}
     for c in ordered:
         n = c.get("name")
-        if n and n not in names:
-            names.append(n)
-    return main or (names[0] if names else ""), names
+        if n and not ids.get(n):
+            ids[n] = c.get("id") or ids.get(n)
+    names = list(ids)
+    return main or (names[0] if names else ""), names, [make_ref("dz", ids[n]) if ids[n] else None for n in names]
 
 
 def map_track(d: dict[str, Any], album: CatalogAlbum | None = None) -> CatalogTrack:
     """Map a track object; `album` supplies album fields for album/{id}/tracks items."""
-    main, names = _artist_names(d)
+    main, names, refs = _artist_names(d)
     alb = d.get("album") or {}
     art = d.get("artist") or {}
     album_id = alb.get("id") or (album.id if album else None)
@@ -144,6 +150,7 @@ def map_track(d: dict[str, Any], album: CatalogAlbum | None = None) -> CatalogTr
         title=d.get("title") or d.get("title_short") or "",
         artist=main,
         artists=names,
+        artist_refs=refs,
         artist_ref=make_ref("dz", art["id"]) if art.get("id") else None,
         album_ref=make_ref("dz", album_id) if album_id else None,
         album_title=alb.get("title") or (album.title if album else None),
@@ -342,7 +349,15 @@ class DeezerClient:
             data = await self._get(f"artist/{id_}/top", {"limit": limit})
             return [map_track(x) for x in data.get("data") or []]
 
-        return await self._cached_list(f"dz:artist_top:{id_}:{limit}", self.cfg.ttl_artist_s, CatalogTrack, produce)
+        # an empty answer is not kept: the catalog gives one now and then for an artist who has tracks, and a kept
+        # one left the artist's page without «Популярное» for a week
+        key = f"dz:artist_top:{id_}:{limit}"
+        for _ in range(2):
+            top = await self._cached_list(key, self.cfg.ttl_artist_s, CatalogTrack, produce)
+            if top:
+                return namesakes.own_tracks(make_ref("dz", id_), top)  # not a namesake's
+            await cache_delete(key)
+        return []
 
     async def get_artist_radio(self, id_: str | int) -> list[CatalogTrack]:
         """The artist's radio: ~50 tracks of the artist and similar ones (mixes)."""
@@ -371,15 +386,23 @@ class DeezerClient:
 
         return await self._cached_list(f"dz:chart_artists:{limit}", self.cfg.ttl_search_s, CatalogArtist, produce)
 
-    async def get_artist_albums(self, id_: str | int) -> list[CatalogAlbum]:
-        """All releases (every page), clean/explicit twins merged, newest first."""
+    async def get_artist_albums(self, id_: str | int, *, everyones: bool = False) -> list[CatalogAlbum]:
+        """All releases (every page), clean/explicit twins merged, newest first — without the ones said to be a
+        namesake's (catalog/namesakes.py), unless `everyones`: the catalog's own list, to say which are."""
 
         async def produce() -> list[CatalogAlbum]:
             artist, items = await asyncio.gather(self.get_artist(id_), self._get_all(f"artist/{id_}/albums"))
             art = {"id": artist.id, "name": artist.name}
             return dedupe_and_sort([map_album(x, art) for x in items])
 
-        return await self._cached_list(f"dz:artist_albums:{id_}", self.cfg.ttl_artist_s, CatalogAlbum, produce)
+        albums = await self._cached_list(f"dz:artist_albums:{id_}", self.cfg.ttl_artist_s, CatalogAlbum, produce)
+        return albums if everyones else namesakes.own_albums(make_ref("dz", id_), albums)
+
+    async def artist_albums_now(self, id_: str | int, name: str = "") -> list[CatalogAlbum]:
+        """The artist's releases as the catalog has them now, newest first — not the week-old cached list of
+        `get_artist_albums`: the «Релизы» feed is about what came out yesterday."""
+        items = await self._get_all(f"artist/{id_}/albums")
+        return namesakes.own_albums(make_ref("dz", id_), dedupe_and_sort([map_album(x, {"id": id_, "name": name}) for x in items]))
 
     async def get_artist_page(self, id_: str | int) -> ArtistPage:
         artist, top, albums = await asyncio.gather(
@@ -399,13 +422,41 @@ class DeezerClient:
             tracks.sort(key=lambda t: (t.disc_no or 1, t.track_no or 0))
             return album.model_copy(update={"tracks": tracks, "nb_tracks": album.nb_tracks or len(tracks)})
 
-        return await self._cached_model(f"dz:album:{id_}", self.cfg.ttl_album_s, CatalogAlbum, produce)
+        # the key says what an album's record holds: «3» — with everyone the release is credited to
+        return await self._cached_model(f"dz:album3:{id_}", self.cfg.ttl_album_s, CatalogAlbum, produce)
+
+    async def get_album_credited(self, id_: str | int) -> CatalogAlbum:
+        """The album with everyone credited on each of its tracks. The catalog's list of an album's tracks names
+        only the main artist of each; who else is on a track is said by the track's own record — so each is asked
+        for (and kept: `get_track`), a few at once. An album's page shows this; a list of many releases does not
+        ask for it. A track whose record does not come keeps its main artist."""
+        album = await self.get_album(id_)
+        gate = asyncio.Semaphore(4)
+
+        async def credited(t: CatalogTrack) -> CatalogTrack:
+            async with gate:
+                try:
+                    whole = await self.get_track(t.id)
+                except Exception as e:
+                    log.info("deezer: credits of %s not read: %r", t.ref, e)
+                    return t
+            return t.model_copy(update={"artists": whole.artists or t.artists, "artist_refs": whole.artist_refs or t.artist_refs})
+
+        tracks = list(await asyncio.gather(*(credited(t) for t in album.tracks or [])))
+        return album.model_copy(update={"tracks": tracks})
 
     async def get_track(self, id_: str | int) -> CatalogTrack:
         async def produce() -> CatalogTrack:
             return map_track(await self._get(f"track/{id_}"))
 
         return await self._cached_model(f"dz:track:{id_}", self.cfg.ttl_album_s, CatalogTrack, produce)
+
+    async def get_track_by_isrc(self, isrc: str) -> CatalogTrack | None:
+        """The catalog track of a recording (None: Deezer has none). The caller keeps what it found."""
+        try:
+            return map_track(await self._get(f"track/isrc:{isrc}"))
+        except CatalogNotFound:
+            return None
 
     async def preview_url(self, id_: str | int) -> str | None:
         """Fresh 30 s MP3 preview link (not cached: the links are signed and expire within hours)."""

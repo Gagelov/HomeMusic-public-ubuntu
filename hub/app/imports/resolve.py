@@ -13,14 +13,13 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.catalog.models import make_ref, split_ref
+from app.catalog.models import CatalogTrack, make_ref, split_ref
 from app.config import get_settings
-from app.library.owned import find_existing
-from app.matching.normalize import normalize_artist, split_version, version_kind
+from app.library.owned import find_owned
+from app.matching.normalize import clean_isrc, has_cyrillic, normalize_artist, split_version, version_kind
 from app.matching.score import score
 from app.matching.select import classify_scores, match_catalog, rank_candidates
 from app.models import SourceMap, Track, utcnow
@@ -30,6 +29,7 @@ from app.services import svc
 log = logging.getLogger(__name__)
 
 VERDICT = {"auto": "exact", "confirm": "probable", "not_found": "not_found"}
+ISRC_DURATION_TOLERANCE_S = 5  # the same recording; a wider gap is another edit under a reused code
 NOT_FOUND_TTL_DAYS = 7  # a catalog miss is looked up again after this long (catalogs and sources grow)
 
 
@@ -43,6 +43,7 @@ class Resolution:
     ref: str | None = None
     score: float | None = None
     track: Track | None = None  # owned
+    catalog: CatalogTrack | None = None  # the catalog's record of the track, where it was just found
 
 
 async def _remembered(s: AsyncSession, source: str, kind: str, external_id: str) -> SourceMap | None:
@@ -69,17 +70,28 @@ async def _owned(s: AsyncSession, raw: dict[str, Any], ref: str | None = None) -
     if ref:
         src, id_ = split_ref(ref)
         dz_id = id_ if src == "dz" else None
-    return await find_existing(s, artist=raw.get("artist") or "", title=raw.get("title") or "",
+    return await find_owned(s, artist=raw.get("artist") or "", title=raw.get("title") or "",
                                duration_s=raw.get("duration_s"), deezer_track_id=dz_id)
 
 
 async def catalog_track(raw: dict[str, Any]) -> Resolution:
-    """Deezer first; a track Deezer lacks may be found on hitmoz (never `exact`: no curated metadata)."""
+    """Deezer first, then Yandex Music — it knows the Russian-language music Deezer lacks; a Cyrillic track neither
+    has may be found on hitmoz (never `exact`: no curated metadata)."""
     cfg = get_settings().cfg.matching
     artist, title = raw.get("artist") or "", raw.get("title") or ""
     main = (raw.get("artists") or [artist])[0]
     base, version = split_version(title)
     best: list = []
+    if svc.deezer is not None and (isrc := clean_isrc(raw.get("isrc"))):
+        # the recording's code is exact where names are not (Deezer romanizes Japanese titles)
+        try:
+            by_code = await svc.deezer.get_track_by_isrc(isrc)
+        except Exception as e:
+            raise CatalogDown(repr(e)) from e
+        want = raw.get("duration_s")
+        if by_code is not None and (not want or not by_code.duration_s
+                                    or abs(by_code.duration_s - want) <= ISRC_DURATION_TOLERANCE_S):
+            return Resolution("exact", by_code.ref, 1.0, catalog=by_code)
     if svc.deezer is not None:
         for qa, qt in dict.fromkeys([(main, title), (main, base), (artist, title)]):
             try:
@@ -96,8 +108,19 @@ async def catalog_track(raw: dict[str, Any]) -> Resolution:
     if best:
         verdict = VERDICT[classify_scores([x[1].total for x in best], cfg)]
         if verdict != "not_found":
-            return Resolution(verdict, best[0][0].ref, round(best[0][1].total, 3))
-    if (hm := svc.providers.get("hitmoz")) is not None:
+            return Resolution(verdict, best[0][0].ref, round(best[0][1].total, 3), catalog=best[0][0])
+    if svc.yandex is not None:
+        try:
+            found = await svc.yandex.search_tracks(main, title)
+        except Exception as e:  # Yandex is away: the row is as Deezer left it
+            log.info("import: Yandex search failed for %s - %s: %r", artist, title, e)
+            found = []
+        if found:
+            scored = match_catalog(artist, title, found, album=raw.get("album"), duration=raw.get("duration_s"))
+            verdict = VERDICT[classify_scores([x[1].total for x in scored], cfg)]
+            if verdict != "not_found":
+                return Resolution(verdict, scored[0][0].ref, round(scored[0][1].total, 3), catalog=scored[0][0])
+    if has_cyrillic(artist + title) and (hm := svc.providers.get("hitmoz")) is not None:
         q = TrackQuery(artist=main, title=title, album=raw.get("album"), duration_s=raw.get("duration_s"))
         search_title = title if version_kind(version) else base or title
         try:
@@ -120,6 +143,11 @@ async def resolve_track(s: AsyncSession, source: str, external_id: str, raw: dic
     else:
         r = await catalog_track(raw)
         await _remember(s, source, "track", external_id, r)
+        if r.catalog is not None:
+            # the catalog's own record is kept: the track the Hub makes of the row is named by it, not by the service
+            from app.mixes.resolve import remember_track
+
+            await remember_track(r.catalog, s)
     if r.ref and (lib := await _owned(s, raw, r.ref)) is not None:
         return Resolution("owned", r.ref, 1.0, lib)
     return r
@@ -165,10 +193,3 @@ async def resolve_artist(s: AsyncSession, source: str, external_id: str, raw: di
                 break
     await _remember(s, source, "artist", external_id, r)
     return r
-
-
-async def library_track_ids(s: AsyncSession, track_ids: set[int]) -> dict[int, str | None]:
-    """track id -> Navidrome song id."""
-    if not track_ids:
-        return {}
-    return dict((await s.execute(select(Track.id, Track.nd_song_id).where(Track.id.in_(track_ids)))).all())

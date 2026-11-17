@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import type { AssistantRowIn, AssistantRowOut, AssistantTaskOut, AssistantTargetIn, TrackOut } from '../api/types';
 import { Icon } from '../components/Icon';
-import { PlaylistPicker } from '../components/pickers';
+import { PlaylistsPick } from '../components/PlaylistsButton';
 import { Button, Checkbox, Cover, ErrorState, ExplicitBadge, Field, Loading, Notice, PageHeader, Radio, Spinner, cx } from '../components/ui';
 import { useHubEvent } from '../lib/events';
 import { fmtDuration, fmtWhen, inputKindLabel, todayRu, tracksWord } from '../lib/format';
@@ -283,7 +283,7 @@ function ConfirmCard({ task, onDone }: { task: AssistantTaskOut; onDone: (t: Ass
         </div>
       </section>
 
-      <div className="fixed inset-x-0 bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+env(safe-area-inset-bottom))] z-30 mx-auto max-w-2xl border-t border-line bg-surface/95 px-4 py-3 backdrop-blur">
+      <div className="fixed left-(--side-w) right-0 bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+env(safe-area-inset-bottom))] z-30 mx-auto max-w-(--app-w) border-t border-line bg-surface/95 px-4 py-3 backdrop-blur">
         <div className="mb-2 text-center text-xs text-muted">
           {stats.unresolved > 0
             ? `Выберите вариант в ${stats.unresolved} ${stats.unresolved === 1 ? 'строке' : 'строках'} или снимите отметку`
@@ -296,21 +296,20 @@ function ConfirmCard({ task, onDone }: { task: AssistantTaskOut; onDone: (t: Ass
         </Button>
       </div>
 
-      <PlaylistPicker
-        open={picker}
-        onClose={() => setPicker(false)}
-        title="Выберите плейлист"
-        onPick={(p) => {
-          if (p.kind === 'existing') {
-            setExisting({ id: p.playlist.id, name: p.playlist.name });
+      {picker && (
+        <PlaylistsPick
+          single
+          title="Выберите плейлист"
+          picked={existing ? [existing] : []}
+          onClose={() => setPicker(false)}
+          onDone={(list) => {
+            setPicker(false);
+            if (!list.length) return;
+            setExisting(list[0]);
             setTargetKind('existing');
-          } else {
-            setName(p.name);
-            setTargetKind('new');
-          }
-          setPicker(false);
-        }}
-      />
+          }}
+        />
+      )}
     </div>
   );
 }

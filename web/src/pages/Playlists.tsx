@@ -1,17 +1,33 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
-import { Button, Empty, ErrorState, PageHeader, SkeletonRows } from '../components/ui';
+import { Button, Cover, Empty, ErrorState, PageHeader, SkeletonRows } from '../components/ui';
+import { useHubEvent } from '../lib/events';
 import { fmtLength, tracksWord } from '../lib/format';
 import { STANDALONE } from '../lib/embedded';
 import { useAsync } from '../lib/hooks';
-import { Link, enc } from '../lib/router';
+import { playlistMenuProps } from '../lib/playlistMenu';
+import { Link, enc, navigate } from '../lib/router';
 import { attempt } from '../lib/ui';
 
 export function PlaylistsPage() {
-  const res = useAsync((s) => api.playlists(s), []);
+  const res = useAsync((s) => api.playlists(s), [], true, 'playlists');
+  // made, changed or deleted anywhere: the Hub says so
+  useHubEvent('library', () => res.reload(true));
+  useHubEvent('reconnect', () => res.reload(true));
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  // a playlist of another service copied by its link: a transfer of that one playlist, opened at its preview
+  const [link, setLink] = useState('');
+  const [copying, setCopying] = useState(false);
+  const copy = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!link.trim()) return;
+    setCopying(true);
+    const imp = await attempt(() => api.createImport({ source: 'yandex', method: 'link', url: link.trim() }));
+    setCopying(false);
+    if (imp) navigate(`/import/${imp.id}`);
+  };
 
   const create = async (e: FormEvent) => {
     e.preventDefault();
@@ -34,6 +50,12 @@ export function PlaylistsPage() {
           Создать
         </Button>
       </form>
+      <form onSubmit={copy} className="flex gap-2 px-4 pb-3">
+        <input className="input flex-1" inputMode="url" placeholder="Или ссылка на плейлист Яндекс Музыки" aria-label="Ссылка на плейлист Яндекс Музыки" value={link} onChange={(e) => setLink(e.target.value)} />
+        <Button type="submit" icon="transfer" busy={copying} disabled={!link.trim()}>
+          Скопировать
+        </Button>
+      </form>
       <p className="px-4 pb-2 text-xs text-muted">
         {STANDALONE
           ? 'Плейлисты хранятся в Navidrome: те же, что в приложении HomeMusic.'
@@ -48,14 +70,13 @@ export function PlaylistsPage() {
       ) : (
         <ul>
           {res.data.map((p) => (
-            <li key={p.id}>
+            <li key={p.id} className="select-none [-webkit-touch-callout:none]" {...playlistMenuProps(p)}>
               <PlaylistRow to={STANDALONE ? `/playlist/${enc(p.id)}` : undefined}>
-              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-[#1f6f43] to-[#1a1a1a] text-fg">
-                <Icon name="playlist" size={22} />
-              </span>
+              {/* the playlist's own picture, as everywhere else: the user's, or the one made of its albums' covers */}
+              <Cover src={p.cover_url ? `${p.cover_url}&size=160` : null} size={48} icon="playlist" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{p.name}</span>
-                <span className="block text-xs text-muted">{[tracksWord(p.song_count), p.duration_s ? fmtLength(p.duration_s) : null].filter(Boolean).join(' · ')}</span>
+                <span className="block text-xs text-muted">{[tracksWord(p.song_count + (p.pending_count ?? 0)), p.duration_s ? fmtLength(p.duration_s) : null].filter(Boolean).join(' · ')}</span>
               </span>
               {STANDALONE && <Icon name="chevron" size={18} className="text-dim" />}
               </PlaylistRow>

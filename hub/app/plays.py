@@ -7,7 +7,7 @@ scrobble history of Navidrome (other clients) imported every hour.
 - A Navidrome scrobble is a `finish` with client "navidrome". The app's own events of the same song near it win: a
   scrobble is not imported next to them, and a scrobble imported first is dropped when they arrive (`DEDUP_WINDOW`
   plus the track's length: Navidrome counts a play at half of it, the app's `finish` comes at its end).
-- ♥ that an import of another service set are not the user's own (M4): `imported_likes`.
+- ♥ that an import of another service set are not the user's own (M4): the like says its provenance.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from app.catalog.models import CATALOGS
 
 from pydantic import ValidationError
 from sqlalchemy import delete, func, or_, select, update
@@ -26,9 +27,18 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import PlayEventIn
-from app.catalog.models import split_ref
 from app.db import session_scope
-from app.models import CatalogCache, DownloadItem, Dislike, Import, ImportItem, NavidromeSync, PlayEvent, Track, User, utcnow
+from app.models import (
+    CatalogCache,
+    Dislike,
+    DownloadItem,
+    ImportItem,
+    NavidromeSync,
+    PlayEvent,
+    Track,
+    User,
+    utcnow,
+)
 
 log = logging.getLogger(__name__)
 
@@ -44,15 +54,9 @@ FIRST_SYNC_DELAY_S = 120
 
 async def _song_of_ref(s: AsyncSession, ref: str) -> str | None:
     """The Navidrome song of a catalog track the library has."""
-    try:
-        src, id_ = split_ref(ref)
-    except ValueError:
-        src, id_ = "", ""
-    if src == "dz":
-        nd = (await s.execute(select(Track.nd_song_id).where(Track.deezer_track_id == id_, Track.nd_song_id.is_not(None))
-                              .order_by(Track.id.desc()).limit(1))).scalar_one_or_none()
-        if nd:
-            return nd
+    nd = (await s.execute(select(Track.nd_song_id).where(Track.ref == ref))).scalar_one_or_none()
+    if nd:
+        return nd
     # the download (any ref: hitmoz, a provider's file) or the import row that brought the file in
     by_download = (select(Track.nd_song_id).join(DownloadItem, DownloadItem.track_id == Track.id)
                    .where(func.json_extract(DownloadItem.query_json, "$.meta.track_ref") == ref,
@@ -71,8 +75,8 @@ async def _ref_of_song(s: AsyncSession, nd_song_id: str) -> str | None:
          ).scalar_one_or_none()
     if t is None:
         return None
-    if t.deezer_track_id:
-        return f"dz:{t.deezer_track_id}"
+    if t.ref:
+        return t.ref
     ref = (await s.execute(
         select(func.json_extract(DownloadItem.query_json, "$.meta.track_ref"))
         .where(DownloadItem.track_id == t.id,
@@ -100,10 +104,9 @@ class Ids:
         self._songs.update({r: None for r in refs})
         self._refs.update({nd: None for nd in songs})
         # Prefer the newest local row, just like the single-target path.
-        dz = {r[3:] for r in refs if r.startswith("dz:")}
         for tr in (await self.s.execute(select(Track).where(
-            or_(Track.nd_song_id.in_(songs), Track.deezer_track_id.in_(dz))).order_by(Track.id.desc()))).scalars():
-            ref = f"dz:{tr.deezer_track_id}" if tr.deezer_track_id else None
+            or_(Track.nd_song_id.in_(songs), Track.ref.in_(refs))).order_by(Track.id.desc()))).scalars():
+            ref = tr.ref
             if ref in refs and tr.nd_song_id and not self._songs[ref]:
                 self._songs[ref] = tr.nd_song_id
             if tr.nd_song_id in songs and ref and not self._refs[tr.nd_song_id]:
@@ -132,6 +135,27 @@ class Ids:
 
 
 # --- events --------------------------------------------------------------------------------------------------
+
+
+ATTACH_TRACKS = """
+UPDATE play_events SET track_id = COALESCE(
+    (SELECT f.track_id FROM track_files f WHERE f.nd_song_id = play_events.nd_song_id ORDER BY f.id DESC LIMIT 1),
+    (SELECT t.id FROM tracks t WHERE t.ref = play_events.ref))
+WHERE track_id IS NULL AND target_type = 'track'
+  AND (nd_song_id IN (SELECT nd_song_id FROM track_files WHERE nd_song_id IS NOT NULL)
+       OR ref IN (SELECT ref FROM tracks WHERE ref IS NOT NULL))
+"""
+
+
+async def attach_tracks(s: AsyncSession, user_id: int | None = None) -> int:
+    """Events that name no track yet get the Hub's track they are about: by the Navidrome song of any of its files,
+    else by its catalog ref. Run when events come in and when the library learns something (a scan linked files, a
+    catalog track became a track). An event keeps its track from then on — a file replaced, a song Navidrome gave
+    a new id, none of it loses the listening history."""
+    from sqlalchemy import text
+
+    sql = ATTACH_TRACKS + (" AND user_id = :user_id" if user_id is not None else "")
+    return (await s.execute(text(sql), {"user_id": user_id} if user_id is not None else {})).rowcount or 0
 
 
 def event_time(ts: datetime, now: datetime | None = None) -> datetime:
@@ -260,27 +284,37 @@ async def record_events(s: AsyncSession, user_id: int, raw: Iterable[Any], now: 
         from app.favorites import snapshot
         before_favorites = await snapshot(s, user_id, now)
     fill = Ids(s)
+    # an event that names its track by the Hub's id: what else the track is called is read from the library
+    named = {e.track_id for e in events if e.target_type == "track" and e.track_id}
+    known = {tid: (ref, nd) for tid, ref, nd in (await s.execute(
+        select(Track.id, Track.ref, Track.nd_song_id).where(Track.id.in_(named)))).all()} if named else {}
     for e in events:
         if e.event_id in seen:
             out.duplicates += 1
             continue
         seen.add(e.event_id)
         ref, nd = await fill.complete(e.ref, e.nd_song_id) if e.target_type == "track" else (e.ref, None)
+        track_id = e.track_id if e.target_type == "track" and e.track_id in known else None
+        if track_id:
+            ref, nd = ref or known[track_id][0], nd or known[track_id][1]
+        elif e.target_type == "track" and not (ref or nd):
+            out.rejected.append({"index": events.index(e), "event_id": e.event_id, "detail": "track_id: no such track"})
+            continue
         metadata = await _listening_metadata(s, e, nd) if e.kind in ("start", "progress", "interrupted", "error", "skip", "finish") else None
         values = dict(user_id=user_id, event_id=e.event_id, ts=event_time(e.ts, now), kind=e.kind, ref=ref,
-                      nd_song_id=nd, position_s=e.position_s, duration_s=e.duration_s, context=e.context,
+                      nd_song_id=nd, track_id=track_id, position_s=e.position_s, duration_s=e.duration_s, context=e.context,
                       client=e.client, received_at=now, playback_id=e.playback_id, device_id=e.device_id,
                       listened_ms=e.listened_ms, track_metadata=metadata, target_type=e.target_type, nd_album_id=e.nd_album_id,
                       nd_artist_id=e.nd_artist_id, target_data=e.target_data, reverts_event_id=e.reverts_event_id,
-                      launch_id=e.launch_id, launch_origin=e.launch_origin)
+                      launch_id=e.launch_id, launch_origin=e.launch_origin, page=e.page)
         res = await s.execute(sqlite_insert(PlayEvent).values(**values).on_conflict_do_nothing())
         if not res.rowcount:  # a concurrent request stored it first
             out.duplicates += 1
             continue
         out.accepted += 1
-        if e.kind in ("like", "unlike"):
-            from app.favorites import remember
+        if e.kind in ("like", "unlike") and e.target_type != "track":
             from app.api.schemas import FavoriteTarget
+            from app.favorites import remember
 
             await remember(s, FavoriteTarget(target_type=e.target_type, ref=ref, nd_song_id=nd,
                                              nd_album_id=e.nd_album_id, nd_artist_id=e.nd_artist_id,
@@ -295,6 +329,10 @@ async def record_events(s: AsyncSession, user_id: int, raw: Iterable[Any], now: 
         elif e.kind == "undislike":
             await remove_dislikes(s, user_id, ref=ref if e.target_type == "track" else None, nd_song_id=nd,
                                   artist_ref=(ref or f"nd:{e.nd_artist_id}") if e.target_type == "artist" else None, complete=False)
+    await _meet_listened(s, user_id, events)
+    if out.accepted:
+        await s.flush()
+        await attach_tracks(s, user_id)
     if causal_batch and out.accepted:
         after_favorites = await snapshot(s, user_id, now)
         for key, state in after_favorites.items():
@@ -311,6 +349,43 @@ async def record_events(s: AsyncSession, user_id: int, raw: Iterable[Any], now: 
     return out
 
 
+COUNTED_MS = 30_000  # a listen this long counts (app/stats.py): the Hub remembers what was listened to
+
+
+async def _meet_listened(s: AsyncSession, user_id: int, events: list[Any]) -> None:
+    """A catalog track listened to for a counted listen becomes a track of the Hub (ARCHITECTURE.md): from then on
+    it is in the statistics as a track, can be tagged, and its lyrics are kept — whether or not it is ever
+    downloaded. The names come from what the event itself says of the track."""
+    from app.catalog.models import CatalogTrack
+    from app.library import tracks as registry
+
+    met: set[str] = set()
+    for e in events:
+        ref = getattr(e, "ref", None)
+        src, _, ident = (ref or "").partition(":")
+        if (e.target_type != "track" or src not in CATALOGS or not ident or ref in met
+                or e.kind not in ("finish", "skip", "progress", "interrupted") or (e.listened_ms or 0) < COUNTED_MS):
+            continue
+        met.add(ref)
+        if await registry.by_ref(s, ref) is not None:
+            continue
+        meta = e.track_metadata.model_dump(exclude_none=True) if e.track_metadata else {}
+        cached = await s.get(CatalogCache, f"dz:track:{ident}") if src == "dz" else None
+        cached = cached or await s.get(CatalogCache, f"mix:track:{ref}")
+        raw = (cached.payload_json or {}) if cached else {}
+        raw = raw.get("v") if isinstance(raw.get("v"), dict) else raw
+        title, artist = meta.get("title") or raw.get("title"), meta.get("artist_credit") or raw.get("artist")
+        if not title or not artist:
+            continue  # nothing to call it by: the next listen that says more makes it
+        duration = meta.get("duration_s") or raw.get("duration_s") or e.duration_s
+        await registry.of_catalog(s, CatalogTrack(
+            ref=ref, source=src, id=ident, title=str(title), artist=str(artist),
+            album_title=meta.get("album") or raw.get("album_title"), isrc=meta.get("isrc") or raw.get("isrc"),
+            duration_s=round(duration) if isinstance(duration, (int, float)) else None,
+            artist_ref=raw.get("artist_ref"), album_ref=raw.get("album_ref"), cover_url=raw.get("cover_url"),
+            cover_small_url=raw.get("cover_small_url")), user_id=user_id)
+
+
 async def user_events(s: AsyncSession, user_id: int, days: float = 30, *, kinds: Iterable[str] | None = None,
                       now: datetime | None = None) -> list[PlayEvent]:
     """The user's events of the last `days`, oldest first (the raw material of the taste profile, MIXES.md 5)."""
@@ -322,20 +397,14 @@ async def user_events(s: AsyncSession, user_id: int, days: float = 30, *, kinds:
     return list((await s.execute(q.order_by(PlayEvent.ts, PlayEvent.id))).scalars())
 
 
-async def imported_likes(s: AsyncSession, user_id: int) -> set[str]:
-    """Navidrome songs whose ♥ an import of another service set (`imports.options_json.liked`) and the user did not
-    like again themselves since (a `like` event): such ♥ don't count for the taste profile (M4)."""
-    liked: set[str] = set()
-    for opts in (await s.execute(select(Import.options_json).where(Import.user_id == user_id))).scalars():
-        liked.update((opts or {}).get("liked") or [])
-    if not liked:
-        return liked
-    own = set((await s.execute(select(PlayEvent.nd_song_id).where(
-        PlayEvent.user_id == user_id, PlayEvent.kind == "like", PlayEvent.nd_song_id.in_(liked)))).scalars())
-    return liked - own
-
-
 # --- «Не нравится» ---------------------------------------------------------------------------------------------
+
+
+async def _of_artist(s: AsyncSession, artist_ref: str):
+    """The marks of an artist: one put on any record a catalog keeps of them is a mark of the artist."""
+    from app.library import artists
+
+    return Dislike.artist_ref.in_((await artists.whole(s, artist_ref))[0])
 
 
 def _target(ref: str | None, nd_song_id: str | None, artist_ref: str | None):
@@ -353,7 +422,7 @@ async def add_dislike(s: AsyncSession, user_id: int, *, ref: str | None = None, 
     one row (the ids it lacked are filled in). None: nothing to name."""
     if not artist_ref and complete:
         ref, nd_song_id = await Ids(s).complete(ref, nd_song_id)
-    cond = _target(ref, nd_song_id, artist_ref)
+    cond = await _of_artist(s, artist_ref) if artist_ref else _target(ref, nd_song_id, None)
     if cond is None:
         return None
     row = (await s.execute(select(Dislike).where(Dislike.user_id == user_id, cond).limit(1))).scalar_one_or_none()
@@ -371,7 +440,7 @@ async def remove_dislikes(s: AsyncSession, user_id: int, *, ref: str | None = No
                           artist_ref: str | None = None, complete: bool = True) -> int:
     if not artist_ref and complete:
         ref, nd_song_id = await Ids(s).complete(ref, nd_song_id)
-    cond = _target(ref, nd_song_id, artist_ref)
+    cond = await _of_artist(s, artist_ref) if artist_ref else _target(ref, nd_song_id, None)
     if cond is None:
         return 0
     res = await s.execute(delete(Dislike).where(Dislike.user_id == user_id, cond))
@@ -432,6 +501,8 @@ async def import_scrobbles(user: User) -> int:
             s.add(sync)
         sync.last_scrobble_id = max([last, *(int(x["id"]) for x in rows)])
         sync.synced_at = utcnow()
+        if added:
+            await attach_tracks(s, user.id)
     return added
 
 

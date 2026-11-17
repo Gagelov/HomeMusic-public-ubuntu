@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from app.catalog.models import CATALOGS
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
@@ -20,7 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas import FavoriteTarget
 from app.models import (
     Album,
-    DownloadItem,
     FavoriteSubject,
     Import,
     ImportCollection,
@@ -58,7 +58,10 @@ def subject_data(raw: dict[str, Any] | None) -> dict[str, Any]:
 def aliases(obj: Any) -> set[str]:
     typ = obj.target_type or "track"
     nd = getattr(obj, ND_FIELDS[typ], None)
-    return {x for x in (f"ref:{obj.ref}" if obj.ref else None, f"nd:{nd}" if nd else None) if x}
+    # an event that knows its track (`PlayEvent.track_id`) is tied to every other event of that track by it
+    track = getattr(obj, "track_id", None) if typ == "track" else None
+    return {x for x in (f"ref:{obj.ref}" if obj.ref else None, f"nd:{nd}" if nd else None,
+                        f"t:{track}" if track else None) if x}
 
 
 class AliasIndex:
@@ -241,22 +244,93 @@ async def snapshot(s: AsyncSession, user_id: int, now: datetime | None = None):
     q = select(PlayEvent).where(PlayEvent.user_id == user_id, PlayEvent.kind.in_(("like", "unlike")))
     q = q.where(PlayEvent.ts <= now)
     events = list((await s.execute(q)).scalars())
-    subjects = list((await s.execute(select(FavoriteSubject))).scalars())
-    partial = [(e.ref, e.nd_song_id) for e in events if e.target_type == "track" and not (e.ref and e.nd_song_id)]
-    if partial:
-        from app.plays import Ids
-        fill = Ids(s)
-        await fill.prime(partial)
-        for ref, nd in set(partial):
-            ref, nd = await fill.complete(ref, nd)
-            if ref and nd:
-                subjects.append(FavoriteSubject(target_type="track", ref=ref, nd_id=nd,
-                    aliases=[f"ref:{ref}", f"nd:{nd}"], canonical_key=f"ref:{ref}", data={}))
-    return fold(events, subjects, now)
+    return fold(events, await subjects_of(s, events), now)
+
+
+async def subjects_of(s: AsyncSession, events: Iterable[Any] = (), *, refs: Iterable[str] = (),
+                      songs: Iterable[str] = ()) -> list[FavoriteSubject]:
+    """What ties the names of one thing together, for `AliasIndex`.
+
+    An album or an artist: the verified pairs kept in `favorite_subjects` (a catalog ref and a Navidrome id that
+    were seen to be one). The several records a catalog keeps of one artist are one artist too — read from the
+    library (`artists.records`), so a follow by any of them is the artist's, at their one address, and stays
+    so whatever is tied or merged later. A track needs no such table: it is the Hub's own track — its id, its catalog ref and
+    the Navidrome song of every file it has — so its names are read from the library, for the tracks these
+    events, `refs` and `songs` speak of. An event that knows its track (`PlayEvent.track_id`) ties whatever
+    else it called it (a provider's file, say) to that track by itself."""
+    from app.models import TrackFile
+
+    from app.library import artists
+
+    out = list((await s.execute(select(FavoriteSubject).where(FavoriteSubject.target_type != "track"))).scalars())
+    # after the kept ones: the address of an artist is what their state is told by (`fold`)
+    out += [FavoriteSubject(target_type="artist", canonical_key=f"ref:{refs[0]}", ref=refs[0],
+                            aliases=sorted(f"ref:{r}" for r in refs), data={}) for refs in await artists.records(s)]
+    ids: set[int] = set()
+    refs, songs = {x for x in refs if x}, {x for x in songs if x}
+    for e in events:
+        if (e.target_type or "track") != "track":
+            continue
+        if getattr(e, "track_id", None):
+            ids.add(e.track_id)
+        if e.ref:
+            refs.add(e.ref)
+        if nd := getattr(e, "nd_song_id", None):
+            songs.add(nd)
+
+    def chunks(values: set) -> Iterable[list]:
+        values = sorted(values)
+        return (values[k:k + 500] for k in range(0, len(values), 500))
+
+    for part in chunks(refs):
+        ids.update((await s.execute(select(Track.id).where(Track.ref.in_(part)))).scalars())
+    for part in chunks(songs):
+        ids.update((await s.execute(select(TrackFile.track_id).where(TrackFile.nd_song_id.in_(part)))).scalars())
+    tracks: dict[int, tuple] = {}
+    files: dict[int, list[str]] = {}
+    for part in chunks(ids):
+        for row in (await s.execute(select(Track.id, Track.ref, Track.title, Track.artist, Track.duration_s)
+                                    .where(Track.id.in_(part)))).all():
+            tracks[row[0]] = row
+        for track_id, song in (await s.execute(select(TrackFile.track_id, TrackFile.nd_song_id).where(
+                TrackFile.track_id.in_(part), TrackFile.nd_song_id.is_not(None)).order_by(TrackFile.id))).all():
+            files.setdefault(track_id, []).append(song)
+    for track_id, ref, title, artist, duration in tracks.values():
+        own = files.get(track_id, [])
+        names = [f"t:{track_id}", *([f"ref:{ref}"] if ref else []), *(f"nd:{x}" for x in own)]
+        data = {k: v for k, v in (("title", title), ("artist", artist), ("duration_s", duration)) if v}
+        out.append(FavoriteSubject(target_type="track", canonical_key=f"t:{track_id}", ref=ref,
+                                   nd_id=own[-1] if own else None,  # the newest file's song is the one that plays
+                                   aliases=sorted(names), data=data))
+    return out
+
+
+async def name_track(s: AsyncSession, target: FavoriteTarget) -> None:
+    """Fill in what the target does not say of its track: given the Hub's id — the catalog ref and the Navidrome
+    song it has; given those — the Hub's id, if the Hub knows the track."""
+    from fastapi import HTTPException
+
+    from app.library import tracks as registry
+
+    if target.track_id:
+        names = await registry.names_of(s, target.track_id)
+        if names is None:
+            raise HTTPException(404, "Хаб не знает этот трек")
+        target.ref, target.nd_song_id = target.ref or names[0], target.nd_song_id or names[1]
+    else:
+        target.track_id = await registry.id_of(s, target.ref, target.nd_song_id)
 
 
 async def remember(s: AsyncSession, target: FavoriteTarget, *, extra_aliases: Iterable[str] = ()) -> FavoriteSubject:
+    """Keep the verified names of an album or an artist together. A track is not kept here (`subjects_of`): what
+    is known of it is told, nothing is written."""
     typ = target.target_type
+    if typ == "track":
+        known = [x for x in await subjects_of(s, refs=[target.ref or ""], songs=[target.nd_song_id or ""])
+                 if x.target_type == "track"]
+        return known[0] if known else FavoriteSubject(
+            target_type=typ, canonical_key=min(aliases(target)), ref=target.ref, nd_id=target.nd_song_id,
+            aliases=sorted(aliases(target)), data=subject_data(target.target_data))
     keys = aliases(target) | set(extra_aliases)
     # Usually one indexed hit; JSON aliases also retain replaced ND song ids.
     subjects = list((await s.execute(select(FavoriteSubject).where(FavoriteSubject.target_type == typ))).scalars())
@@ -295,8 +369,14 @@ async def record(s: AsyncSession, user_id: int, target: FavoriteTarget, liked: b
     target = target.model_copy()
     if target.target_type == "track":
         target.ref, target.nd_song_id = await Ids(s).complete(target.ref, target.nd_song_id)
-    row = await remember(s, target)
-    eid = event_id or decision_id(operation or uuid.uuid4().hex, target.target_type, row.canonical_key)
+        await name_track(s, target)
+    if target.target_type == "track":
+        # the same name for a track before it has a file and after: its catalog ref, if it has one
+        name = (f"ref:{target.ref}" if target.ref else f"nd:{target.nd_song_id}" if target.nd_song_id
+                else f"t:{target.track_id}")
+    else:
+        name = (await remember(s, target)).canonical_key
+    eid = event_id or decision_id(operation or uuid.uuid4().hex, target.target_type, name)
     now = utcnow()
     await s.execute(insert(PlayEvent).values(
         **target.model_dump(), user_id=user_id, event_id=eid, ts=event_time(ts or now, now) if normalize else ts or now,
@@ -330,7 +410,9 @@ async def command(s: AsyncSession, user: User, targets: list[FavoriteTarget], *,
                 if typ == "track":
                     from app.plays import Ids
                     t.ref, t.nd_song_id = await Ids(s).complete(t.ref, t.nd_song_id)
+                    await name_track(s, t)
             active = []
+            states = None  # what is liked now: told once for the whole group, not anew for each of its targets
             for target in group:
                 subject = await remember(s, target)
                 if not getattr(target, ND_FIELDS[typ]) and subject.nd_id:
@@ -343,12 +425,16 @@ async def command(s: AsyncSession, user: User, targets: list[FavoriteTarget], *,
                     continue  # Retried old commands must not undo a newer decision in Navidrome.
                 from app.plays import event_time
                 at = event_time(ts or utcnow())
-                states = await snapshot(s, user.id)
+                if states is None:
+                    states = await snapshot(s, user.id)
                 current = next((x for x in states.values() if x.target_type == typ and
-                    ((x.ref and x.ref == target.ref) or (x.nd_id and x.nd_id == getattr(target, ND_FIELDS[typ])))), None)
+                    ((x.ref and x.ref == target.ref) or (target.ref and f"ref:{target.ref}" in x.aliases)
+                     or (x.nd_id and x.nd_id == getattr(target, ND_FIELDS[typ]))
+                     or (target.track_id and f"t:{target.track_id}" in x.aliases))), None)
                 if current and current.event.ts > at:
                     events.append(await record(s, user.id, target, liked, ts=at, event_id=eid,
                                                client=client, context=context))
+                    states = None  # the journal changed
                     continue  # Delayed commands enter history without overwriting the live mirror.
                 active.append(target)
             group = active
@@ -371,46 +457,10 @@ async def command(s: AsyncSession, user: User, targets: list[FavoriteTarget], *,
 
 
 async def clear_pending(s: AsyncSession, user_id: int, ref: str):
+    """♥ taken off a catalog track: an import that brought it as liked no longer downloads it for that."""
     from app.imports.apply import unlike_refs
-    from app.jobs.downloads import item_ref
 
     await unlike_refs(s, user_id, [ref])
-    items = (await s.execute(select(DownloadItem).where(DownloadItem.user_id == user_id))).scalars()
-    for item in items:
-        if item_ref(item) != ref:
-            continue
-        q = dict(item.query_json or {})
-        was_star_only = q.get("star") and not q.get("requested") and not any(q.get(k) for k in ("import", "mix", "wave"))
-        q.update(star=False, star_cancelled=True)
-        item.query_json = q
-        if was_star_only and item.status == "queued":
-            item.status = "cancelled"
-    await s.flush()
-
-
-async def download_requested(s: AsyncSession, item: DownloadItem):
-    from app.jobs.downloads import item_ref
-    ref = item_ref(item)
-    if not ref:
-        return
-    event = await record(s, item.user_id, FavoriteTarget(ref=ref, target_data=item.query_json.get("query")), True,
-                         operation=f"download:{item.id}:{uuid.uuid4().hex}",
-                         client="assistant" if item.query_json.get("favorite_client") == "assistant" else "hub",
-                         context=item.query_json.get("favorite_context") or "download", mirror_pending=True)
-    item.query_json = {**item.query_json, "star_event_id": event.event_id, "star_cancelled": False, "star_failed": False}
-
-
-async def download_failed(s: AsyncSession, item: DownloadItem):
-    q = item.query_json or {}
-    if not q.get("star") or q.get("star_cancelled") or not q.get("star_event_id"):
-        return
-    original = (await s.execute(select(PlayEvent).where(PlayEvent.user_id == item.user_id,
-                                                       PlayEvent.event_id == q["star_event_id"]))).scalar_one_or_none()
-    if original:
-        await record(s, item.user_id, FavoriteTarget(ref=original.ref, nd_song_id=original.nd_song_id), False,
-                     operation=f"failed:{original.event_id}", reverts_event_id=original.event_id,
-                     client="hub", context="download:failed")
-        item.query_json = {**q, "star_failed": True}
 
 
 async def imported_targets(s: AsyncSession, user_id: int) -> set[tuple[str, str]]:
@@ -430,6 +480,129 @@ async def imported_targets(s: AsyncSession, user_id: int) -> set[tuple[str, str]
     return keys
 
 
+# --- «Любимое» -------------------------------------------------------------------------------------------------
+
+
+async def _liked_track(s: AsyncSession, user_id: int, ref: str | None, nd_id: str | None,
+                       data: dict[str, Any] | None) -> int | None:
+    """The track a like names: by the Navidrome song of its file, else by its catalog ref — made of what the like
+    itself says of the song if the Hub has not met it (a like of a catalog track is a track with no file yet)."""
+    from app.catalog.models import CatalogTrack
+    from app.library import tracks as registry
+    from app.models import TrackFile
+
+    if nd_id:
+        track_id = (await s.execute(select(TrackFile.track_id).where(TrackFile.nd_song_id == nd_id).limit(1))
+                    ).scalar_one_or_none()
+        if track_id is not None:
+            return track_id
+    src, _, ident = (ref or "").partition(":")
+    if src not in CATALOGS or not ident:
+        return None
+    track = await registry.by_ref(s, ref)
+    if track is not None:
+        return track.id
+    data = data or {}
+    if not data.get("title"):  # an old like kept only the ref: what the Hub has cached of the catalog names it
+        from app.models import CatalogCache
+
+        keys = [f"listen:{ref}", f"mix:track:{ref}", *([f"dz:track:{ident}"] if src == "dz" else [])]
+        for row in (await s.execute(select(CatalogCache).where(CatalogCache.key.in_(keys)))).scalars():
+            data = {**((row.payload_json or {}).get("v") or {}), **data}
+    duration = data.get("duration_s") or data.get("duration")
+    # a like that says nothing of the song (an old one) is still a like: the track is named by its ref until the
+    # catalog is asked
+    return (await registry.of_catalog(s, CatalogTrack(
+        ref=ref, source=src, id=ident, title=str(data.get("title") or ref), artist=str(data.get("artist") or ""),
+        album_title=data.get("album_title"), duration_s=int(duration) if isinstance(duration, (int, float)) else None,
+        artist_ref=data.get("artist_ref"), album_ref=data.get("album_ref"), cover_url=data.get("cover_url"),
+        cover_small_url=data.get("cover_small_url") or data.get("cover_url")), user_id=user_id)).id
+
+
+async def project_liked(s: AsyncSession, user_id: int, starred: list[dict] | None = None) -> bool:
+    """Make «Любимое» — the user's playlist of `kind` "liked" (app/playlists.py) — say what the journal says.
+
+    The journal of likes and unlikes stays what decides (the taste profile reads it, and it is what is reconciled
+    with Navidrome's stars); the playlist is the list it comes to: the tracks the user likes now, the newest like
+    on top, each with the day it was liked. A track an import brought as liked is in it too, and so is a song
+    starred in Navidrome (`starred`: its starred songs as it gives them, when it was asked) — unless the user has
+    since said otherwise. A liked track the library has no file of is a track like any other: it has its place,
+    its date and its tags — one the catalog does not know too (`tracks.by_name`). Navidrome not asked (`starred` None): what the playlist has and nobody unliked stays.
+    Returns whether the playlist changed."""
+    from app import playlists
+    from app.imports.apply import track_of
+    from app.models import PlaylistItem
+    from app.models import naive
+
+    from app.models import TrackFile
+
+    want: dict[int, datetime] = {}
+    decided: set[str] = set()  # what the user has decided about themself: an import or a star does not overrule it
+    states = [st for st in (await snapshot(s, user_id)).values() if st.target_type == "track"]
+    for st in states:
+        decided.update(st.aliases)
+        if not st.liked:
+            continue
+        # the journal names the track itself where an event knew it; else it is found, or made, by what it was called
+        track_id = next((int(a[2:]) for a in st.aliases if a.startswith("t:")), None)
+        if track_id is None:
+            track_id = await _liked_track(s, user_id, st.ref, st.nd_id, st.data)
+        if track_id is not None:
+            want.setdefault(track_id, st.since or st.event.ts)
+    rows = (await s.execute(
+        select(ImportItem, Import.created_at).join(ImportCollection, ImportCollection.id == ImportItem.collection_id)
+        .join(Import, Import.id == ImportItem.import_id)
+        .where(Import.user_id == user_id, ImportCollection.kind == "likes", ImportCollection.selected.is_(True),
+               ImportItem.status.not_in(("skipped", "pending")))
+        .order_by(ImportItem.import_id, ImportItem.position))).all()
+    for position, (it, imported_at) in enumerate(rows):
+        if it.ref and f"ref:{it.ref}" in decided:
+            continue
+        track = await track_of(s, it, user_id)
+        if track is None or track.id in want or (track.nd_song_id and f"nd:{track.nd_song_id}" in decided):
+            continue
+        if f"t:{track.id}" in decided:  # a track known by its name alone has no other name to be decided about by
+            continue
+        # the service lists the newest like first: without its dates the order of the list still holds
+        at = naive(parse_time((it.raw_json or {}).get("liked_at"))) or imported_at - timedelta(seconds=position)
+        want[track.id] = at
+    p = await playlists.liked(s, user_id)
+    have = await playlists.items(s, p.id)
+    if starred is not None:
+        songs = {str(x["id"]): parse_time(x.get("starred")) for x in starred if x.get("id")}
+        ids = list(songs)
+        for k in range(0, len(ids), 500):
+            for song, track_id in (await s.execute(select(TrackFile.nd_song_id, TrackFile.track_id).where(
+                    TrackFile.nd_song_id.in_(ids[k:k + 500])))).all():
+                if f"nd:{song}" not in decided:
+                    want.setdefault(track_id, songs[song] or utcnow())
+    else:
+        unliked = {a for st in states if not st.liked for a in st.aliases}
+        for item, track in have:
+            names = {f"ref:{track.ref}" if track.ref else "", f"nd:{track.nd_song_id}" if track.nd_song_id else ""}
+            if not names & unliked:
+                want.setdefault(track.id, item.added_at)
+    order = sorted(want, key=lambda t: (want[t], t), reverse=True)
+
+    if [t.id for _, t in have] == order and all(i.added_at == want[t.id] for i, t in have):
+        return False
+    kept: dict[int, PlaylistItem] = {}
+    for item, track in have:
+        if track.id in want and track.id not in kept:
+            kept[track.id] = item
+        else:
+            await s.delete(item)
+    for position, track_id in enumerate(order):
+        item = kept.get(track_id)
+        if item is None:
+            s.add(PlaylistItem(playlist_id=p.id, track_id=track_id, position=position, added_at=want[track_id]))
+        else:
+            item.position, item.added_at = position, want[track_id]
+    p.updated_at = utcnow()
+    await s.flush()
+    return True
+
+
 def parse_time(value: Any) -> datetime | None:
     try:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -447,7 +620,12 @@ async def reconcile(s: AsyncSession, user: User, body: dict, *, now: datetime | 
     provenance = await imported_targets(s, user.id)
     # Old imports did not persist verified ND album/artist ids. Unknown objects of such
     # a type are quarantined until verified enrichment or a real own decision, never guessed.
-    subjects = list((await s.execute(select(FavoriteSubject))).scalars())
+    named = [a for x in before.values() if x.target_type == "track" for a in x.aliases]
+    subjects = await subjects_of(
+        s, [x.event for x in before.values()],
+        refs=[a[4:] for a in named if a.startswith("ref:")],
+        songs=[*(a[3:] for a in named if a.startswith("nd:")),
+               *(str(x["id"]) for x in body.get("song", []) if isinstance(x, dict) and x.get("id"))])
     index = AliasIndex([x.event for x in before.values()], subjects)
     verified_refs = {(x.target_type, f"ref:{x.ref}") for x in subjects if x.ref and x.nd_id}
     legacy_types = {typ for typ, key in provenance if typ != "track" and key.startswith("ref:") and
@@ -500,6 +678,34 @@ async def reconcile(s: AsyncSession, user: User, body: dict, *, now: datetime | 
     sync.favorites_synced_at = now
     sync.favorites_bootstrapped_at = sync.favorites_bootstrapped_at or now
     return changed
+
+
+async def deliver_pending(s: AsyncSession) -> None:
+    """Tracks liked when the library had no file of them, that have one now: their songs get the ♥ in Navidrome,
+    for the apps that talk to it. Called when a library scan has found new files."""
+    from app.auth import user_navidrome
+    from app.events import bus
+
+    users = (await s.execute(select(PlayEvent.user_id).where(
+        PlayEvent.kind == "like", PlayEvent.mirror_pending.is_(True)).distinct())).scalars().all()
+    for user_id in users:
+        ready = [st for st in (await snapshot(s, user_id)).values()
+                 if st.target_type == "track" and st.liked and st.event.mirror_pending and st.nd_id]
+        user = await s.get(User, user_id) if ready else None
+        if user is None:
+            continue
+        nd = user_navidrome(user)
+        try:
+            await nd.star(song_ids=[st.nd_id for st in ready])
+        except Exception as e:  # the next scan, or the next look at Navidrome's stars, delivers them
+            log.warning("♥ of user %s not delivered to Navidrome: %r", user_id, e)
+            continue
+        finally:
+            await nd.aclose()
+        for st in ready:
+            st.event.mirror_pending = False
+        bus.publish(user_id, "library", {"kind": "starred", "song_ids": [st.nd_id for st in ready]})
+    await s.flush()
 
 
 async def sync_user(user: User) -> int:

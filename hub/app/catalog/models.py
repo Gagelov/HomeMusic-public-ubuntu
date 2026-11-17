@@ -1,6 +1,6 @@
-"""Catalog entities shared by all catalog sources (Deezer, hitmoz, MusicBrainz).
+"""Catalog entities shared by all catalog sources (Deezer, Yandex Music, hitmoz, MusicBrainz).
 
-A `ref` is "<source>:<id>", e.g. "dz:4505880" (Deezer) or "hm:12345" (hitmoz). The kind (artist/album/track)
+A `ref` is "<source>:<id>", e.g. "dz:4505880" (Deezer), "ym:50685843" (Yandex Music) or "hm:12345" (hitmoz). The kind (artist/album/track)
 is implied by the API that returns or accepts it.
 """
 
@@ -13,7 +13,8 @@ from pydantic import BaseModel
 
 # "nd": a song only the library has (Navidrome id), no catalog record: mixes (`app.mixes`) list such songs too
 # "file": an exact provider file used as the first track of a wave, including songs absent from catalogs.
-Source = Literal["dz", "hm", "mb", "nd", "file"]
+Source = Literal["dz", "ym", "hm", "mb", "nd", "file"]
+CATALOGS = ("dz", "ym", "hm", "mb")  # the sources that are catalogs: a record of one names a song for good
 RecordType = Literal["album", "single", "ep", "compile"]
 
 
@@ -46,6 +47,7 @@ class CatalogTrack(BaseModel):
     title: str  # full title as in the catalog, e.g. "Группа крови (Remastered 2019)"
     artist: str  # main artist name
     artists: list[str] = []  # all credited artists (main first)
+    artist_refs: list[str | None] = []  # their catalog refs, in the order of `artists` (None: unknown)
     artist_ref: str | None = None
     album_ref: str | None = None
     album_title: str | None = None
@@ -69,6 +71,10 @@ class CatalogAlbum(BaseModel):
     title: str
     artist: str
     artist_ref: str | None = None
+    # everyone the release is credited to, the main one first, and their refs — said only by the release's own
+    # record (`get_album`), not by a list of releases
+    artists: list[str] = []
+    artist_refs: list[str | None] = []
     record_type: RecordType = "album"
     release_date: date | None = None
     year: int | None = None

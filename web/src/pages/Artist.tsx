@@ -1,138 +1,470 @@
-import { useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
-import type { AlbumOut } from '../api/types';
-import { ReleaseCard, TrackRow } from '../components/catalog';
-import { LikeButton } from '../components/LikeButton';
-import { Button, Cover, ErrorState, IconButton, Loading, SectionTitle } from '../components/ui';
+import type { AlbumOut, ArtistPageOut } from '../api/types';
+import { ArtistBubble, ReleaseCard, TrackRow } from '../components/catalog';
+import { Icon, type IconName } from '../components/Icon';
+import { ListBar } from '../components/ListBar';
+import { ArtistLooksWindow } from '../components/ArtistLooks';
+import { ArtistServiceButtons } from '../components/ArtistSources';
+import { ArtistProjects, ArtistWindow, artistHint, useArtistCard } from '../components/ArtistNames';
+import { Button, ErrorState, HeroSkeleton, PageHeader, Sheet, Spinner, cx } from '../components/ui';
 import { startDownload } from '../lib/actions';
-import { useAsync } from '../lib/hooks';
-import { playList } from '../lib/player';
-import { goBack } from '../lib/router';
-import { plural } from '../lib/format';
-import { confirmDialog } from '../lib/ui';
-import { canWave, seedKey, startWave, useWave } from '../lib/wave';
+import { setDisliked, useDisliked } from '../lib/dislikes';
+import { plural, tracksWord } from '../lib/format';
+import { useAsync, useRememberScrollX } from '../lib/hooks';
+import { imageUrl } from '../lib/img';
+import { Link, enc, navigate } from '../lib/router';
+import { copyText } from '../lib/share';
+import { useSession } from '../lib/session';
+import { toggleLike, useLiked, useLikesKnown } from '../lib/stars';
+import { confirmDialog, toast } from '../lib/ui';
+import { canWave, startWave } from '../lib/wave';
+import { PlayPair } from './MediaLibrary';
+
+/** An artist's page (`/artist/<ref>`; a library artist the catalog knows opens it too): a list's head — the photo,
+ * the name, ▶ and the shuffle of the popular tracks — then a row of buttons: «Подписаться», «Вам нравится» (the
+ * user's liked tracks the artist is on, when there are any) and ⋯ (the wave by the artist, downloading everything,
+ * sharing, «Не включать»). Under them the ten popular tracks (two columns of five in a wide window), then
+ * «Дискография»: the releases in a row that scrolls sideways, newest first, by kind, and the way to all of them
+ * with their tracks (the heading, `pages/Discography.tsx`).
+ *
+ * Where the artist has a wide picture (the Hub finds one and keeps it: `catalog/banners.py`) it is the head of the
+ * page, the name over it; where there is none — the round photo beside the name, as a list's head.
+ *
+ * An artist the user does not listen to (`lib/dislikes.ts`) has a grey page that says so and offers to bring them
+ * back: nothing of theirs plays by itself, a track tapped still does. */
+
+const POPULAR = 10;
+const IN_ROW = 20; // releases in the row of the page; the rest are on «Дискография»
+
+type Kind = 'all' | 'album' | 'single';
+const KINDS: Array<{ value: Kind; label: string }> = [
+  { value: 'all', label: 'Все' },
+  { value: 'album', label: 'Альбомы' },
+  { value: 'single', label: 'Синглы и EP' },
+];
+const kindOf = (a: AlbumOut): Kind => (a.record_type === 'single' || a.record_type === 'ep' ? 'single' : 'album');
+
+/** The user's liked tracks this artist is on (credited anywhere, not only first). */
+function useLikedBy(name: string | undefined, ref: string | undefined): number {
+  const liked = useAsync((s) => api.ndLiked(s), [], true, 'liked');
+  return useMemo(() => {
+    if (!name) return 0;
+    const want = name.trim().toLocaleLowerCase('ru');
+    return (liked.data?.songs ?? []).filter((t) => (!!ref && (t.artist_ref === ref || !!t.artist_refs?.includes(ref))) || (t.artists?.length ? t.artists : [t.artist]).some((a) => a.trim().toLocaleLowerCase('ru') === want)).length;
+  }, [liked.data, name, ref]);
+}
+
+/** An artist known by the name alone (`/artist-named/<name>`, from a player): the catalog's artist of that name
+ * takes the place of this page; when it has none, the search for the name does. */
+export function ArtistNamedPage({ name }: { name: string }) {
+  const res = useAsync((s) => api.artistNamed(name, s), [name]);
+  useEffect(() => {
+    if (res.data) navigate(res.data.ref ? `/artist/${enc(res.data.ref)}` : `/search?q=${enc(name)}`, { replace: true });
+  }, [res.data, name]);
+  if (res.error) return (<><PageHeader hero title={name} back="/search" /><ErrorState text={res.error} onRetry={() => res.reload()} /></>);
+  return (<><PageHeader hero title={name} back="/search" /><HeroSkeleton round buttons rows={10} /></>);
+}
 
 export function ArtistPage({ refId }: { refId: string }) {
-  const res = useAsync((s) => api.artist(refId, s), [refId]);
-  const [showAllTop, setShowAllTop] = useState(false);
-  const [busyRef, setBusyRef] = useState<string | null>(null);
-  const [allBusy, setAllBusy] = useState(false);
-  const wave = useWave();
+  const res = useAsync((s) => api.artist(refId, s), [refId], true, `artist:${refId}`);
+  const canMap = !!useSession().me.artist_map; // «Карта похожих» is there
+  const [menu, setMenu] = useState(false);
+  const [naming, setNaming] = useState<'names' | 'projects' | 'looks' | null>(null); // a window of the artist's ⋯
+  const [busy, setBusy] = useState<string | null>(null);
+  const d: ArtistPageOut | undefined = res.data;
+  const artist = d?.artist;
+  const target = { targetType: 'artist' as const, ref: refId, data: { name: artist?.name ?? '' } };
+  const followed = useLiked(target);
+  const likesKnown = useLikesKnown(); // until the likes are read the button is not shown: it may be one to take back
+  // «Подписаться» just pressed: the button says so ('said'), then folds away ('folding'), then is gone
+  const [leaving, setLeaving] = useState<'said' | 'folding' | null>(null);
+  useEffect(() => {
+    if (!leaving) return;
+    // (the artist is not followed after all — it did not work, or was taken back at once: the button stays)
+    const t = window.setTimeout(() => setLeaving(leaving === 'said' && followed ? 'folding' : null), leaving === 'said' ? 1100 : 350);
+    return () => window.clearTimeout(t);
+  }, [leaving, followed]);
+  const hidden = useDisliked({ artist_ref: refId });
+  const likedBy = useLikedBy(artist?.name, refId);
 
-  if (res.loading)
-    return (
-      <>
-        <TopBar />
-        <Loading />
-      </>
-    );
-  if (res.error || !res.data)
-    return (
-      <>
-        <TopBar />
-        <ErrorState text={res.error ?? 'Исполнитель не найден'} onRetry={() => res.reload()} />
-      </>
-    );
+  // a catalog may keep several records of one artist: their page has one address, that of the first of them
+  const own = d?.profiles?.[0];
+  useEffect(() => {
+    if (own && own !== refId) navigate(`/artist/${enc(own)}`, { replace: true });
+  }, [own, refId]);
+  // the artist as the Hub knows them: the name everyone sees may be another spelling than the catalog's
+  const names = useArtistCard(d?.artist?.name, refId);
+  if (res.loading && !d) return (<><PageHeader hero title="Исполнитель" back="/search" /><HeroSkeleton round buttons rows={10} /></>);
+  if (!d || !artist) return (<><PageHeader hero title="Исполнитель" back="/search" /><ErrorState text={res.error ?? 'Исполнитель не найден'} onRetry={() => res.reload()} /></>);
 
-  const { artist, top_tracks, albums, singles, compilations } = res.data;
+  const releases = [...d.albums, ...d.singles, ...d.compilations].sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''));
+  const top = d.top_tracks.slice(0, POPULAR);
+  // how many of them, at the end, are Last.fm's
+  const lfm = Math.max(0, Math.min(d.top_from_lastfm ?? 0, top.length - (d.top_tracks.length - (d.top_from_lastfm ?? 0))));
 
-  const downloadRelease = async (a: AlbumOut) => {
-    setBusyRef(a.ref);
-    await startDownload({ album_ref: a.ref });
-    setBusyRef(null);
+  /** «Подписаться»: the button says «Вы подписаны» for a moment, then folds away — it is pressed once (an artist
+   * followed has «Отписаться» in the ⋯); a word at the foot of the window takes a slip of the finger back. */
+  const follow = async () => {
+    setBusy('follow');
+    try {
+      await toggleLike(target);
+    } finally {
+      setBusy(null);
+    }
+    setLeaving('said');
+    toast(`Вы подписаны: ${shownName}. Новые релизы появятся в «Релизах»`, 'success', { label: 'Отменить', run: () => void toggleLike(target) });
   };
-
+  const unfollow = async () => {
+    setMenu(false);
+    await toggleLike(target);
+    toast(`Вы отписались: ${shownName}`, 'info', { label: 'Вернуть', run: () => void toggleLike(target) });
+  };
   const downloadAll = async () => {
+    setMenu(false);
     const missing = (xs: AlbumOut[]) => xs.filter((a) => a.owned_status !== 'full');
-    const base = [...missing(albums), ...missing(singles)];
+    const base = [...missing(d.albums), ...missing(d.singles)];
     const tracks = base.reduce((n, a) => n + Math.max(0, (a.nb_tracks ?? 0) - (a.owned_count ?? 0)), 0);
-    const comp = missing(compilations).length;
+    const comp = missing(d.compilations).length;
     if (!base.length && !comp) {
-      await confirmDialog({ title: 'Всё уже есть', body: 'Все альбомы и синглы этого исполнителя уже в библиотеке.', okLabel: 'Понятно', cancelLabel: 'Закрыть' });
+      toast('Все альбомы и синглы этого исполнителя уже в библиотеке', 'info');
       return;
     }
-    const body =
-      `Будет скачано релизов: ${base.length} (альбомы, синглы и EP)` +
-      (tracks ? `, примерно ${tracks} ${plural(tracks, ['трек', 'трека', 'треков'])}` : '') +
-      '.\nУже скачанные треки пропускаются.' +
-      (comp ? `\nСборники (${comp}) не включаются.` : '');
-    const ok = await confirmDialog({ title: `Скачать всю дискографию ${artist.name}?`, body, okLabel: 'Скачать' });
-    if (!ok) return;
-    setAllBusy(true);
+    const body = `Будет скачано релизов: ${base.length} (альбомы, синглы и EP)` + (tracks ? `, примерно ${tracksWord(tracks)}` : '') + '.\nУже скачанные треки пропускаются.' + (comp ? `\nСборники (${comp}) не включаются.` : '');
+    if (!(await confirmDialog({ title: `Скачать всю дискографию ${artist.name}?`, body, okLabel: 'Скачать' }))) return;
     await startDownload({ artist_ref: artist.ref, record_types: ['album', 'single', 'ep'] });
-    setAllBusy(false);
     res.reload(true);
   };
+  const share = async () => {
+    setMenu(false);
+    const url = `${window.location.origin}/#/artist/${enc(artist.ref)}`;
+    toast((await copyText(url)) ? 'Ссылка на исполнителя скопирована' : url, 'success');
+  };
+  const hide = async () => {
+    setMenu(false);
+    if (hidden) return void setDisliked({ artist_ref: refId, artist: artist.name }, false);
+    if (!(await confirmDialog({ title: `Не включать ${artist.name}?`, body: 'Треки этого исполнителя, и те, где он участвует, не будут попадать в волну, миксы и открытия, а в плейлистах будут пропускаться. Нажатый вручную трек сыграет. Вернуть можно здесь же или в «Меню → Скрытое».', okLabel: 'Не включать', danger: true }))) return;
+    await setDisliked({ artist_ref: refId, artist: artist.name }, true);
+  };
+  const item = (icon: IconName, label: ReactNode, run: () => void, danger = false) => (
+    <button type="button" onClick={run} className={cx('flex min-h-12 w-full items-center gap-4 rounded-lg px-3 text-left text-[15px] hover:bg-fg/5', danger && 'text-danger')}>
+      <Icon name={icon} size={21} className={danger ? undefined : 'text-muted'} />
+      {label}
+    </button>
+  );
 
-  const top = showAllTop ? top_tracks : top_tracks.slice(0, 5);
-  const groups: Array<[string, AlbumOut[]]> = [
-    ['Альбомы', albums],
-    ['Синглы и EP', singles],
-    ['Сборники', compilations],
-  ];
+  const shownName = names.card?.name ?? artist.name;
+  const photo = imageUrl(artist.picture_url);
 
   return (
-    <div>
-      <div className="relative">
-        <div className="absolute inset-0 overflow-hidden">
-          {artist.picture_url && <img src={artist.picture_url} alt="" className="h-full w-full scale-110 object-cover opacity-35 blur-2xl" referrerPolicy="no-referrer" />}
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-bg/60 to-bg" />
-        </div>
-        <TopBar overlay />
-        <div className="relative flex flex-col items-center px-4 pb-4 pt-2 text-center">
-          <Cover src={artist.picture_url} size={176} round icon="user" alt={artist.name} className="shadow-2xl" />
-          <h1 className="mt-4 text-3xl font-extrabold leading-tight">{artist.name}</h1>
-          <LikeButton targetType="artist" refId={artist.ref} title={artist.name} size={24} data={{ name: artist.name }} />
-          <p className="mt-1 text-sm text-muted">
-            {[artist.nb_fans ? `${artist.nb_fans.toLocaleString('ru-RU')} ${plural(artist.nb_fans, ['поклонник', 'поклонника', 'поклонников'])}` : null, `${albums.length + singles.length + compilations.length} релизов`]
-              .filter(Boolean)
-              .join(' · ')}
-          </p>
-          {canWave() && <Button icon="wave" className="mt-4" busy={wave.starting === seedKey({ artist_ref: artist.ref })} onClick={() => void startWave({ artist_ref: artist.ref }, 'artist_page')}>Волна по исполнителю</Button>}
-          <Button variant="primary" icon="download" className="mt-4" busy={allBusy} onClick={downloadAll}>
-            Скачать всю дискографию
+    <div className={hidden ? 'grayscale' : undefined}>
+      {/* the picture over the page: before everything, so it stays at the top of the window while the page goes over
+          it. The wide one where the artist has it; else their own photo, out of focus — the round photo stands on it */}
+      {(d.banner_url || photo) && <BannerPicture src={(d.banner_url ?? photo) as string} blurred={!d.banner_url} />}
+      <ListBar
+        title={shownName}
+        back="/search"
+        tracks={hidden ? undefined : top}
+        context="artist"
+        end={
+          <>
+          {/* the search through everything of the artist — their releases and every track: the page of them all */}
+          <button type="button" onClick={() => navigate(`/artist/${enc(artist.ref)}/discography?view=tracks&search=1`)} aria-label="Поиск по трекам и релизам исполнителя" title="Поиск по трекам и релизам" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-bg/40 text-fg hover:bg-bg/70">
+            <Icon name="search" size={20} />
+          </button>
+          {/* the ⋯ of the artist: at the top right, and there still when the page is scrolled */}
+          <button type="button" onClick={() => setMenu(true)} aria-label="Ещё" title="Ещё" className="relative mr-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-bg/40 text-fg hover:bg-bg/70">
+            <Icon name="more" size={22} />
+            {/* somebody looks like the same artist under another spelling: «Имя и написания» says who */}
+            {artistHint(names.card) && <span aria-hidden="true" className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-info" />}
+          </button>
+          </>
+        }
+      />
+      <Banner name={shownName} photo={d.banner_url ? undefined : (photo ?? null)} />
+
+      {/* what goes up over the picture has the page's own colour under it */}
+      <div className="relative z-[1] bg-bg">
+      {hidden ? (
+        <div className="mx-4 mb-3 rounded-2xl bg-danger/15 px-4 py-3 text-sm text-fg lg:mx-6">
+          <p>Вы не слушаете этого исполнителя. Его треков нет в волне, миксах и открытиях, а в плейлистах они пропускаются.</p>
+          <Button small className="mt-3" onClick={() => void setDisliked({ artist_ref: refId, artist: artist.name }, false)}>
+            Вернуть
           </Button>
         </div>
-      </div>
+      ) : (
+        <div className="flex items-center gap-2 px-4 pb-3 pt-3 lg:px-6">
+          {/* the buttons go sideways where they do not fit; ▶ and the shuffle stay at the right edge, whatever the width */}
+          <div className="no-scrollbar -my-1 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1 pr-5 [mask-image:linear-gradient(to_right,#000_calc(100%-1.25rem),transparent)] [&>*]:shrink-0">
+          {/* pressed once: an artist followed has no such button — the ⋯ takes it back */}
+          {likesKnown && (!followed || leaving) && (
+            <button
+              type="button"
+              onClick={() => void follow()}
+              disabled={busy === 'follow' || followed}
+              title="Подписаться: новые релизы появятся в «Релизах»"
+              className={cx(
+                'flex h-9 items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-full border text-sm font-semibold transition-all duration-300 ease-out active:scale-95',
+                followed ? 'border-accent text-accent' : 'border-fg/40 text-fg hover:border-fg',
+                leaving === 'folding' ? '-mr-2 max-w-0 border-transparent px-0 opacity-0' : 'max-w-56 px-4',
+              )}
+            >
+              {busy === 'follow' ? <Spinner size={14} /> : followed && <Icon name="check" size={15} stroke={3} />}
+              {followed ? 'Вы подписаны' : 'Подписаться'}
+            </button>
+          )}
+          {likedBy > 0 && (
+            <Link
+              to={`/liked?artist=${enc(artist.name)}&ref=${enc(artist.ref)}`}
+              title={`Вам нравится: ${tracksWord(likedBy)} этого исполнителя в «Любимом»`}
+              className="flex h-9 items-center gap-1.5 rounded-full border border-fg/40 px-4 text-sm font-semibold text-fg transition hover:border-fg active:scale-95"
+            >
+              <Icon name="heart" size={15} filled className="text-accent" />
+              <span className="hidden lg:inline">Вам нравится ·</span>
+              {tracksWord(likedBy)}
+            </Link>
+          )}
+          {/* the other projects of who it is: each leads to its own page */}
+          <ArtistProjects card={names.card} />
+          <ArtistServiceButtons sources={d.sources ?? []} />
+          </div>
+          {top.length > 0 && <PlayPair tracks={top} context="artist" />}
+        </div>
+      )}
 
-      {top_tracks.length > 0 && (
-        <section aria-label="Популярные треки">
-          <SectionTitle>Популярные треки</SectionTitle>
-          {top.map((t, i) => (
-            <TrackRow key={t.ref} track={t} number={i + 1} showAlbum onPlay={() => playList(top_tracks.filter((x) => x.owned), (x) => x.nd_song_id, t)} queue={top_tracks} />
-          ))}
-          {top_tracks.length > 5 && (
-            <div className="px-4 pt-1">
-              <Button small variant="ghost" onClick={() => setShowAllTop((v) => !v)}>
-                {showAllTop ? 'Свернуть' : 'Показать все'}
-              </Button>
+      {top.length > 0 && (
+        <section aria-label="Популярное">
+          <h2 className="flex items-baseline gap-2 px-4 pb-1 pt-3 text-lg font-bold lg:px-6">
+            Популярное
+            {/* whose listens put them there: the catalog's own, and Last.fm's where the catalog's list is short */}
+            <span className="text-xs font-normal text-dim">{lfm >= top.length ? 'по Last.fm' : lfm > 0 ? `по Deezer, с ${top.length - lfm + 1}-го — по Last.fm` : 'по Deezer'}</span>
+          </h2>
+          {/* a wide window: two columns, 1–5 and 6–10 — only where a row keeps room for its name, and only when
+              there are tracks for two */}
+          <div className={top.length > 5 ? 'min-[1700px]:grid min-[1700px]:grid-flow-col min-[1700px]:grid-cols-2 min-[1700px]:gap-x-4' : undefined} style={{ gridTemplateRows: `repeat(${Math.ceil(top.length / 2)}, auto)` }}>
+            {top.map((t, i) => (
+              <TrackRow key={t.ref} track={t} number={i + 1} queue={top} />
+            ))}
+          </div>
+          {/* the rest of what they made: every track of theirs as one list, the most listened first */}
+          {releases.length > 0 && (
+            <div className="flex justify-center px-4 pt-2 lg:px-6">
+              <Link to={`/artist/${enc(artist.ref)}/discography?view=tracks`} className="inline-flex h-9 items-center rounded-full border border-fg/40 px-4 text-sm font-semibold text-fg transition hover:border-fg active:scale-95">
+                Все треки
+              </Link>
             </div>
           )}
         </section>
       )}
 
-      {groups.map(([title, list]) =>
-        list.length ? (
-          <section key={title} aria-label={title}>
-            <SectionTitle>
-              {title} <span className="text-base font-normal text-dim">{list.length}</span>
-            </SectionTitle>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-5 px-4 min-[520px]:grid-cols-3">
-              {list.map((a) => (
-                <ReleaseCard key={a.ref} album={a} onDownload={() => downloadRelease(a)} busy={busyRef === a.ref} />
-              ))}
-            </div>
-          </section>
-        ) : null,
-      )}
+      {releases.length > 0 && <Discography artistRef={artist.ref} releases={releases} />}
+
+      <Alike artistRef={artist.ref} />
+
+      </div>
+
+      <Sheet open={menu} onClose={() => setMenu(false)} title={artist.name}>
+        <div className="-mx-1">
+          {canWave() && item('wave', 'Волна по исполнителю', () => {
+            setMenu(false);
+            void startWave({ artist_ref: artist.ref }, 'artist_page');
+          })}
+          {canMap && item('nodes', 'Карта похожих', () => {
+            setMenu(false);
+            navigate(`/map/${enc(artist.ref)}`);
+          })}
+          {item('download', 'Скачать всё', () => void downloadAll())}
+          {followed && item('x', 'Отписаться', () => void unfollow())}
+          {names.card && item('edit', <span className="flex items-center gap-2">Имя и написания{artistHint(names.card) && <><span aria-hidden="true" className="h-2 w-2 rounded-full bg-info" /><span className="text-[13px] text-info">есть похожий исполнитель</span></>}</span>, () => {
+            setMenu(false);
+            setNaming('names');
+          })}
+          {names.card && item('user', 'Другие проекты…', () => {
+            setMenu(false);
+            setNaming('projects');
+          })}
+          {names.card && item('image', 'Фото и обложка', () => {
+            setMenu(false);
+            setNaming('looks');
+          })}
+          {item('link', 'Скопировать ссылку', () => void share())}
+          {item('ban', 'Не включать этого исполнителя', () => void hide(), true)}
+        </div>
+      </Sheet>
+      <ArtistWindow which={naming === 'looks' ? null : naming} card={names.card} onChange={names.set} onClose={() => setNaming(null)} />
+      {naming === 'looks' && names.card && <ArtistLooksWindow artistId={names.card.id} onChanged={() => res.reload()} onClose={() => setNaming(null)} />}
     </div>
   );
 }
 
-function TopBar({ overlay }: { overlay?: boolean }) {
+const BANNER_H = 'h-[clamp(15rem,34vw,26rem)]';
+
+/** The artist's wide picture, standing still: a place of no height that sticks to the top of the window, with the
+ * picture hanging from it. Nothing moves it — the page's own content, which has the page's colour under it, goes up
+ * over it (moved after every scroll instead, it lagged a frame behind and sprang). As the page covers it a shade of
+ * the page's colour comes over it too; that is set a frame at a time on the element, and a shade a frame late is
+ * not seen. */
+function BannerPicture({ src, blurred }: { src: string; /** not a wide picture but the artist's photo: shown out of focus, as a ground */ blurred?: boolean }) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    let frame = 0;
+    const place = () => {
+      frame = 0;
+      const h = el.offsetHeight || 1;
+      el.style.setProperty('--shade', String(Math.min(1, Math.max(0, window.scrollY) / (h * 0.7))));
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(place);
+    };
+    place();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
   return (
-    <div className={`pt-safe ${overlay ? 'relative' : 'sticky top-0 z-20 bg-bg/90'} flex h-14 items-center px-2`}>
-      <IconButton icon="back" label="Назад" onClick={() => goBack('/search')} className="bg-black/30 !text-white" />
+    <div aria-hidden="true" className="pointer-events-none sticky top-(--page-top) z-0 h-0">
+      <div ref={box} className={cx('absolute inset-x-0 top-0 overflow-hidden', BANNER_H)}>
+        <img src={src} alt="" className={cx('h-full w-full object-cover', blurred ? 'scale-150 blur-3xl brightness-[0.55] saturate-150' : 'object-[center_25%]')} />
+        <div style={{ opacity: 'var(--shade, 0)' }} className="absolute inset-0 bg-bg" />
+      </div>
     </div>
+  );
+}
+
+/** A name kept to one line where it can be, and as large as its place lets it: the page's style says the most (a
+ * short name fills the room it has), and a name that does not fit at that is made smaller — down to a third of it,
+ * never under 26 px; a name too long even so takes its lines at that least size.
+ * Measured anew when the name or the width of its place changes, and once the page's letters have come. */
+function useOneLine(what: string) {
+  const ref = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      el.style.fontSize = '';
+      el.style.whiteSpace = 'nowrap';
+      const full = parseFloat(getComputedStyle(el).fontSize) || 0;
+      const room = el.clientWidth;
+      const need = el.scrollWidth;
+      if (!full || !room || need <= room) return;
+      const least = Math.max(26, full * 0.35);
+      const size = Math.floor((full * room) / need) - 1;
+      el.style.fontSize = `${Math.max(least, size)}px`;
+      if (size < least) el.style.whiteSpace = '';
+    };
+    fit();
+    const watch = new ResizeObserver(fit);
+    if (el.parentElement) watch.observe(el.parentElement);
+    void document.fonts?.ready.then(fit);
+    return () => watch.disconnect();
+  }, [what]);
+  return ref;
+}
+
+/** The head of the page over that picture, reaching up under the bar with «back» and the ⋯: the name in large over
+ * its darkened foot — alone, with the whole width (▶ and the shuffle are of the row under the head). Over a wide
+ * picture the head is as tall as the picture, and the round photo is not shown — it is the same person twice. Where
+ * there is no wide picture (`photo` given: the address, or null for no photo at all) the head is as tall as the
+ * round photo, which stands before the name — on a phone and on a computer alike — on the ground made of it.
+ */
+function Banner({ name, photo }: { name: string; photo?: string | null }) {
+  const round = 'h-32 w-32 shrink-0 rounded-full shadow-xl sm:h-44 sm:w-44 lg:h-56 lg:w-56';
+  const wide = photo === undefined;
+  const title = useOneLine(name);
+  return (
+    <div className={cx('relative isolate z-[1] -mt-[calc(3.5rem+env(safe-area-inset-top))] flex', wide ? cx('items-end', BANNER_H) : 'items-center pt-[calc(4rem+env(safe-area-inset-top))]')}>
+      <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-t from-bg via-bg/45 to-black/15" />
+      <div className={cx('flex w-full gap-4 px-4 pb-4 lg:gap-6 lg:px-6 lg:pb-5', wide ? 'items-end' : 'items-center')}>
+        {!wide &&
+          (photo ? (
+            <img src={photo} alt="" className={cx(round, 'object-cover')} />
+          ) : (
+            <span className={cx(round, 'flex items-center justify-center bg-fg/10 text-muted')}>
+              <Icon name="user" size={40} />
+            </span>
+          ))}
+        <div className="min-w-0 flex-1">
+          <div className="text-xs text-fg/80 [text-shadow:0_1px_8px_rgb(0_0_0/0.6)] lg:text-sm">Исполнитель</div>
+          <h2 ref={title} data-list-title className="line-clamp-2 break-words text-[clamp(2.5rem,12vw,9rem)] font-black leading-[1.05] tracking-tight [text-shadow:0_2px_16px_rgb(0_0_0/0.55)]">
+            {name}
+          </h2>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** «Похожие»: the artists the catalog holds to be like this one, in a row; on a server with a Last.fm key the
+ * heading leads to «Карта похожих» around them (`pages/ArtistMapPage`). Nothing where the catalog knows nobody. */
+function Alike({ artistRef }: { artistRef: string }) {
+  const canMap = !!useSession().me.artist_map;
+  const list = useAsync((s) => api.tasteSimilar(artistRef, s), [artistRef], true, `alike:${artistRef}`);
+  const row = useRememberScrollX(`artist:${artistRef}:alike`);
+  if (!list.data?.length) return null;
+  return (
+    <section aria-label="Похожие" className="pb-4">
+      <h2 className="flex items-center justify-between gap-3 px-4 pb-2 pt-5 text-lg font-bold lg:px-6">
+        Похожие
+        {canMap && (
+          <Link to={`/map/${enc(artistRef)}`} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-raised px-3.5 text-[13px] font-normal text-fg transition hover:bg-hover">
+            <Icon name="nodes" size={15} />
+            На карте
+          </Link>
+        )}
+      </h2>
+      <div ref={row} className="no-scrollbar flex gap-3 overflow-x-auto px-4 lg:px-6">
+        {list.data.map((a) => (
+          <ArtistBubble key={a.ref} artist={a} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** «Дискография»: the releases in a row that scrolls sideways, newest first, by kind; the heading opens the page
+ * of all of them with their tracks. */
+function Discography({ artistRef, releases }: { artistRef: string; releases: AlbumOut[] }) {
+  const [kind, setKind] = useState<Kind>('all');
+  const row = useRememberScrollX(`artist:${artistRef}:${kind}`);
+  const kinds = KINDS.filter((k) => k.value === 'all' || releases.some((a) => kindOf(a) === k.value));
+  const shown = releases.filter((a) => kind === 'all' || kindOf(a) === kind);
+  const to = `/artist/${enc(artistRef)}/discography`;
+  return (
+    <section aria-label="Дискография" className="pb-4">
+      <h2 className="px-4 pb-2 pt-5 text-lg font-bold lg:px-6">
+        {/* the heading itself leads to all the releases with their tracks */}
+        <Link to={to} className="hover:underline">
+          Дискография
+        </Link>
+        {/* how many there are in all — every release of every record a catalog keeps of the artist, each once */}
+        <span className="ml-2 text-xs font-normal text-dim">{releases.length} {plural(releases.length, ['релиз', 'релиза', 'релизов'])}</span>
+      </h2>
+      {kinds.length > 2 && (
+        <div className="flex gap-2 px-4 pb-3 lg:px-6">
+          {kinds.map((k) => (
+            <button key={k.value} type="button" aria-pressed={kind === k.value} onClick={() => setKind(k.value)} className={cx('h-8 rounded-full px-3.5 text-sm transition', kind === k.value ? 'bg-fg font-semibold text-bg' : 'bg-fg/10 text-fg hover:bg-fg/15')}>
+              {k.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div ref={row} className="no-scrollbar flex gap-4 overflow-x-auto px-4 pb-1 lg:px-6">
+        {shown.slice(0, IN_ROW).map((a) => (
+          <div key={a.ref} className="w-36 shrink-0 lg:w-44">
+            <ReleaseCard album={a} />
+          </div>
+        ))}
+        {shown.length > IN_ROW && (
+          <Link to={to} className="flex aspect-square w-36 shrink-0 flex-col items-center justify-center gap-2 rounded-md bg-fg/5 text-sm font-semibold text-muted hover:bg-fg/10 hover:text-fg lg:w-44">
+            <Icon name="chevron" size={22} />
+            Ещё {shown.length - IN_ROW}
+          </Link>
+        )}
+      </div>
+    </section>
   );
 }

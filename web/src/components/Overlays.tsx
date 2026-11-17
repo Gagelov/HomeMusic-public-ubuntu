@@ -1,7 +1,19 @@
 import { dismissToast, useDialog, useToasts } from '../lib/ui';
+import { TrackEdit } from './TrackEdit';
 import { navigate } from '../lib/router';
 import { Button, cx } from './ui';
 import { Icon } from './Icon';
+import { useDragAction, type DragKind } from '../lib/dragAction';
+import { tracksWord } from '../lib/format';
+import { closePlaylistsSheet, usePlaylistsSheet } from '../lib/playlistsSheet';
+import { BulkPlaylists } from './PlaylistsButton';
+import { FindFile } from './FindFile';
+import { Versions } from './Versions';
+import { ShareSheet } from './ShareSheet';
+import { OfflineBanner } from './Offline';
+import { PlaylistMenu } from './PlaylistMenu';
+import { TagsSheet } from './Tags';
+import { TelegramSetup } from './TelegramSetup';
 
 /** Toast stack (above the tab bar) and the global confirm dialog. */
 export function Overlays() {
@@ -41,6 +53,17 @@ export function Overlays() {
         ))}
       </div>
 
+      <DragActionHint />
+      <OfflineBanner />
+      <TagsSheet />
+      <PlaylistMenu />
+      <TrackEdit />
+      <FindFile />
+      <Versions />
+      <TelegramSetup />
+      <ShareSheet />
+      <PlaylistsSheet />
+
       {dialog && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-5" role="alertdialog" aria-modal="true" aria-labelledby="hm-dialog-title">
           <button type="button" aria-label="Отмена" className="absolute inset-0 bg-black/70" onClick={() => dialog.resolve(false)} />
@@ -61,5 +84,28 @@ export function Overlays() {
         </div>
       )}
     </>
+  );
+}
+
+/** «В плейлисты» of the rows a drag passed (`lib/playlistsSheet.ts`). */
+function PlaylistsSheet() {
+  const tracks = usePlaylistsSheet();
+  if (!tracks.length) return null;
+  return <BulkPlaylists key={tracks.map((t) => t.ref).join('|')} tracks={tracks} onClose={closePlaylistsSheet} />;
+}
+
+const DRAG_VERB: Record<DragKind, string> = { like: 'добавить в «Любимое»', lists: 'открыть плейлисты', queue: 'добавить в очередь', unqueue: 'убрать из очереди', share: 'поделиться', tags: 'поставить теги' };
+
+/** While a row's button is dragged over other rows: what letting go will do, and how to call it off. */
+function DragActionHint() {
+  const drag = useDragAction();
+  if (!drag) return null;
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-[calc(var(--tabbar-h)+var(--player-h,0px)+16px+env(safe-area-inset-bottom))] z-50 flex justify-center px-3" role="status">
+      <div className="rounded-full border border-line bg-raised px-4 py-2 text-sm shadow-2xl">
+        Отпустите, чтобы {DRAG_VERB[drag.kind]}: <span className="font-semibold">{tracksWord(drag.count)}</span>
+        <span className="text-muted"> · Esc — отмена</span>
+      </div>
+    </div>
   );
 }

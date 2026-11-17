@@ -15,7 +15,7 @@ import respx
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from tests.support import app_client
+from tests.support import app_client, filed_track
 
 CLIENT_ID = "123-web.apps.googleusercontent.com"
 CERTS = "https://www.googleapis.com/oauth2/v3/certs"
@@ -177,25 +177,31 @@ async def test_search_history_is_shared_between_sessions_and_isolated_between_ac
         own_events = bus.subscribe(me["id"])
         other_events = bus.subscribe(other_me["id"])
         try:
-            r = await env["admin"].post("/api/search/history", json={"query": "  Кино  "})
+            r = await env["admin"].post("/api/search/history", json={"title": "  Кино  "})
             assert r.status_code == 200, r.text
             assert json.loads(own_events.get_nowait()) == {"event": "search_history", "data": {}}
             assert other_events.empty()
             r = await device.get("/api/search/history")
             assert r.status_code == 200, r.text
             assert r.headers["cache-control"] == "no-store"
-            assert r.json() == {"queries": ["Кино"]}
-            assert (await other.get("/api/search/history")).json() == {"queries": []}
-            r = await other.post("/api/search/history", json={"query": "Земфира"})
+            assert r.json() == {"items": [{"key": "q:кино", "kind": "query", "title": "Кино", "subtitle": None, "ref": None,
+                                           "cover_url": None, "link": None}], "frequent": []}
+            assert (await other.get("/api/search/history")).json()["items"] == []
+            r = await other.post("/api/search/history", json={"title": "Земфира"})
             assert r.status_code == 200, r.text
             r = await device.delete("/api/search/history")
             assert r.status_code == 200, r.text
-            assert (await env["admin"].get("/api/search/history")).json() == {"queries": []}
-            assert (await other.get("/api/search/history")).json() == {"queries": ["Земфира"]}
+            assert (await env["admin"].get("/api/search/history")).json()["items"] == []
+            assert recent(await other.get("/api/search/history")) == ["Земфира"]
             assert json.loads(own_events.get_nowait()) == {"event": "search_history", "data": {}}
         finally:
             bus.unsubscribe(me["id"], own_events)
             bus.unsubscribe(other_me["id"], other_events)
+
+
+def recent(r) -> list[str]:
+    """«Недавнее» as the Hub gave it: the titles, the newest first."""
+    return [x["title"] for x in r.json()["items"]]
 
 
 async def test_search_history_keeps_thirty_recent_queries_and_moves_repeats_to_top(env):
@@ -206,15 +212,15 @@ async def test_search_history_keeps_thirty_recent_queries_and_moves_repeats_to_t
     user_id = (await admin.get("/api/auth/me")).json()["id"]
     now = utcnow()
     async with session_scope() as s:
-        s.add_all(SearchHistory(user_id=user_id, query_key=f"запрос {i}", query=f"Запрос {i}",
+        s.add_all(SearchHistory(user_id=user_id, key=f"q:запрос {i}", kind="query", title=f"Запрос {i}",
                                 searched_at=now - timedelta(seconds=30 - i)) for i in range(30))
-    r = await admin.post("/api/search/history", json={"query": "Новый запрос"})
+    r = await admin.post("/api/search/history", json={"title": "Новый запрос"})
     assert r.status_code == 200, r.text
-    queries = (await admin.get("/api/search/history")).json()["queries"]
+    queries = recent(await admin.get("/api/search/history"))
     assert queries == ["Новый запрос", *[f"Запрос {i}" for i in range(29, 0, -1)]]
-    r = await admin.post("/api/search/history", json={"query": "  ЗАПРОС 15  "})
+    r = await admin.post("/api/search/history", json={"title": "  ЗАПРОС 15  "})
     assert r.status_code == 200, r.text
-    assert (await admin.get("/api/search/history")).json()["queries"] == [
+    assert recent(await admin.get("/api/search/history")) == [
         "ЗАПРОС 15", *[q for q in queries if q != "Запрос 15"]
     ]
 
@@ -224,26 +230,59 @@ async def test_concurrent_search_history_writes_do_not_lose_queries(env):
         r = await device.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
         assert r.status_code == 200, r.text
         results = await asyncio.gather(
-            env["admin"].post("/api/search/history", json={"query": "Кино"}),
-            device.post("/api/search/history", json={"query": "Земфира"}),
+            env["admin"].post("/api/search/history", json={"title": "Кино"}),
+            device.post("/api/search/history", json={"title": "Земфира"}),
         )
         for r in results:
             assert r.status_code == 200, r.text
-        queries = (await device.get("/api/search/history")).json()["queries"]
+        queries = recent(await device.get("/api/search/history"))
         assert len(queries) == 2 and set(queries) == {"Кино", "Земфира"}
 
 
 @pytest.mark.parametrize("query", ["", " ", "я", " a ", "a" * 513])
 async def test_search_history_rejects_invalid_queries(env, query):
-    r = await env["admin"].post("/api/search/history", json={"query": query})
+    r = await env["admin"].post("/api/search/history", json={"title": query})
     assert r.status_code == 422, r.text
-    assert (await env["admin"].get("/api/search/history")).json() == {"queries": []}
+    assert (await env["admin"].get("/api/search/history")).json()["items"] == []
+
+
+async def test_what_was_opened_from_the_results_is_kept_once_and_can_be_taken_out(env):
+    """A result that was opened is a line of its own, with its picture and the page it leads to; opened again, it
+    only moves up. A line is taken out by its key."""
+    admin = env["admin"]
+    track = {"kind": "track", "ref": "dz:100", "title": "Still Loving You", "subtitle": "Scorpions",
+             "cover_url": "https://covers.test/1.jpg", "link": "/album/dz%3A9"}
+    assert (await admin.post("/api/search/history", json=track)).status_code == 200
+    assert (await admin.post("/api/search/history", json={"kind": "artist", "ref": "dz:7", "title": "Scorpions"})).status_code == 200
+    assert (await admin.post("/api/search/history", json={"title": "still loving you"})).status_code == 200
+    assert (await admin.post("/api/search/history", json=track)).status_code == 200
+    items = (await admin.get("/api/search/history")).json()["items"]
+    assert [(x["kind"], x["title"]) for x in items] == [("track", "Still Loving You"), ("query", "still loving you"), ("artist", "Scorpions")]
+    assert items[0] == {"key": "track:dz:100", **track}
+    # what is opened is known by its ref; a link is a page of the app
+    assert (await admin.post("/api/search/history", json={"kind": "album", "title": "x"})).status_code == 422
+    assert (await admin.post("/api/search/history", json={**track, "link": "https://elsewhere.test/"})).status_code == 422
+    assert (await admin.delete("/api/search/history", params={"key": "track:dz:100"})).status_code == 200
+    assert recent(await admin.get("/api/search/history")) == ["still loving you", "Scorpions"]
+
+
+async def test_what_is_come_back_to_is_searched_often(env):
+    """«Вы часто ищете»: what was opened or asked for more than once, the most often first; once is not often."""
+    admin = env["admin"]
+    for title, times in (("Vaundy", 3), ("wowaka", 2), ("раз", 1)):
+        for _ in range(times):
+            assert (await admin.post("/api/search/history", json={"kind": "artist", "ref": f"a:{title}", "title": title})).status_code == 200
+    out = (await admin.get("/api/search/history")).json()
+    assert [x["title"] for x in out["frequent"]] == ["Vaundy", "wowaka"]
+    assert [x["title"] for x in out["items"]] == ["раз", "wowaka", "Vaundy"]
+    assert (await admin.delete("/api/search/history", params={"key": "artist:a:Vaundy"})).status_code == 200
+    assert [x["title"] for x in (await admin.get("/api/search/history")).json()["frequent"]] == ["wowaka"]
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
 async def test_search_history_requires_authentication(env, method):
     async with env["client"]() as anonymous:
-        r = await anonymous.request(method, "/api/search/history", json={"query": "Кино"})
+        r = await anonymous.request(method, "/api/search/history", json={"title": "Кино"})
         assert r.status_code == 401, r.text
 
 
@@ -563,7 +602,7 @@ async def test_google_account_whose_password_changed(env):
 
 async def test_admin_user_list_with_spending_and_songs(env):
     from app.db import session_scope
-    from app.models import AiUsage, DownloadBatch, DownloadItem, Track, User, utcnow
+    from app.models import AiUsage, DownloadBatch, DownloadItem, User, utcnow
 
     inv = await make_invite(env["admin"], "Анна")
     async with env["client"]() as c:
@@ -586,7 +625,7 @@ async def test_admin_user_list_with_spending_and_songs(env):
         for status in ("done", "done", "failed", "queued"):
             s.add(DownloadItem(batch_id=batch.id, user_id=anna.id, status=status,
                                query_json={"query": {"artist": "Кино", "title": "Группа крови"}}))
-        s.add(Track(uid="t1", path="a/1.mp3", artist="Кино", title="Группа крови", fingerprint="кино|группа крови",
+        s.add(filed_track(uid="t1", path="a/1.mp3", artist="Кино", title="Группа крови", fingerprint="кино|группа крови",
                     added_by=anna.id))
 
     out = (await env["admin"].get("/api/admin/users")).json()
@@ -644,36 +683,102 @@ async def test_chat_turn_records_spending(env, monkeypatch):
     me = next(u for u in (await env["admin"].get("/api/admin/users")).json()["users"] if u["username"] == "admin")
     assert me["ai_requests"] == 1 and me["ai_cost_usd"] == pytest.approx(0.00042)
 
+async def test_files_are_looked_after_by_who_brought_them(env):
+    """«Мои файлы»: a listener sees and changes what they brought, an admin everything; an album with tracks of
+    several listeners is changed only by an admin."""
+    from sqlalchemy import select
 
-def test_migration_carries_past_spending(tmp_path):
-    import sqlite3
-    from pathlib import Path
+    from app.db import session_scope
+    from app.models import Album, User
 
-    from alembic import command
-    from alembic.config import Config
+    inv = await make_invite(env["admin"], "Анна")
+    async with env["client"]() as anna:
+        await anna.post("/api/auth/register", json={"code": inv["code"], "username": "anna", "password": "secret1"})
+        async with session_scope() as s:
+            admin_id = (await s.execute(select(User.id).where(User.nd_username == "admin"))).scalar_one()
+            anna_id = (await s.execute(select(User.id).where(User.nd_username == "anna"))).scalar_one()
+            hers = Album(uid="a-hers", title="Её", album_artist="Анна", created_by=anna_id)
+            his = Album(uid="a-his", title="Его", album_artist="Админ", created_by=admin_id)
+            both = Album(uid="a-both", title="Общий", album_artist="Оба", created_by=admin_id)
+            s.add_all([hers, his, both])
+            await s.flush()
+            tracks = [
+                filed_track(uid="f1", artist="Анна", title="Раз", fingerprint="анна|раз", album_id=hers.id, added_by=anna_id),
+                filed_track(uid="f2", artist="Админ", title="Два", fingerprint="админ|два", album_id=his.id, added_by=admin_id),
+                filed_track(uid="f3", artist="Оба", title="Три", fingerprint="оба|три", album_id=both.id, added_by=admin_id),
+                filed_track(uid="f4", artist="Оба", title="Четыре", fingerprint="оба|четыре", album_id=both.id, added_by=anna_id),
+            ]
+            s.add_all(tracks)
+            await s.flush()
+            ids = {"hers": hers.id, "his": his.id, "both": both.id, "t_hers": tracks[0].id, "t_his": tracks[1].id}
+            # he keeps his track in a playlist of his, she keeps hers in «Любимое» and in a playlist, and so does he
+            from app import playlists as lists
 
-    import app.db
+            await lists.add(s, await lists.create(s, admin_id, "Его плейлист"), [tracks[1].id, tracks[3].id])
+            await lists.add(s, await lists.liked(s, anna_id), [tracks[3].id])
+            ids["t_shared"], ids["t_free"] = tracks[3].id, tracks[2].id
 
-    db = tmp_path / "hub.sqlite3"
-    root = Path(app.db.__file__).resolve().parent.parent
-    cfg = Config(str(root / "alembic.ini"))
-    cfg.set_main_option("script_location", str(root / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db.as_posix()}")
-    cfg.attributes["configure_logger"] = False
-    command.upgrade(cfg, "5e0a9d1c7b42")
-    con = sqlite3.connect(db)
-    con.execute("INSERT INTO users (id, nd_username, nd_password_enc, is_admin, created_at) "
-                "VALUES (1, 'admin', 'x', 1, '2026-10-01 10:00:00')")
-    for i, (kind, cost) in enumerate([("images", 0.003), ("link", 0), ("chat", 0.001)], start=1):
-        con.execute("INSERT INTO assistant_tasks (id, user_id, input_kind, input_ref, status, tokens_in, tokens_out, "
-                    "cost_usd, created_at, updated_at) VALUES (?, 1, ?, '{}', 'done', ?, 5, ?, '2026-10-02 10:00:00', "
-                    "'2026-10-02 10:00:00')", (i, kind, 100 if cost else 0, cost))
-    con.commit()
-    con.close()
-    command.upgrade(cfg, "head")
-    con = sqlite3.connect(db)
-    rows = con.execute("SELECT user_id, kind, tokens_in, cost_usd, created_at FROM ai_usage ORDER BY id").fetchall()
-    assert rows == [(1, "images", 100, 0.003, "2026-10-02 10:00:00"), (1, "chat", 100, 0.001, "2026-10-02 10:00:00")]
-    assert con.execute("SELECT google_sub, last_seen_at FROM users").fetchone() == (None, None)
-    con.close()
-    command.downgrade(cfg, "5e0a9d1c7b42")
+        mine = {a["title"]: a for a in (await anna.get("/api/library/albums")).json()}
+        assert set(mine) == {"Её", "Общий"}
+        assert mine["Её"]["can_edit"] and mine["Её"]["track_count"] == 1
+        assert not mine["Общий"]["can_edit"] and mine["Общий"]["track_count"] == 1  # her track of it only
+        assert [t["title"] for t in (await anna.get(f"/api/library/albums/{ids['both']}")).json()["tracks"]] == ["Четыре"]
+        assert (await anna.get(f"/api/library/albums/{ids['his']}")).status_code == 404
+        # a name is everybody's to put right (app/library/edits.py) — an album's and a track's, whoever brought the
+        # files; deleting them and moving them about stays with who brought them
+        assert (await anna.patch(f"/api/library/albums/{ids['both']}", json={"title": "Общий"})).status_code == 200
+        r = await anna.patch(f"/api/library/tracks/{ids['t_his']}", json={"title": "Его трек"})
+        assert r.status_code == 200 and r.json()["title"] == "Его трек"
+        # a file is deleted by the one who alone keeps the track (library/access.py), whoever brought it:
+        # his track is kept by him — she cannot; hers that he keeps too — she cannot either, though she brought it
+        k = (await anna.get(f"/api/library/tracks/{ids['t_his']}/keeping")).json()
+        assert (k["can_delete"], k["others"], k["mine"]) == (False, 1, [])
+        assert (await anna.delete(f"/api/library/tracks/{ids['t_his']}")).status_code == 409
+        k = (await anna.get(f"/api/library/tracks/{ids['t_shared']}/keeping")).json()
+        assert (k["can_delete"], k["others"], [m["liked"] for m in k["mine"]]) == (False, 1, [True])
+        assert (await anna.delete(f"/api/library/tracks/{ids['t_shared']}")).status_code == 409
+        # several at once, by the same rule: what somebody else keeps is left alone
+        three = [ids["t_his"], ids["t_shared"], ids["t_free"]]
+        dry = (await anna.post("/api/library/tracks/delete", json={"track_ids": three, "dry": True})).json()
+        assert (dry["deleted"], dry["kept"]) == (1, 2)
+        gone = (await anna.post("/api/library/tracks/delete", json={"track_ids": three[:2]})).json()
+        assert (gone["deleted"], gone["kept"]) == (0, 2)
+        # one he brought and nobody keeps: hers to delete
+        assert (await anna.get(f"/api/library/tracks/{ids['t_free']}/keeping")).json()["can_delete"] is True
+        gone = (await anna.post("/api/library/tracks/delete", json={"track_ids": three})).json()
+        assert (gone["deleted"], gone["kept"]) == (1, 2)
+        assert (await anna.get(f"/api/library/tracks/{ids['t_free']}/keeping")).status_code == 404
+        assert (await anna.post("/api/library/albums/merge", json={"target_id": ids["hers"], "source_ids": [ids["his"]]})).status_code == 404
+        assert (await anna.delete(f"/api/library/tracks/{ids['t_hers']}")).status_code == 200
+
+    everything = {a["title"]: a for a in (await env["admin"].get("/api/library/albums")).json()}
+    assert {"Его", "Общий"} <= set(everything) and everything["Общий"]["track_count"] == 1  # «Три» she deleted
+    assert all(a["can_edit"] for a in everything.values())
+    # what she could not delete is still there
+    assert len((await env["admin"].get(f"/api/library/albums/{ids['his']}")).json()["tracks"]) == 1
+
+
+def test_a_guesser_of_passwords_waits():
+    import pytest
+    from fastapi import HTTPException
+
+    from app import guard
+
+    guard._wrong.clear()
+    # an address of the home network (or Docker Desktop's gateway, which every caller comes from) is not counted by
+    for _ in range(guard.PER_ADDRESS + 1):
+        guard.check("172.23.0.1", "vera")
+        guard.wrong("172.23.0.1", "vera")
+    guard.check("172.23.0.1", "gleb")
+    guard._wrong.clear()
+    for _ in range(guard.PER_ADDRESS):
+        guard.check("1.2.3.4", "anna")
+        guard.wrong("1.2.3.4", "anna")
+    with pytest.raises(HTTPException) as e:
+        guard.check("1.2.3.4", "boris")  # the address guessed enough, whoever it guesses at now
+    assert e.value.status_code == 429
+    guard.check("5.6.7.8", "anna")  # another address, the account not yet at its limit
+    guard.right("anna")
+    with pytest.raises(HTTPException):
+        guard.check("1.2.3.4", "anna")  # the owner got in: the address is still remembered
+    guard._wrong.clear()

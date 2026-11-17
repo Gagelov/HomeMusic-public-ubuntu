@@ -1,5 +1,12 @@
+import type { LyricsCandidate, LyricsOut, LyricsSettings, LyricsTranslation, LyricsTranslators } from '../lib/lyrics';
+import type { StatsBy, StatsImportOut, StatsOut, StatsPeriod, StatsTrackOut } from '../lib/stats';
+import { timeZone } from '../lib/stats';
+import type { Tag, TagSelection, TagsData } from '../lib/tags';
+import type { TelegramChat, TelegramStatus } from '../lib/telegram';
 import type {
   AdminUserDetailOut,
+  ArtistMapOut,
+  CatalogArtist,
   AdminUsersOut,
   AlbumCreateIn,
   AlbumMergeIn,
@@ -17,7 +24,10 @@ import type {
   DislikeIn,
   DislikeOut,
   DownloadBatchOut,
+  ListenBrainzOut,
   DownloadIn,
+  RecentPlaceOut,
+  ReleasesOut,
   DownloadItemOut,
   ImportIn,
   ImportItemsOut,
@@ -30,22 +40,29 @@ import type {
   ListenOut,
   LoginIn,
   MeOut,
-  MixOut,
   MixSettingsIn,
   MixSettingsOut,
+  DiscographyOut,
+  NamesakeOut,
+  FileJournalOut,
+  HistoryOut,
+  ForYouItem,
+  ForYouOut,
   MixTodayOut,
   OkOut,
   PlayEventIn,
   PlayEventsOut,
   PlaylistAddIn,
   PlaylistOut,
+  PlaylistOfSongOut,
+  PlaylistOfSongsOut,
   PlaylistPageOut,
   NdAlbumList,
   NdAlbumOut,
   NdArtistOut,
   NdArtistPageOut,
-  NdHomeOut,
   NdLikedOut,
+  NdSongOut,
   ProviderSearchOut,
   RegisterIn,
   AuthOptionsOut,
@@ -54,12 +71,29 @@ import type {
   RetryIn,
   SearchOut,
   SearchHistoryOut,
+  SearchRecent,
   SearchTracksOut,
-  SoulseekStatusOut,
+  TrackOut,
   StarIn,
   StarOut,
   StarredOut,
   TasteOnboardingOut,
+  CoverInfo,
+  FileRowOut,
+  VersionOut,
+  VersionsOut,
+  ArtistCardOut,
+  ArtistLooksOut,
+  ArtistOtherIn,
+  ArtistPickOut,
+  PickOut,
+  QualityPeaks,
+  QualityOut,
+  TrackFileOut,
+  SplitAlbums,
+  TrackEditEntry,
+  TrackEditOut,
+  TrashedOut,
   TrackPatchIn,
   TracksMoveIn,
   UploadCommitIn,
@@ -219,10 +253,24 @@ export function uploadWithProgress<T>(
   });
 }
 
+/** What went wrong, in words to show. An error's own words where it has them — the Hub's answer (`ApiError`), a
+ * text handed over as it is, a browser's error by its message or, lacking one, its name. «Неизвестная ошибка» is
+ * said only of what says nothing at all of itself, and then with whatever it is, so that it can be looked for. */
 export function errorMessage(e: unknown): string {
   if (e instanceof ApiError) return e.message;
-  if (e instanceof Error) return e.message || 'Неизвестная ошибка';
-  return 'Неизвестная ошибка';
+  if (typeof e === 'string' && e.trim()) return e;
+  if (e instanceof Error) return e.message || (e.name && e.name !== 'Error' ? `Ошибка браузера: ${e.name}` : 'Неизвестная ошибка');
+  if (e && typeof e === 'object') {
+    const o = e as { message?: unknown; detail?: unknown; error?: unknown };
+    for (const v of [o.message, o.detail, o.error]) if (typeof v === 'string' && v.trim()) return v;
+  }
+  let what = '';
+  try {
+    what = e === undefined || e === null ? '' : (JSON.stringify(e) ?? String(e));
+  } catch {
+    what = String(e);
+  }
+  return what && what !== '{}' ? `Неизвестная ошибка: ${what.slice(0, 200)}` : 'Неизвестная ошибка';
 }
 
 export const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortError';
@@ -249,15 +297,15 @@ export const api = {
   createInvite: (body: InviteIn) => request<InviteOut>('POST', '/api/admin/invites', { json: body }),
   deleteInvite: (id: number) => request<OkOut>('DELETE', `/api/admin/invites/${id}`),
 
-  soulseekStatus: (search = false, signal?: AbortSignal) =>
-    request<SoulseekStatusOut>('GET', withQuery('/api/system/soulseek', { search: search ? 'true' : undefined }), { signal }),
-
   // search / catalog
   search: (q: string, signal?: AbortSignal) => cachedGet<SearchOut>(withQuery('/api/search', { q }), signal),
   searchHistory: (signal?: AbortSignal) => request<SearchHistoryOut>('GET', '/api/search/history', { signal }),
-  rememberSearch: (query: string) => request<OkOut>('POST', '/api/search/history', { json: { query } }),
+  rememberSearch: (item: Omit<SearchRecent, 'key'>) => request<OkOut>('POST', '/api/search/history', { json: item }),
+  forgetSearch: (key: string) => request<OkOut>('DELETE', withQuery('/api/search/history', { key })),
   clearSearchHistory: () => request<OkOut>('DELETE', '/api/search/history'),
   // more tracks of the same search, from `offset` (`SearchOut.tracks_next`, then `next_offset`)
+  /** the search of «Библиотека»: the artists the listener follows and the tracks of their playlists and «Любимое» */
+  searchMine: (q: string, signal?: AbortSignal) => request<{ artists: CatalogArtist[]; tracks: TrackOut[] }>('GET', withQuery('/api/search/mine', { q }), { signal }),
   searchTracks: (q: string, offset: number, signal?: AbortSignal) =>
     cachedGet<SearchTracksOut>(withQuery('/api/search/tracks', { q, offset }), signal),
   /** `group`: only the regular sources, or only re-uploads by small channels (slower). */
@@ -269,7 +317,10 @@ export const api = {
     cachedGet<AlbumOut>(`/api/catalog/album/${enc(ref)}`, signal, fresh),
 
   // listening before download: picks the file (may take seconds), `stream_url` plays it
-  listen: (ref: string, signal?: AbortSignal) => request<ListenOut>('GET', withQuery('/api/listen', { ref }), { signal }),
+  /** `ahead`: the queue plays the track soon — the Hub opens its file and copies it to its disk now: 'whole' for
+   * the track that plays next, 'head' (its start only) for the ones after it. */
+  listen: (ref: string, signal?: AbortSignal, ahead?: 'whole' | 'head') =>
+    request<ListenOut>('GET', withQuery('/api/listen', ahead ? { ref, ahead } : { ref }), { signal }),
   // the catalog tracks on screen, top first: the Hub picks their files in the background (replaces the last list)
   listenPrefetch: (refs: string[]) => request<{ queued: number }>('POST', '/api/listen/prefetch', { json: { refs } }),
 
@@ -283,6 +334,8 @@ export const api = {
     request<DownloadItemOut>('POST', `/api/downloads/items/${id}/retry`, { json: body }),
   cancel: (id: number) => request<DownloadItemOut>('POST', `/api/downloads/items/${id}/cancel`),
   clearDownloads: () => request<ClearOut>('POST', '/api/downloads/clear'),
+  removeDownloads: (ids: number[]) => request<{ removed: number }>('POST', '/api/downloads/remove', { json: { ids } }),
+  retryDownloads: (ids: number[]) => request<{ queued: number }>('POST', '/api/downloads/retry', { json: { ids } }),
 
   // library
   libAlbums: (q: string, offset = 0, limit = 50, signal?: AbortSignal) =>
@@ -297,10 +350,70 @@ export const api = {
     return request<LibAlbumOut>('PUT', `/api/library/albums/${id}/cover`, { form });
   },
   mergeAlbums: (body: AlbumMergeIn) => request<LibAlbumOut>('POST', '/api/library/albums/merge', { json: body }),
+  /** «Все файлы»: every track with a file that one looks after, the newest file first. */
+  libFiles: (signal?: AbortSignal) => request<FileRowOut[]>('GET', '/api/library/files', { signal }),
+  /** The tracks that are one recording twice, told by the sound: groups of `library_track_id`s. */
+  fileDoubles: (signal?: AbortSignal) => request<number[][]>('GET', '/api/library/files/doubles', { signal }),
+  /** Albums that are one album in pieces (the same name, artists that differ by a guest). */
+  splitAlbums: (signal?: AbortSignal) => request<SplitAlbums[]>('GET', '/api/library/albums/split', { signal }),
   moveTracks: (body: TracksMoveIn) => request<LibAlbumOut>('POST', '/api/library/tracks/move', { json: body }),
   patchTrack: (id: number, body: TrackPatchIn) =>
     request<LibTrackOut>('PATCH', `/api/library/tracks/${id}`, { json: body }),
   deleteTrack: (id: number) => request<OkOut>('DELETE', `/api/library/tracks/${id}`),
+  /** The files of several tracks, deleted together (`dry`: only counted). `kept`: left alone — somebody else keeps
+   * them; `others`, `mine`: of the deleted, the ones other listeners kept and the ones in one's own lists. */
+  deleteTracks: (track_ids: number[], dry = false) =>
+    request<{ deleted: number; kept: number; others: number; mine: number }>('POST', '/api/library/tracks/delete', { json: { track_ids, dry } }),
+  /** What was changed of the track, the latest first. */
+  trackEdits: (id: number) => request<TrackEditEntry[]>('GET', `/api/library/tracks/${id}/edits`),
+  /** «Корзина»: the tracks deleted lately, and bringing one back. */
+  trash: (signal?: AbortSignal) => request<TrashedOut[]>('GET', '/api/library/trash', { signal }),
+  trashRestore: (id: number) => request<{ ok: boolean; track_id: number }>('POST', `/api/library/trash/${id}/restore`),
+  /** May the file be deleted (nobody else keeps the track), and which of the asker's playlists keep it. */
+  trackKeeping: (id: number) =>
+    request<{ can_delete: boolean; others: number; has_file: boolean; mine: { id: string; name: string; liked: boolean }[] }>('GET', `/api/library/tracks/${id}/keeping`),
+  /** A track's names and cover as they are, for the window that puts them right; a catalog song the Hub has not
+   * met becomes a track by this. */
+  trackEdit: (q: { track_id?: number; ref?: string; nd_song_id?: string }) => request<TrackEditOut>('GET', withQuery('/api/library/track-edit', q)),
+  /** A song and its versions (the Hub's `app/library/versions.py`). */
+  versions: (q: { track_id?: number; ref?: string; nd_song_id?: string }, signal?: AbortSignal) => request<VersionsOut>('GET', withQuery('/api/library/versions', q), { signal }),
+  versionsFind: (id: number, q: string, signal?: AbortSignal) => request<VersionOut[]>('GET', withQuery(`/api/library/tracks/${id}/versions/find`, { q }), { signal }),
+  /** `other`: a track of the Hub's, or a song of the catalog by its ref (it becomes a track, without a file) */
+  versionAdd: (id: number, other: { track_id?: number; ref?: string }) => request<VersionsOut>('POST', `/api/library/tracks/${id}/versions`, { json: other }),
+  versionPatch: (id: number, body: { label?: string; preferred?: boolean }) => request<VersionsOut>('PATCH', `/api/library/tracks/${id}/version`, { json: body }),
+  versionDrop: (id: number, of?: number) => request<VersionsOut>('DELETE', withQuery(`/api/library/tracks/${id}/version`, { of })),
+  addTrackName: (id: number, name: string) => request<TrackEditOut>('POST', `/api/library/tracks/${id}/names`, { json: { name } }),
+  dropTrackName: (id: number, nameId: number) => request<TrackEditOut>('DELETE', `/api/library/tracks/${id}/names/${nameId}`),
+  /** An artist's name, spellings and projects (the Hub's `app/library/artists.py`): by the catalog's own or by a name. */
+  artistOf: (q: { name?: string; ref?: string }, signal?: AbortSignal) => request<ArtistCardOut | null>('GET', withQuery('/api/artists/of', q), { signal }),
+  artistFind: (q: string, signal?: AbortSignal) => request<ArtistPickOut[]>('GET', withQuery('/api/artists/find', { q }), { signal }),
+  artistAddName: (id: number, name: string) => request<ArtistCardOut>('POST', `/api/artists/${id}/names`, { json: { name } }),
+  artistDropName: (id: number, nameId: number) => request<ArtistCardOut>('DELETE', `/api/artists/${id}/names/${nameId}`),
+  artistMain: (id: number, nameId: number) => request<ArtistCardOut>('POST', `/api/artists/${id}/main`, { json: { name_id: nameId } }),
+  artistMerge: (id: number, other: ArtistOtherIn) => request<ArtistCardOut>('POST', `/api/artists/${id}/merge`, { json: other }),
+  artistAddProject: (id: number, other: ArtistOtherIn) => request<ArtistCardOut>('POST', `/api/artists/${id}/projects`, { json: other }),
+  artistDropProject: (id: number, otherId: number) => request<ArtistCardOut>('DELETE', `/api/artists/${id}/projects/${otherId}`),
+  artistApart: (id: number, other: ArtistOtherIn) => request<ArtistCardOut>('POST', `/api/artists/${id}/apart`, { json: other }),
+  /** How an artist is shown — the round photo, the wide picture over the page — and what it may be changed to. */
+  artistLooks: (id: number, signal?: AbortSignal) => request<ArtistLooksOut>('GET', `/api/artists/${id}/looks`, { signal }),
+  artistPhoto: (id: number, choice: string | null) => request<ArtistLooksOut>('PUT', `/api/artists/${id}/photo`, { json: { choice } }),
+  artistBanner: (id: number, choice: string | null) => request<ArtistLooksOut>('PUT', `/api/artists/${id}/banner`, { json: { choice } }),
+  artistPhotoUpload: (id: number, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<ArtistLooksOut>('POST', `/api/artists/${id}/photo`, { form });
+  },
+  artistBannerUpload: (id: number, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<ArtistLooksOut>('POST', `/api/artists/${id}/banner`, { form });
+  },
+  setTrackCover: (id: number, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<TrackEditOut>('PUT', `/api/library/tracks/${id}/cover`, { form });
+  },
+  dropTrackCover: (id: number) => request<TrackEditOut>('DELETE', `/api/library/tracks/${id}/cover`),
   star: (body: StarIn, signal?: AbortSignal) => request<StarOut>('POST', '/api/star', { json: body, signal }),
   starred: (signal?: AbortSignal) => request<StarredOut>('GET', '/api/starred', { signal }),
 
@@ -308,16 +421,49 @@ export const api = {
   playEvents: (events: PlayEventIn[], expectedUserId?: number) => request<PlayEventsOut>('POST', '/api/plays/events', { json: { events, expected_user_id: expectedUserId } }),
   dislikes: (signal?: AbortSignal) => request<DislikeOut[]>('GET', '/api/dislikes', { signal }),
   dislike: (body: DislikeIn) => request<DislikeOut>('POST', '/api/dislikes', { json: body }),
-  undislike: (q: { ref?: string | null; nd_song_id?: string | null; artist_ref?: string | null }) =>
+  undislike: (q: { track_id?: number | null; ref?: string | null; nd_song_id?: string | null; artist_ref?: string | null }) =>
     request<{ removed: number }>('DELETE', withQuery('/api/dislikes', q)),
 
   // «Микс дня» and the taste onboarding
+  /** «История»: the listens, the newest first; and taking one out. */
+  playsHistory: (q: { offset?: number; limit?: number; show?: string; q?: string }, signal?: AbortSignal) =>
+    request<HistoryOut>('GET', withQuery('/api/plays/history', q), { signal }),
+  forgetListen: (uid: string) => request<OkOut>('DELETE', withQuery('/api/plays/history', { uid })),
+  /** The lists the user last played from («Продолжить» of the home). */
+  recentPlaces: (signal?: AbortSignal) => request<RecentPlaceOut[]>('GET', '/api/plays/places', { signal }),
+  /** Releases said to be a namesake's, of every artist («Скрытое»). */
+  namesakes: (signal?: AbortSignal) => request<NamesakeOut[]>('GET', '/api/catalog/namesakes', { signal }),
+  /** «Это другой TAK»: these releases are not this artist's — for everyone on the server. */
+  namesakesExclude: async (artist_ref: string, album_refs: string[]) => {
+    const r = await request<{ excluded: number; total: number }>('POST', '/api/catalog/namesakes', { json: { artist_ref, album_refs } });
+    invalidateCache('/api/catalog');
+    return r;
+  },
+  /** They are the artist's after all (`album_refs` omitted: everything excluded of the artist). */
+  namesakesRestore: async (artist_ref: string, album_refs?: string[]) => {
+    const r = await request<{ restored: number; total: number }>('POST', '/api/catalog/namesakes/restore', { json: { artist_ref, album_refs: album_refs ?? null } });
+    invalidateCache('/api/catalog');
+    return r;
+  },
+  /** The catalog's artist of this very name (`ref` null: nobody is called so). */
+  artistNamed: (name: string, signal?: AbortSignal) => request<{ ref: string | null }>('GET', `/api/catalog/artist-named?name=${enc(name)}`, { signal }),
+  /** Every release of an artist with its tracks (the first asking of a long one takes seconds). */
+  discography: (ref: string, signal?: AbortSignal) => request<DiscographyOut>('GET', `/api/catalog/artist/${enc(ref)}/discography`, { signal }),
+  /** How a track's file came to the library: the journal of its download. */
+  fileJournal: (trackId: number, signal?: AbortSignal) => request<FileJournalOut>('GET', `/api/library/tracks/${trackId}/journal`, { signal }),
+  /** «Для вас»: the lists the Hub makes by itself, and one of them as its page shows it. */
+  forYou: (signal?: AbortSignal) => request<ForYouItem[]>('GET', '/api/for-you', { signal }),
+  /** The list's latest mix or issue was opened: it is not «новый» any more. */
+  forYouSeen: (kind: string) => request<OkOut>('POST', `/api/for-you/${kind}/seen`),
+  forYouList: (kind: string, q: { mix?: number; issue?: number }, signal?: AbortSignal) =>
+    request<ForYouOut>('GET', withQuery(`/api/for-you/${encodeURIComponent(kind)}`, q), { signal }),
   mixToday: (signal?: AbortSignal) => request<MixTodayOut>('GET', '/api/mixes/today', { signal }),
-  mix: (id: number, signal?: AbortSignal) => request<MixOut>('GET', `/api/mixes/${id}`, { signal }),
   mixSettings: (body: MixSettingsIn) => request<MixSettingsOut>('PUT', '/api/mixes/settings', { json: body }),
   rebuildMix: () => request<{ queued: boolean }>('POST', '/api/mixes/rebuild', { json: {} }),
   tasteOnboarding: (q?: string, signal?: AbortSignal) =>
     request<TasteOnboardingOut>('GET', withQuery('/api/taste/onboarding', { q }), { signal }),
+  tasteSimilar: (ref: string, signal?: AbortSignal) => request<CatalogArtist[]>('GET', withQuery('/api/taste/similar', { ref }), { signal }),
+  artistMap: (ref: string, n: number, signal?: AbortSignal) => request<ArtistMapOut>('GET', withQuery('/api/taste/map', { ref, n }), { signal }),
   pickArtists: (artist_refs: string[]) => request<MixSettingsOut>('POST', '/api/taste/artists', { json: { artist_refs } }),
 
   // «Моя волна»
@@ -339,25 +485,56 @@ export const api = {
     return uploadWithProgress<UploadOut[]>('/api/uploads', form, onProgress, signal);
   },
   deleteUpload: (id: number) => request<OkOut>('DELETE', `/api/uploads/${id}`),
-  commitUploads: (payload: UploadCommitIn, cover?: File | null) => {
-    const form = new FormData();
-    form.append('payload', JSON.stringify(payload));
-    if (cover) form.append('cover', cover, cover.name);
-    return request<UploadCommitOut>('POST', '/api/uploads/commit', { form });
-  },
+  commitUploads: (payload: UploadCommitIn) => request<UploadCommitOut>('POST', '/api/uploads/commit', { json: payload }),
+  /** What the catalog's picture of an uploaded file's record is: its size in pixels, its kind, its weight. */
+  uploadCatalogCover: (id: number) => request<CoverInfo>('GET', `/api/uploads/${id}/catalog-cover`),
+  /** Half a minute of the catalog's record an uploaded file was told to be: where it is heard from. */
+  uploadPreview: (id: number) => request<{ url: string }>('GET', `/api/uploads/${id}/preview`),
+  /** «Качество звука»: the weak files looked for anew, and how many nothing was looked for yet. */
+  quality: (signal?: AbortSignal) => request<QualityOut>('GET', '/api/quality', { signal }),
+  /** Look for a better file of these tracks (none: of every weak file one looks after). */
+  qualityStart: (track_ids?: number[]) => request<{ queued: number }>('POST', '/api/quality/start', { json: { track_ids: track_ids ?? null } }),
+  /** `file`: «is it that record?» answered yes *and* the file found is to take the place of the track's own */
+  qualityAccept: (id: number, file?: boolean) => request<OkOut>('POST', withQuery(`/api/quality/${id}/accept`, { file: file || undefined })),
+  qualityDecline: (id: number) => request<OkOut>('POST', `/api/quality/${id}/decline`),
+  /** the third answer to «is it that record?»: another version of the same song */
+  qualityVersion: (id: number) => request<OkOut>('POST', `/api/quality/${id}/version`),
+  /** A track of the library and the file it plays from («Найти другой файл»). */
+  trackFile: (id: number, signal?: AbortSignal) => request<TrackFileOut>('GET', `/api/quality/track/${id}`, { signal }),
+  /** Download a file found for the track and say how it compares with the track's own. */
+  fileWeigh: (id: number, pick: { ref?: string; url?: string }) => request<PickOut>('POST', `/api/quality/track/${id}/weigh`, { json: pick }),
+  /** Put the picked file in the place of the track's own (`sure`: though it is not the same recording). */
+  fileTake: (id: number, pick: { ref?: string; url?: string; sure?: boolean }) => request<PickOut>('POST', `/api/quality/track/${id}/take`, { json: pick }),
+  /** Take back the file a track had before a better one was put in its place. */
+  qualityRevert: (id: number) => request<OkOut>('POST', `/api/quality/${id}/revert`),
+  qualityPeaks: (id: number, signal?: AbortSignal) => request<QualityPeaks>('GET', `/api/quality/${id}/peaks`, { signal }),
+  /** Which record of the catalog an uploaded file is: `ref` — this one, picked by hand; none — look for it again. */
+  matchUpload: (id: number, ref?: string | null) => request<UploadOut>('POST', `/api/uploads/${id}/match`, { json: { ref: ref ?? null } }),
 
   // playlists
   playlists: (signal?: AbortSignal) => request<PlaylistOut[]>('GET', '/api/playlists', { signal }),
   createPlaylist: (name: string) => request<PlaylistOut>('POST', '/api/playlists', { json: { name } }),
   addToPlaylist: (id: string, body: PlaylistAddIn) =>
     request<OkOut>('POST', `/api/playlists/${enc(id)}/add`, { json: body }),
+  playlistMembers: (signal?: AbortSignal) => request<{ track_ids: number[] }>('GET', '/api/playlists/members', { signal }),
+  /** `track`, `tracks` here and below: the Hub's ids of tracks, as the pages keep them (`lib/tags.ts` `tagKey`) */
+  playlistsOfTrack: (track: string, signal?: AbortSignal) => request<PlaylistOfSongOut[]>('GET', withQuery('/api/playlists/of-track', { track_id: track }), { signal }),
+  playlistMembership: (body: { track: string; add: string[]; remove: string[] }) => request<PlaylistOfSongOut[]>('POST', '/api/playlists/membership', { json: { track_id: Number(body.track), add: body.add, remove: body.remove } }),
+  playlistsOfTracks: (tracks: string[]) => request<PlaylistOfSongsOut[]>('POST', '/api/playlists/of-tracks', { json: { track_ids: tracks.map(Number) } }),
+  playlistMembershipMany: (body: { tracks: string[]; add: string[]; remove: string[] }) => request<PlaylistOfSongsOut[]>('POST', '/api/playlists/membership-many', { json: { track_ids: body.tracks.map(Number), add: body.add, remove: body.remove } }),
   playlist: (id: string, signal?: AbortSignal) => request<PlaylistPageOut>('GET', `/api/playlists/${enc(id)}`, { signal }),
   removeFromPlaylist: (id: string, indexes: number[]) =>
     request<OkOut>('POST', `/api/playlists/${enc(id)}/remove`, { json: { indexes } }),
+  renamePlaylist: (id: string, name: string) => request<PlaylistOut>('PUT', `/api/playlists/${enc(id)}`, { json: { name } }),
+  setPlaylistCover: (id: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<PlaylistOut>('PUT', `/api/playlists/${enc(id)}/cover`, { form });
+  },
+  dropPlaylistCover: (id: string) => request<PlaylistOut>('DELETE', `/api/playlists/${enc(id)}/cover`),
   deletePlaylist: (id: string) => request<OkOut>('DELETE', `/api/playlists/${enc(id)}`),
 
   // the Navidrome library (a browser shows it; the app has it natively)
-  ndHome: (signal?: AbortSignal) => request<NdHomeOut>('GET', '/api/nd/home', { signal }),
   ndLiked: (signal?: AbortSignal) => request<NdLikedOut>('GET', '/api/nd/liked', { signal }),
   ndArtists: (signal?: AbortSignal) => cachedGet<NdArtistOut[]>('/api/nd/artists', signal),
   ndArtist: (id: string, signal?: AbortSignal) => request<NdArtistPageOut>('GET', `/api/nd/artists/${enc(id)}`, { signal }),
@@ -366,13 +543,93 @@ export const api = {
     request<NdAlbumOut[]>('GET', withQuery('/api/nd/albums', { type, offset, size }), { signal }),
 
   // imports from music services
+  // the user's own Telegram bot (lib/telegram.ts)
+  telegram: () => request<TelegramStatus>('GET', '/api/telegram'),
+  telegramConnect: (token: string) => request<TelegramStatus>('POST', '/api/telegram/connect', { json: { token } }),
+  telegramCheck: () => request<TelegramStatus>('POST', '/api/telegram/check'),
+  telegramDisconnect: () => request<TelegramStatus>('DELETE', '/api/telegram'),
+  telegramPrefs: (with_lyrics: boolean) => request<TelegramStatus>('PUT', '/api/telegram/prefs', { json: { with_lyrics } }),
+  telegramChats: () => request<TelegramChat[]>('GET', '/api/telegram/chats'),
+  telegramChatsRefresh: () => request<TelegramChat[]>('POST', '/api/telegram/chats/refresh'),
+  telegramSend: (body: { nd_song_id?: string | null; ref?: string | null; with_lyrics?: boolean | null; chat?: number | null; with_link?: boolean }) =>
+    request<{ ok: boolean; title: string; light: boolean; lyrics: boolean }>('POST', '/api/telegram/send', { json: body }),
+  // tags of tracks (lib/tags.ts)
+  tags: () => request<TagsData>('GET', '/api/tags'),
+  tagCreate: (name: string) => request<Tag>('POST', '/api/tags', { json: { name } }),
+  tagsAssign: (body: { tracks: string[]; add: number[]; remove: number[] }) => request<TagsData>('POST', '/api/tags/assign', { json: { track_ids: body.tracks.map(Number), add: body.add, remove: body.remove } }),
+  tagRename: (id: number, name: string) => request<TagsData>('PUT', `/api/tags/${id}`, { json: { name } }),
+  tagMerge: (id: number, into: number) => request<TagsData>('POST', `/api/tags/${id}/merge`, { json: { into } }),
+  tagDelete: (id: number) => request<TagsData>('DELETE', `/api/tags/${id}`),
+  tagSelections: (signal?: AbortSignal) => request<TagSelection[]>('GET', '/api/tags/selections/all', { signal }),
+  tagSelectionCreate: (body: Omit<TagSelection, 'id'>) => request<TagSelection>('POST', '/api/tags/selections', { json: body }),
+  tagSelectionSave: (id: number, body: Omit<TagSelection, 'id'>) => request<TagSelection>('PUT', `/api/tags/selections/${id}`, { json: body }),
+  tagSelectionDelete: (id: number) => request<OkOut>('DELETE', `/api/tags/selections/${id}`),
+  ndSongs: (signal?: AbortSignal) => request<NdSongOut[]>('GET', '/api/nd/songs', { signal }),
+  // ListenBrainz
+  listenbrainz: (signal?: AbortSignal) => request<ListenBrainzOut>('GET', '/api/listenbrainz', { signal }),
+  listenbrainzConnect: (token: string) => request<ListenBrainzOut>('POST', '/api/listenbrainz/connect', { json: { token } }),
+  listenbrainzSend: (again: boolean) => request<ListenBrainzOut>('POST', withQuery('/api/listenbrainz/send', { again: again || undefined })),
+  listenbrainzDisconnect: () => request<ListenBrainzOut>('DELETE', '/api/listenbrainz'),
+  // «Открытия недели»
+  discoveriesBuild: () => request<OkOut>('POST', '/api/discoveries/build'),
+  // «Релизы» (lib/releases.ts)
+  releases: (signal?: AbortSignal) => request<ReleasesOut>('GET', '/api/releases', { signal }),
+  releasesCount: () => request<{ unseen: number; artists: number }>('GET', '/api/releases/count'),
+  releasesSeen: () => request<OkOut>('POST', '/api/releases/seen'),
+  // «Статистика» (lib/stats.ts)
+  stats: (q: { period: StatsPeriod; by: StatsBy; limit: number }, signal?: AbortSignal) => request<StatsOut>('GET', withQuery('/api/stats', { ...q, tz: timeZone() }), { signal }),
+  statsTrack: (ndSongId: string) => request<StatsTrackOut>('GET', withQuery('/api/stats/track', { nd_song_id: ndSongId })),
+  statsCounts: () => request<Record<string, number>>('GET', '/api/stats/counts'),
+  statsImport: (files: File[], onProgress?: (f: number) => void) => {
+    const form = new FormData();
+    for (const f of files) form.append('files', f, f.name);
+    return uploadWithProgress<StatsImportOut>('/api/stats/import', form, onProgress);
+  },
+  statsForget: () => request<OkOut>('DELETE', '/api/stats/import'),
+  // a track on music services («Поделиться ссылкой»)
+  links: (q: { nd_song_id?: string | null; ref?: string | null }) =>
+    request<{ links: { service: string; title: string; url: string }[]; universal?: string | null; homemusic?: string | null }>(
+      'GET', withQuery('/api/links', { nd_song_id: q.nd_song_id ?? undefined, ref: q.ref ?? undefined })),
+  /** a «HomeMusic» link opened here: the library's track, the catalog's, or the words to search by */
+  openLink: (q: { dz?: string | null; isrc?: string | null; sp?: string | null; a?: string | null; t?: string | null }, signal?: AbortSignal) =>
+    request<{ nd_song_id?: string | null; ref?: string | null; album_ref?: string | null; title?: string | null; artist?: string | null; query?: string | null }>(
+      'GET', withQuery('/api/links/open', { dz: q.dz ?? undefined, isrc: q.isrc ?? undefined, sp: q.sp ?? undefined, a: q.a ?? undefined, t: q.t ?? undefined }), { signal }),
+  // lyrics of a library track (lib/lyrics.ts)
+  lyrics: (q: { nd_song_id?: string | null; ref?: string | null }, signal?: AbortSignal) =>
+    request<LyricsOut>('GET', withQuery('/api/lyrics', { nd_song_id: q.nd_song_id ?? undefined, ref: q.ref ?? undefined }), { signal }),
+  lyricsSearch: (q: string) =>
+    request<{ track_id: number; nd_song_id?: string | null; ref?: string | null; line: string }[]>('GET', withQuery('/api/lyrics/search', { q })),
+  lyricsCandidates: (track_id: number) => request<LyricsCandidate[]>('GET', withQuery('/api/lyrics/candidates', { track_id })),
+  // the lyrics in another language (lib/lyrics.ts): made on the first ask, then from the Hub's database
+  lyricsTranslation: (track_id: number, lang: string, skip: readonly string[] = [], force = false) =>
+    request<LyricsTranslation>('GET', withQuery('/api/lyrics/translation', { track_id, lang, skip: skip.join(',') || undefined, force: force || undefined })),
+  lyricsRetranslate: (track_id: number, lang: string, provider: string | null) =>
+    request<LyricsTranslation>('POST', '/api/lyrics/translation/redo', { json: { track_id, lang, provider } }),
+  lyricsTranslationLine: (track_id: number, lang: string, index: number, text: string) =>
+    request<LyricsTranslation>('PUT', '/api/lyrics/translation/line', { json: { track_id, lang, index, text } }),
+  lyricsTranslators: (signal?: AbortSignal) => request<LyricsTranslators>('GET', '/api/lyrics/translators', { signal }),
+  lyricsSaveTranslators: (providers: { id: string; on: boolean }[]) => request<LyricsTranslators>('PUT', '/api/lyrics/translators', { json: { providers } }),
+  lyricsSources: () => request<{ id: string; title: string }[]>('GET', '/api/lyrics/sources'),
+  lyricsProbe: (track_id: number, source: string, signal?: AbortSignal) =>
+    request<{ source: string; source_title: string; status: 'found' | 'none' | 'timeout' | 'error'; seconds: number; kind?: LyricsOut['kind'] | null; preview?: string | null }>(
+      'GET', withQuery('/api/lyrics/probe', { track_id, source }), { signal }),
+  lyricsReset: (track_id: number) => request<LyricsOut>('POST', '/api/lyrics/reset', { json: { track_id } }),
+  lyricsChoose: (track_id: number, source: string | null) => request<LyricsOut>('POST', '/api/lyrics/choose', { json: { track_id, source } }),
+  lyricsOffset: (track_id: number, offset_ms: number) => request<LyricsOut>('POST', '/api/lyrics/offset', { json: { track_id, offset_ms } }),
+  lyricsSettings: (signal?: AbortSignal) => request<LyricsSettings>('GET', '/api/lyrics/settings', { signal }),
+  lyricsSaveSettings: (body: { sources: { id: string; on: boolean }[]; retry_days: number; on_add: boolean }) =>
+    request<LyricsSettings>('PUT', '/api/lyrics/settings', { json: body }),
+  lyricsScan: () => request<LyricsSettings>('POST', '/api/lyrics/scan'),
   imports: (signal?: AbortSignal) => request<ImportOut[]>('GET', '/api/imports', { signal }),
   createImport: (body: ImportIn) => request<ImportOut>('POST', '/api/imports', { json: body }),
-  importSpotify: (files: File[]) => {
+  /** Spotify playlists exported to CSV by Exportify: one file is one playlist. */
+  createImportCsv: (files: File[]) => {
     const form = new FormData();
-    for (const file of files) form.append('files', file);
-    return request<ImportOut>('POST', '/api/imports/spotify', { form });
+    for (const f of files) form.append('files', f);
+    return request<ImportOut>('POST', '/api/imports/csv', { form });
   },
+  /** What VK asked for at the sign-in: the code it sent, or what its captcha page answered with. */
+  importAuth: (id: number, body: { code?: string; captcha?: string }) => request<ImportOut>('POST', `/api/imports/${id}/auth`, { json: body }),
   importGet: (id: number, signal?: AbortSignal) => request<ImportOut>('GET', `/api/imports/${id}`, { signal }),
   importItems: (id: number, q: { collection_id?: number; status?: string; match?: string; offset?: number; limit?: number }, signal?: AbortSignal) =>
     request<ImportItemsOut>('GET', withQuery(`/api/imports/${id}/items`, q), { signal }),
@@ -382,6 +639,8 @@ export const api = {
   importForgetToken: (id: number) => request<ImportOut>('DELETE', `/api/imports/${id}/token`),
   importCancel: (id: number) => request<ImportOut>('POST', `/api/imports/${id}/cancel`),
   importDelete: (id: number) => request<OkOut>('DELETE', `/api/imports/${id}`),
+  /** a track there is nothing to play of: a download by its names, where the user picks the file — the track's own */
+  trackFindFile: (trackId: number) => request<{ download_item_id: number }>('POST', `/api/library/tracks/${trackId}/find-file`),
   importPick: (itemId: number) => request<{ download_item_id: number }>('POST', `/api/imports/items/${itemId}/pick`),
   importSkip: (itemId: number) => request<OkOut>('POST', `/api/imports/items/${itemId}/skip`),
 

@@ -3,12 +3,15 @@ import { api } from '../api/client';
 import type { FavoriteSubject, FavoriteTarget, FavoriteType } from '../api/types';
 import { typedFavoritesSupported } from './capabilities';
 import { hubEvents } from './events';
-import { HUB_DOWNLOAD_EVENT } from './listen';
+import { STANDALONE } from './embedded';
+import { HUB_DOWNLOAD_EVENT, markQueued } from './listen';
 import { newEventId, playEvent, routeContext } from './plays';
-import { toast, toastError } from './ui';
+import { toast, toastError, type Toast } from './ui';
 
 export interface LikeTarget {
   targetType?: FavoriteType;
+  /** a track: the Hub's id of it, if the Hub knows it — what a ♥ goes by first */
+  trackId?: number | null;
   songId?: string | null;
   ndId?: string | null;
   ref?: string | null;
@@ -38,7 +41,8 @@ const typeOf = (t: LikeTarget) => t.targetType ?? 'track';
 const typedKey = (type: FavoriteType, alias: string) => `${type}:${alias}`;
 function aliases(t: LikeTarget): string[] {
   const id = t.ndId ?? t.songId ?? (typeOf(t) === 'track' && t.ref ? refSongs.get(t.ref) : undefined);
-  const direct = [t.ref ? `ref:${t.ref}` : '', id ? `nd:${id}` : ''].filter(Boolean).map((a) => typedKey(typeOf(t), a));
+  const track = typeOf(t) === 'track' && t.trackId ? `t:${t.trackId}` : '';
+  const direct = [track, t.ref ? `ref:${t.ref}` : '', id ? `nd:${id}` : ''].filter(Boolean).map((a) => typedKey(typeOf(t), a));
   return [...new Set(direct.flatMap((key) => [key, ...(linkedAliases.get(key) ?? [])]))];
 }
 function emit() {
@@ -100,6 +104,14 @@ export function isLiked(t: LikeTarget): boolean {
   for (const key of keys) if (own.has(key)) return own.get(key)!;
   return keys.some((key) => snapshot.get(key)) || (typeOf(t) === 'track' && !!t.ref && pendingRefs.has(t.ref));
 }
+/** The likes have been read at least once. Before that «not liked» is not known — only not told yet: a page does
+ * not show what it would have to take back a moment later (a «Подписаться» on an artist followed long ago). */
+export function useLikesKnown(): boolean {
+  useEffect(() => { void refreshStars(); }, []);
+  useSyncExternalStore(subscribe, () => version);
+  return loadedAt > 0;
+}
+
 export function useLiked(t: LikeTarget): boolean {
   useEffect(() => { void refreshStars(); }, []);
   useSyncExternalStore(subscribe, () => version);
@@ -111,12 +123,64 @@ function apiTarget(t: LikeTarget): FavoriteTarget {
   const id = t.ndId ?? t.songId ?? (type === 'track' && t.ref ? refSongs.get(t.ref) : undefined);
   return {
     target_type: type, ref: t.ref, target_data: t.data,
+    ...(type === 'track' && t.trackId ? { track_id: t.trackId } : {}),
     ...(id ? { [type === 'track' ? 'nd_song_id' : type === 'album' ? 'nd_album_id' : 'nd_artist_id']: id } : {}),
   };
 }
 
-/** Track ♥ may download one song; album/artist ♥ only records the typed favorite. */
-export async function toggleLike(t: LikeTarget): Promise<void> {
+/** ♥ on or off for several tracks at once (the selection bar, a drag down the hearts): one request for them all.
+ * A request per track, all sent together, queued up at the Hub's single database writer and took every connection
+ * it has — the whole service stood still. The hearts still change together, at once. Returns how many changed. */
+export async function setLikes(list: readonly LikeTarget[], liked: boolean): Promise<number> {
+  const todo = list.filter((t) => typeOf(t) === 'track' && isLiked(t) !== liked && aliases(t)[0] && !aliases(t).some((a) => busy.has(a)));
+  if (!todo.length) return 0;
+  if (!(await typedFavoritesSupported())) {  // an old Hub: one by one, as before
+    for (const t of todo) await toggleLike(t, true);
+    return todo.length;
+  }
+  const generation = epoch;
+  const before = todo.map((t) => local.get(aliases(t)[0]));
+  for (const t of todo) for (const a of aliases(t)) busy.add(a);
+  const operation = newEventId();
+  const ts = new Date().toISOString();
+  for (const t of todo) local.set(aliases(t)[0], { liked, aliases: aliases(t), eventId: operation });
+  emit();
+  let done = 0;
+  try {
+    const context = routeContext();
+    for (let i = 0; i < todo.length; i += 200) {
+      const part = todo.slice(i, i + 200);
+      const result = await api.star({ targets: part.map(apiTarget), unstar: !liked, event_id: i ? `${operation}-${i}` : operation, ts, client: 'pwa', context }, AbortSignal.timeout(120_000));
+      if (generation !== epoch) return done;
+      part.forEach((t, k) => local.set(aliases(t)[0], { liked, aliases: aliases(t), eventId: result.event_ids?.[k] ?? operation, acknowledgedAt: ++acknowledged }));
+      if (!liked) for (const t of part) if (t.ref) pendingRefs.delete(t.ref);
+      done += part.length;
+    }
+    window.dispatchEvent(new CustomEvent('hm:hub-favorite', { detail: { star: liked } }));
+    // the liked ones the library has not got are downloaded, as with a single ♥ — in one batch
+    const refs = liked && STANDALONE ? todo.filter((t) => !!t.ref && !t.ref.startsWith('nd:') && !apiTarget(t).nd_song_id).map((t) => t.ref!) : [];
+    for (let i = 0; i < refs.length; i += 200) {
+      const part = refs.slice(i, i + 200);
+      if (await api.download({ track_refs: part }).then((r) => r.queued > 0 || r.expanding, () => false)) part.forEach(markQueued);
+    }
+  } catch (e) {
+    if (generation !== epoch) return done;
+    todo.slice(done).forEach((t, k) => {
+      const was = before[done + k];
+      if (was) local.set(aliases(t)[0], was);
+      else local.delete(aliases(t)[0]);
+    });
+    toastError(e);
+  } finally {
+    for (const t of todo) for (const a of aliases(t)) busy.delete(a);
+    if (generation === epoch) { emit(); void refreshStars(true); }
+  }
+  return done;
+}
+
+/** Track ♥ of a catalog track also downloads it (a browser); album/artist ♥ only records the typed favorite.
+ * `change`: the line that says a track is in «Любимое» now offers «Изменить» — it opens the playlists. */
+export async function toggleLike(t: LikeTarget, quiet = false, change?: () => void): Promise<void> {
   const keys = aliases(t);
   const key = keys[0];
   if (!key || keys.some((a) => busy.has(a))) return;
@@ -147,14 +211,20 @@ export async function toggleLike(t: LikeTarget): Promise<void> {
     } else {
       if (target.nd_song_id) await api.star({ song_ids: [target.nd_song_id], unstar: !liked }, signal);
       else if (!liked && t.ref) await api.star({ refs: [t.ref], unstar: true }, signal);
-      else if (t.ref) await api.download({ track_refs: [t.ref], star: true }, signal);
       if (generation !== epoch) return;
       playEvent(liked ? 'like' : 'unlike', target, { event_id: operation.eventId, ts: operation.ts, context });
     }
     retries.delete(key);
     if (!liked && t.ref) pendingRefs.delete(t.ref);
     window.dispatchEvent(new CustomEvent('hm:hub-favorite', { detail: { ref: t.ref, star: liked } }));
-    toast(liked ? 'Добавлено в понравившиеся' : 'Убрано из понравившихся', 'success');
+    // ♥ on a track the library has not got: it is downloaded too — what is in «Любимое» is one's own file, with its
+    // lyrics, tags and the rest. An ordinary download, not tied to the ♥: if no file is found the ♥ stays.
+    const fetching = STANDALONE && typed && liked && typeOf(t) === 'track' && !!t.ref && !t.ref.startsWith('nd:') && !apiTarget(t).nd_song_id
+      ? await api.download({ track_refs: [t.ref] }).then((r) => r.queued > 0 || r.expanding, () => false)
+      : false;
+    if (fetching && t.ref) markQueued(t.ref);
+    const link: Toast['link'] = liked && change && typeOf(t) === 'track' ? { label: 'Изменить', run: change } : fetching ? { label: 'Загрузки', to: '/downloads' } : undefined;
+    if (!quiet) toast(liked ? (fetching ? 'Добавлено в «Любимое» — скачиваю в библиотеку' : 'Добавлено в «Любимое»') : 'Убрано из «Любимого»', 'success', link);
   } catch (e) {
     if (generation !== epoch) return;
     if (previous) local.set(key, previous);

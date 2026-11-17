@@ -2,32 +2,55 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from sqlalchemy import select
 from starlette.background import BackgroundTask
 
 from app import listen
 from app.api.schemas import ListenOut, ListenPrefetchIn, ListenPrefetchOut
 from app.auth import current_user
-from app.models import User
+from app.db import session_scope
+from app.library.owned import file_out, with_journal
+from app.library.tracks import by_ref, current_file
+from app.models import TrackFile, User
 
 router = APIRouter(prefix="/api/listen", tags=["listen"])
 
 
-async def _choose(ref: str) -> listen.Choice:
+
+async def _choose(ref: str, *, background: bool = False) -> listen.Choice:
     try:
-        return await listen.choose(ref)
+        return await listen.choose(ref, background=background)
     except listen.ListenError as e:
         raise HTTPException(e.status, str(e)) from e
 
 
 @router.get("", response_model=ListenOut)
-async def resolve(ref: str, user: User = Depends(current_user)):
-    """Picks the file (may take a while: providers are searched), then the client plays `stream_url`."""
-    c = await _choose(ref)
+async def resolve(ref: str, ahead: Literal["whole", "head"] | None = None, user: User = Depends(current_user)):
+    """Picks the file (may take a while: providers are searched), then the client plays `stream_url`. `ahead`: the
+    client's queue plays the track soon — the Hub opens the file and copies it to its disk now (`listen.load_ahead`):
+    "whole" for the track that plays next, "head" for the ones after it (their start only)."""
+    c = await (_choose(ref, background=True) if ahead == "head" else _choose(ref))
+    if ahead:
+        listen.load_ahead(c, whole=ahead == "whole")
     cand = c.candidate
+    async with session_scope() as s:
+        track_id = None
+        if c.nd_song_id:
+            track_id = (await s.execute(select(TrackFile.track_id).where(TrackFile.nd_song_id == c.nd_song_id)
+                                        .limit(1))).scalar_one_or_none()
+        if track_id is None and (track := await by_ref(s, c.ref)) is not None:
+            track_id = track.id
+        # an own file: what it is and where it came from (a file picked at a source says only its source)
+        own = await current_file(s, track_id) if c.kind == "library" and track_id else None
+    file = file_out(own) if own else None
+    if file and track_id:
+        async with session_scope() as s:
+            file.journal = track_id in await with_journal(s, [track_id])
     return ListenOut(
         ref=c.ref,
         kind=c.kind,
@@ -35,9 +58,14 @@ async def resolve(ref: str, user: User = Depends(current_user)):
         title=c.title,
         duration_s=c.duration_s,
         provider=cand.provider if cand else None,
-        bitrate_kbps=cand.bitrate_kbps if cand else None,
+        bitrate_kbps=file.bitrate_kbps if file else cand.bitrate_kbps if cand else None,
+        source=file.source if file else cand.provider if cand else None,
+        codec=file.codec if file else None,
+        sounds_like_kbps=file.sounds_like_kbps if file else None,
+        journal=bool(file and file.journal),
         page_url=cand.page_url if cand else None,
         nd_song_id=c.nd_song_id,
+        track_id=track_id,
         stream_url=f"/api/listen/stream?ref={quote(c.ref, safe='')}",
     )
 

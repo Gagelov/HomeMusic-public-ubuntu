@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from tests.support import FakeDeezer, FakeProvider, app_client, cand
+from tests.support import FakeDeezer, FakeProvider, app_client, cand, filed_track
 
 AUDIO = bytes(range(256)) * 1024  # 256 KiB standing in for an MP3
 
@@ -115,6 +115,8 @@ async def test_listen_picks_the_ranked_file_and_streams_ranges(env):
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["kind"] == "full" and out["provider"] == "hitmoz" and out["page_url"] == "https://hitmoz.test/song/1"
+    # a file still at its source says where it is and its bitrate; what it is is known once it is the library's
+    assert (out["source"], out["bitrate_kbps"], out["codec"], out["sounds_like_kbps"]) == ("hitmoz", 320, None, None)
     assert out["title"] == "Группа крови" and out["duration_s"] == 245
     assert out["stream_url"] == "/api/listen/stream?ref=dz%3A100"
 
@@ -524,7 +526,6 @@ async def test_a_full_request_joining_browser_resolution_does_not_play_the_previ
 async def test_import_finishing_during_resolution_replaces_the_preview(env, monkeypatch):
     from app.db import session_scope
     from app.matching.normalize import fingerprint
-    from app.models import Track
 
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -542,7 +543,7 @@ async def test_import_finishing_during_resolution_replaces_the_preview(env, monk
         path.parent.mkdir(parents=True)
         path.write_bytes(AUDIO)
         async with session_scope() as s:
-            s.add(Track(uid="imported-during-search", path=rel, artist="Кино", title="Группа крови",
+            s.add(filed_track(uid="imported-during-search", path=rel, artist="Кино", title="Группа крови",
                         duration_s=245, isrc="RUA1D8800001", nd_song_id="qa-song",
                         fingerprint=fingerprint("Кино", "Группа крови")))
     finally:
@@ -596,17 +597,17 @@ async def test_nothing_to_play(env):
 
 async def test_owned_track_plays_the_library_file(env, monkeypatch):
     from unittest.mock import AsyncMock
-    from app.services import svc
+
     from app.db import session_scope
     from app.matching.normalize import fingerprint
-    from app.models import Track
+    from app.services import svc
 
     rel = "Кино/1988 - Группа крови/1-01 - Группа крови.mp3"
     f = env["music"] / "library" / rel
     f.parent.mkdir(parents=True)
     f.write_bytes(AUDIO)
     async with session_scope() as s:
-        s.add(Track(uid="u1", path=rel, artist="Кино", title="Группа крови", duration_s=245, isrc="RUA1D8800001",
+        s.add(filed_track(uid="u1", path=rel, artist="Кино", title="Группа крови", duration_s=245, isrc="RUA1D8800001",
                     fingerprint=fingerprint("Кино", "Группа крови")))
     c = env["client"]
     album_lookup = AsyncMock(return_value=svc.deezer.album)
@@ -623,7 +624,9 @@ async def test_owned_track_plays_the_library_file(env, monkeypatch):
     async with session_scope() as s:
         from sqlalchemy import update
 
-        await s.execute(update(Track).values(nd_song_id="nd7"))
+        from app.models import TrackFile
+
+        await s.execute(update(TrackFile).values(nd_song_id="nd7"))
     r = await c.get("/api/listen", params={"ref": "dz:100"})
     assert r.json()["kind"] == "library" and r.json()["nd_song_id"] == "nd7"
 
@@ -632,14 +635,13 @@ async def test_library_song_of_a_mix_plays_its_file(env):
     """A song only the library has (`nd:<song>`, a mix's track) plays its file in the page's player."""
     from app.db import session_scope
     from app.matching.normalize import fingerprint
-    from app.models import Track
 
     rel = "Кино/1988 - Группа крови/1-02 - Закрой за мной дверь.mp3"
     f = env["music"] / "library" / rel
     f.parent.mkdir(parents=True)
     f.write_bytes(AUDIO)
     async with session_scope() as s:
-        s.add(Track(uid="u2", path=rel, artist="Кино", title="Закрой за мной дверь", duration_s=260,
+        s.add(filed_track(uid="u2", path=rel, artist="Кино", title="Закрой за мной дверь", duration_s=260,
                     nd_song_id="nd9", fingerprint=fingerprint("Кино", "Закрой за мной дверь")))
     c = env["client"]
     r = await c.get("/api/listen", params={"ref": "nd:nd9"})
@@ -778,20 +780,78 @@ async def test_file_listened_to_is_downloaded_by_its_ref(env):
     assert r.status_code == 404
 
 
-async def test_file_liked_in_the_search_is_downloaded_to_be_starred(env):
+async def test_file_of_the_search_is_downloaded_as_it_is(env):
     c, hm = env["client"], env["hm"]
     hm.cands = [cand("1", "https://cdn.test/good.mp3")]
     await search_files(c)
-    # ♥ on a row of the Files tab: that very file is downloaded quietly and starred after the import
-    r = await c.post("/api/downloads", json={"track_refs": ["file:hitmoz:1"], "star": True})
+    # a row of the Files tab: that very file is downloaded
+    r = await c.post("/api/downloads", json={"track_refs": ["file:hitmoz:1"]})
     assert r.status_code == 200, r.text
     assert r.json()["queued"] == 1
     items = (await c.get("/api/downloads")).json()
-    assert [(i["track_ref"], i["star"], i["chosen"]["page_url"]) for i in items] == [
-        ("file:hitmoz:1", True, "https://hitmoz.test/song/1")]
+    assert [(i["track_ref"], i["quiet"], i["chosen"]["page_url"]) for i in items] == [
+        ("file:hitmoz:1", False, "https://hitmoz.test/song/1")]
 
 
 async def test_listen_needs_login(env):
     async with app_client(env["app"], login=None) as anon:
         assert (await anon.get("/api/listen", params={"ref": "dz:100"})).status_code == 401
         assert (await anon.get("/api/listen/stream", params={"ref": "dz:100"})).status_code == 401
+
+
+async def test_a_track_two_ahead_is_copied_only_as_far_as_its_start(env, monkeypatch):
+    """The queue's next track is loaded whole; the ones after it are opened and stop at their start, and go on
+    from that byte when they are wanted."""
+    from app import listen
+
+    c, hm, mock = env["client"], env["hm"], env["mock"]
+    monkeypatch.setattr(listen, "HEAD_BYTES", 500)
+    seen: list[str | None] = []
+    gate = asyncio.Event()
+
+    def cdn(req: httpx.Request) -> httpx.Response:
+        seen.append(req.headers.get("range"))
+        # the first answer comes in pieces (1000 bytes, then the rest once `gate` opens), as a real source's does
+        return partway(req, 1000, gate=gate) if len(seen) == 1 else ranged(req)
+
+    mock.route(host="head.test").mock(side_effect=cdn)
+    hm.cands = [cand("1", "https://head.test/a.mp3")]
+    await search_files(c)
+
+    r = await c.get("/api/listen", params={"ref": "file:hitmoz:1", "ahead": "head"})
+    assert r.status_code == 200, r.text
+    await settled(lambda: listen._copies["file:hitmoz:1"].have >= 500)
+    await asyncio.sleep(0.2)
+    cp = listen._copies["file:hitmoz:1"]
+    assert (cp.have, cp.done, cp.failed, seen) == (1000, False, None, ["bytes=0-"])  # opened, and stopped at the start
+
+    # it is the next track now: the same copy goes on from the byte it stopped at
+    assert (await c.get("/api/listen", params={"ref": "file:hitmoz:1", "ahead": "whole"})).status_code == 200
+    await settled(lambda: cp.done)
+    assert (cp.have, seen) == (len(AUDIO), ["bytes=0-", "bytes=1000-"])
+    assert listen._copies["file:hitmoz:1"] is cp
+    gate.set()
+
+
+async def test_a_track_stopped_at_its_start_plays_whole_when_it_is_reached(env, monkeypatch):
+    from app import listen
+
+    c, hm, mock = env["client"], env["hm"], env["mock"]
+    monkeypatch.setattr(listen, "HEAD_BYTES", 500)
+    seen: list[str | None] = []
+    gate = asyncio.Event()
+
+    def cdn(req: httpx.Request) -> httpx.Response:
+        seen.append(req.headers.get("range"))
+        return partway(req, 1000, gate=gate) if len(seen) == 1 else ranged(req)
+
+    mock.route(host="head2.test").mock(side_effect=cdn)
+    hm.cands = [cand("1", "https://head2.test/a.mp3")]
+    await search_files(c)
+    url = (await c.get("/api/listen", params={"ref": "file:hitmoz:1", "ahead": "head"})).json()["stream_url"]
+    await settled(lambda: listen._copies["file:hitmoz:1"].have >= 500)
+
+    r = await c.get(url)  # the player reaches it
+    assert r.status_code == 200 and r.content == AUDIO
+    assert seen == ["bytes=0-", "bytes=1000-"]
+    gate.set()

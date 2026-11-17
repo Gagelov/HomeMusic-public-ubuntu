@@ -13,12 +13,41 @@ from app.providers.base import Candidate
 # --- auth ------------------------------------------------------------------------------
 
 
-class SearchHistoryIn(BaseModel):
-    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=512)]
+class SearchRecentIn(BaseModel):
+    """A line of «Недавнее»: a query asked for (`kind` "query", `title` is the query), or a result that was opened."""
+
+    kind: Literal["query", "track", "album", "artist"] = "query"
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
+    subtitle: Annotated[str, StringConstraints(strip_whitespace=True, max_length=512)] | None = None
+    ref: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)] | None = None
+    cover_url: Annotated[str, StringConstraints(max_length=1024)] | None = None
+    link: Annotated[str, StringConstraints(max_length=512, pattern=r"^/")] | None = None
+
+    @model_validator(mode="after")
+    def _whole(self) -> "SearchRecentIn":
+        if self.kind == "query":
+            if len(self.title) < 2:
+                raise ValueError("a query is two characters at least")
+            self.subtitle = self.ref = self.cover_url = self.link = None
+        elif not self.ref:
+            raise ValueError("what was opened is known by its ref")
+        return self
+
+
+class SearchRecentOut(BaseModel):
+    key: str
+    kind: str
+    title: str
+    subtitle: str | None = None
+    ref: str | None = None
+    cover_url: str | None = None
+    link: str | None = None
 
 
 class SearchHistoryOut(BaseModel):
-    queries: list[str]
+    items: list[SearchRecentOut]
+    # «Вы часто ищете»: what was come back to more than once, the most often first
+    frequent: list[SearchRecentOut] = []
 
 
 class LoginIn(BaseModel):
@@ -34,6 +63,8 @@ class MeOut(BaseModel):
     public_hub_url: str = ""  # for links that leave the Hub (an invite: where to get the app)
     google_email: str | None = None  # the linked Google account (sign-in with Google in the app)
     email: str | None = None  # the email the account registered with (sign-in by it, too)
+    # the server has a Last.fm key: «Карта» of artists is there (it is Last.fm's word of who is near whom)
+    artist_map: bool = False
 
 
 class AuthOptionsOut(BaseModel):
@@ -186,6 +217,9 @@ class LibTrackOut(BaseModel):
     locked: bool
     warnings: list[Any] = []
     path: str
+    # a search found it by these — its other names, its artists' other spellings — not by what the row shows
+    found_by: list[str] = []
+    versions: int = 0  # how many recordings the song it is has here (0: it is nobody's version)
 
 
 class TrackSourceOut(BaseModel):
@@ -206,6 +240,8 @@ class LibAlbumOut(BaseModel):
     deezer_album_id: str | None
     track_count: int = 0
     has_cover: bool = False
+    # the album itself (its name, its picture, merging) can be changed by who asks: all of its tracks are theirs
+    can_edit: bool = True
     nd_album_id: str | None = None
     tracks: list[LibTrackOut] | None = None
 
@@ -231,9 +267,78 @@ class AlbumMergeIn(BaseModel):
     target_id: int
 
 
+class TracksDeleteIn(BaseModel):
+    """The files of several tracks, deleted together. `dry`: nothing is deleted — only what would be is counted."""
+
+    track_ids: list[int] = Field(min_length=1, max_length=20000)
+    dry: bool = False
+
+
+class TracksDeleteOut(BaseModel):
+    deleted: int  # the tracks whose files went to the trash (`dry`: would go)
+    kept: int  # left alone: somebody else keeps them, and the asker is no admin
+    others: int  # of the deleted, the ones other listeners kept (an admin's deletion takes them out of their lists)
+    mine: int  # of the deleted, the ones in the asker's own playlists or «Любимое»
+
+
 class TracksMoveIn(BaseModel):
     track_ids: list[int]
     album_id: int
+
+
+class VersionOut(BaseModel):
+    """A recording of a song (app/library/versions.py): a track of its own, and what it is among the others."""
+
+    track_id: int
+    title: str
+    artist: str
+    album: str | None = None
+    duration_s: int | None = None
+    label: str | None = None  # what it is, in a word: «старая версия», «Deluxe»
+    preferred: bool = False
+    cover_url: str | None = None
+    ref: str | None = None
+    nd_song_id: str | None = None
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    has_file: bool = False
+
+
+class VersionsOut(BaseModel):
+    """The song a track is: every version of it, the preferred one first (one alone: the track is nobody's version)."""
+
+    track_id: int
+    song_id: int | None = None
+    title: str
+    versions: list[VersionOut] = []
+
+
+class TrackNameOut(BaseModel):
+    id: int | None = None
+    name: str
+    source: str  # renamed / file / manual / catalog
+
+
+class TrackEditOut(BaseModel):
+    """What the window of a track's names shows (app/library/edits.py)."""
+
+    track_id: int
+    title: str
+    artist: str
+    # what the catalog calls it (None: the catalog does not know the song): what «вернуть» goes back to
+    catalog_title: str | None = None
+    catalog_artist: str | None = None
+    renamed: bool = False
+    last_by: str | None = None  # who changed it last
+    last_at: datetime | None = None
+    own_cover: bool = False
+    cover_url: str | None = None
+    album_id: int | None = None  # its album of the library, whose cover can be changed too
+    album_title: str | None = None
+    has_file: bool = False
+    producer: str | None = None  # who made the beat, where the track's name said so
+    # the other names it is known by (`id` None: the catalog's, which is not kept here and cannot be dropped)
+    names: list[TrackNameOut] = []
 
 
 class TrackPatchIn(BaseModel):
@@ -247,6 +352,9 @@ class TrackPatchIn(BaseModel):
 
 class FavoriteTarget(BaseModel):
     target_type: Literal["track", "album", "artist"] = "track"
+    # a track: the Hub's id of it, if the Hub knows it — then nothing else need be said; else its catalog ref.
+    # `nd_song_id` is how an app that talks to Navidrome names it
+    track_id: int | None = Field(default=None, ge=1)
     ref: str | None = Field(default=None, min_length=1, max_length=64)
     nd_song_id: str | None = Field(default=None, min_length=1, max_length=64)
     nd_album_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -258,8 +366,10 @@ class FavoriteTarget(BaseModel):
         import json
 
         ids = {"track": self.nd_song_id, "album": self.nd_album_id, "artist": self.nd_artist_id}
-        if not (self.ref or ids[self.target_type]) or any(v for k, v in ids.items() if k != self.target_type):
-            raise ValueError("ref or matching nd_song_id/nd_album_id/nd_artist_id is required; identifiers must name exactly one target type")
+        named = self.ref or ids[self.target_type] or (self.target_type == "track" and self.track_id)
+        if not named or any(v for k, v in ids.items() if k != self.target_type) or \
+                (self.track_id and self.target_type != "track"):
+            raise ValueError("track_id, ref or matching nd_song_id/nd_album_id/nd_artist_id is required; identifiers must name exactly one target type")
         if self.target_data is not None and len(json.dumps(self.target_data, ensure_ascii=False)) > 8192:
             raise ValueError("target_data exceeds 8192 characters")
         return self
@@ -282,7 +392,7 @@ class StarIn(BaseModel):
 
 
 class StarredOut(BaseModel):
-    """The current user's Navidrome stars (♥ in the Hub and the app's «Понравившиеся»)."""
+    """The current user's Navidrome stars (♥ in the Hub and the app's «Любимое»)."""
 
     song_ids: list[str] = []
     album_ids: list[str] = []
@@ -297,18 +407,69 @@ class StarredOut(BaseModel):
 OwnedStatus = Literal["full", "partial", "none"]
 
 
+class FileOut(BaseModel):
+    """The file a track of the library plays from, as a list and the player say it: where it came from (a provider;
+    "upload"), what it is (mp3, flac, opus…), its bitrate, and what it sounds like when that is less than it says
+    (`library.probe.sounds_like`)."""
+
+    source: str | None = None
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    sounds_like_kbps: int | None = None
+    journal: bool = False  # the download that brought it kept its journal (`GET /api/library/tracks/<id>/journal`)
+
+
+class FileJournalOut(BaseModel):
+    """How a track's file came to the library: the journal of the download that brought it."""
+
+    track_id: int
+    artist: str
+    title: str
+    file: FileOut | None = None
+    steps: list[dict[str, Any]] = []
+    download_id: int | None = None  # the download itself, when it is the asker's own (its page has more: the files found)
+
+
 class TrackOut(CatalogTrack):
     owned: bool = False
+    versions: int = 0  # how many recordings the song it is has here, itself among them (0: it is nobody's version)
+    file: FileOut | None = None  # an owned track: its file
     library_track_id: int | None = None
     nd_song_id: str | None = None
-    downloading: bool = False  # a download of it is under way (not counting ones queued only for ♥)
-    star_pending: bool = False  # the user ♥ it and a download that stars it is under way: show it liked
+    downloading: bool = False  # a download of it is under way (not counting the Hub's own quiet ones)
+    # known by its name alone: no file and no record of the catalog — nothing to play until it is given a file
+    unknown: bool = False
+    # in a list: when the track was added to it (a playlist, the likes); else when it came into the library
+    added_at: datetime | None = None
+
+
+class ServiceLinkOut(BaseModel):
+    """A page of a music service: the release there."""
+
+    service: str  # deezer / yandex
+    url: str
 
 
 class AlbumOut(CatalogAlbum):
     owned_status: OwnedStatus = "none"
     owned_count: int = 0
     tracks: list[TrackOut] | None = None  # type: ignore[assignment]
+    # where the release can be opened: its own catalog, and another that has the same release (its own page only)
+    links: list[ServiceLinkOut] = []
+
+
+class ArtistSourceOut(BaseModel):
+    """A place an artist is known in, as that place shows them: a record of a catalog (one artist may have several),
+    or Last.fm, which knows an artist by the name."""
+
+    service: str  # deezer / catalog / lastfm
+    ref: str | None = None  # the catalog's record
+    name: str  # what they are called there
+    picture_url: str | None = None
+    followers: int | None = None
+    listeners: int | None = None
+    releases: int | None = None
+    url: str | None = None  # their page there
 
 
 class ArtistPageOut(BaseModel):
@@ -317,6 +478,42 @@ class ArtistPageOut(BaseModel):
     albums: list[AlbumOut] = []
     singles: list[AlbumOut] = []
     compilations: list[AlbumOut] = []
+    excluded: int = 0  # releases said to be a namesake's: not among these
+    lastfm_listeners: int | None = None  # how many listened to the artist on Last.fm (None: not known)
+    banner_url: str | None = None  # the wide picture over the page (None: there is none — the round photo then)
+    # how many of the last `top_tracks` are Last.fm's popular ones, added where the catalog's own list is short
+    top_from_lastfm: int = 0
+    # the catalog's records the page is drawn of — one artist may have several; the first is the page's own address
+    profiles: list[str] = []
+    sources: list[ArtistSourceOut] = []  # each of them, and Last.fm, as they show the artist
+
+
+class NamesakeIn(BaseModel):
+    """Releases of an artist of the catalog that are a namesake's («это другой TAK»), or — to bring back — the
+    ones that are theirs after all (`album_refs` None: everything excluded of the artist)."""
+
+    artist_ref: str = Field(min_length=3, max_length=64)
+    album_refs: list[str] | None = Field(default=None, max_length=500)
+
+
+class NamesakeOut(BaseModel):
+    artist_ref: str
+    artist: str
+    album_ref: str
+    title: str
+    record_type: str | None = None
+    year: int | None = None
+    cover_url: str | None = None
+
+
+class DiscographyOut(BaseModel):
+    """Everything an artist released, newest first, each release with its tracks: the page shows it by releases and
+    searches all of it at once."""
+
+    artist: CatalogArtist
+    albums: list[AlbumOut] = []
+    excluded: int = 0  # releases said to be a namesake's: not among `albums`
+    profiles: list[str] = []  # as `ArtistPageOut.profiles`
 
 
 class SearchOut(BaseModel):
@@ -326,6 +523,13 @@ class SearchOut(BaseModel):
     tracks: list[TrackOut] = []
     tracks_next: int | None = None  # offset of the next page of tracks (GET /api/search/tracks); None — that's all
     errors: list[str] = []  # e.g. "Deezer недоступен"
+
+
+class SearchMineOut(BaseModel):
+    """What a listener keeps, searched: the artists they follow and the tracks of their playlists and «Любимое»."""
+
+    artists: list[CatalogArtist] = []
+    tracks: list[TrackOut] = []
 
 
 class SearchTracksOut(BaseModel):
@@ -364,20 +568,9 @@ class DownloadIn(BaseModel):
     artist_ref: str | None = None  # whole discography
     record_types: list[str] = ["album", "single", "ep"]  # for artist_ref
     playlist_id: str | None = None
+    playlist_ids: list[str] = Field(default_factory=list, max_length=50)  # several playlists at once
     new_playlist_name: str | None = None
     force: bool = False  # re-download even if owned (new file next to the old one)
-    star: bool = False  # ♥ on a track that isn't downloaded yet: star the songs in Navidrome once they are
-    favorite_event_id: str | None = Field(default=None, min_length=1, max_length=64)
-    favorite_ts: datetime | None = None
-    favorite_client: str = Field(default="hub", min_length=1, max_length=32)
-    favorite_context: str | None = Field(default=None, max_length=128)
-
-    @model_validator(mode="after")
-    def _favorite_command(self):
-        if self.favorite_event_id and (not self.star or len(self.track_refs) != 1 or self.items or
-                                       self.album_ref or self.artist_ref or self.force):
-            raise ValueError("favorite_event_id requires one track ref and star=true")
-        return self
 
 
 class ListenOut(BaseModel):
@@ -390,8 +583,15 @@ class ListenOut(BaseModel):
     duration_s: int | None = None
     provider: str | None = None  # hitmoz / hitmos_fm / ytdlp for "full"
     bitrate_kbps: int | None = None
+    # the file that plays, as the player says it: where it came from (a provider; "upload"), what it is (mp3, flac,
+    # opus…), and what it sounds like when that is less than it says (`library.probe.sounds_like`)
+    source: str | None = None
+    codec: str | None = None
+    sounds_like_kbps: int | None = None
+    journal: bool = False  # an own file whose download kept its journal
     page_url: str | None = None
     nd_song_id: str | None = None  # "library": the Navidrome song (♥, the app's player)
+    track_id: int | None = None  # the Hub's track, if the Hub knows the song (tags, playlists)
     stream_url: str  # audio with Range support, same session cookie
 
 
@@ -428,17 +628,23 @@ class DownloadItemOut(BaseModel):
     nd_song_id: str | None = None  # Navidrome song once imported and scanned
     playlist_id: str | None = None  # target Navidrome playlist of the batch (Android: sync only that one offline)
     track_ref: str | None = None  # catalog track the item was made from (dz:…)
-    # queued only for ♥ (`DownloadIn.star`) or by an import, nobody asked to download it: not shown as a download
-    # (PWA, app notifications), not downloaded to the phone; false once the track is downloaded explicitly too, and
-    # once a download queued only for ♥ fails (`failed`/`needs_review`): the user sees it then
-    star: bool = False
-    liked: bool = False  # queued with ♥: the song is starred once imported
+    # queued by an import, a mix or the wave, nobody asked to download it: not shown as a download; false once the
+    # track is downloaded explicitly too
+    quiet: bool = False
     import_id: int | None = None  # queued by this import (`/api/imports`)
     candidates: list[Candidate] | None = None  # only in detail view
     preview_refs: list[str] | None = None  # playable candidates in the detail view
+    # the journal, only in detail view: the steps in order — {t, kind: info/ok/warn/bad, text, cand?: the file
+    # the step is about ({artist, title, provider, bitrate_kbps, duration_s, page_url})}
+    log: list[dict[str, Any]] | None = None
     chosen: Candidate | None = None
+    hidden: bool = False  # taken off the list by the user (comes with an event: other open pages drop it too)
     created_at: datetime
     updated_at: datetime
+
+
+class DownloadIdsIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=5000)
 
 
 class RetryIn(BaseModel):
@@ -449,6 +655,43 @@ class RetryIn(BaseModel):
 # --- uploads -----------------------------------------------------------------------------
 
 
+class UploadMatch(BaseModel):
+    """The song of the catalog an uploaded file was told to be (`library/recognize.py`)."""
+
+    state: Literal["found", "doubt", "none"]
+    why: str | None = None  # of a doubt: what speaks against the record
+    by_hand: bool = False  # the listener picked the record
+    ref: str | None = None
+    title: str | None = None
+    artist: str | None = None
+    artists: list[str] = []
+    album: str | None = None
+    album_artist: str | None = None
+    album_artists: list[str] = []  # everyone the release is credited to (the main one first)
+    album_ref: str | None = None  # the release in the catalog: its page shows what it is
+    record_type: str | None = None  # album / single / ep / compile
+    year: int | None = None
+    duration_s: int | None = None
+    cover_url: str | None = None
+    track_no: int | None = None
+
+
+class UploadTwin(BaseModel):
+    """The library's track an uploaded file is of already."""
+
+    track_id: int
+    title: str
+    artist: str
+    album: str | None = None
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    by: Literal["sound", "name"]  # how it was told: the same recording by its sound, or the same names and length
+    # by the sound: it is the same recording — or only alike (false): a version in another language, a cover over
+    # the same music; then the file is another track, and the form only says what it is like
+    sure: bool = True
+    better: bool = False  # the uploaded file is better than the library's (lossless, or a higher bitrate)
+
+
 class UploadOut(BaseModel):
     id: int
     orig_name: str
@@ -457,37 +700,89 @@ class UploadOut(BaseModel):
     tags: dict[str, Any] = {}
     error: str | None = None
     created_at: datetime
+    artists: list[str] = []  # the artists read out of the file's line of them, the main one first
+    codec: str | None = None
+    bitrate_kbps: int | None = None
+    twin: UploadTwin | None = None
+    match: UploadMatch | None = None  # what song of the catalog the file is
+    weak: bool = False  # the file is heard to be poor (`library/quality.py`)
+    # the file's own names, read out of its tags and — where they are empty — its name
+    title: str = ""
+    artist: str = ""
+    single: bool = False  # its «album» is no album: nothing, «Single», the track's own name
+    duration_s: float | None = None  # the library has this recording
 
 
 class UploadTrackIn(BaseModel):
+    """A file to bring into the library. `catalog`: as the song of the catalog it was told to be
+    (`UploadOut.match`) — its name, artists and number are the catalog's then, and `title`/`artist` are not read.
+    `album_key`: the album of the request it goes into (`UploadCommitIn.albums`) — the album's name, artist, year
+    and cover are said there, once for all its files. No key: by `album` — empty (or the track's own name) is a
+    single, whose picture is `cover`."""
+
     upload_id: int
-    title: str
-    artist: str
-    track_no: int | None = None
-    disc_no: int | None = None
-    genre: str | None = None
-    explicit: bool | None = None
+    catalog: bool = False
+    title: str = ""
+    artist: str = ""
+    album_key: str | None = Field(default=None, max_length=600)
+    album: str | None = None
+    album_artist: str | None = None
+    year: int | None = None
+    track_no: int | None = None  # its place in the album (none: the catalog's, else the file's own)
+    # the file is another recording of the song the catalog took it for (`UploadOut.match`): it is filed under its own
+    # names (`catalog` false) and tied to that record as a version (app/library/versions.py)
+    version_of_match: bool = False
+    # a record of the catalog that is only like the file is not to be weighed against it by the sound afterwards
+    no_check: bool = False
+    # another name the song is known by — the one its file had, where the listener keeps it (app/library/artists.py)
+    also_title: str | None = Field(default=None, max_length=512)
+    # a single's picture: the catalog's, or the one in the file (none: the catalog's for a song of the catalog)
+    cover: Literal["catalog", "file"] | None = None
+    # the library's track this file takes the place of the file of (the upload is the better one): it becomes
+    # that track's file, not a track of its own
+    replace_track_id: int | None = None
 
 
 class UploadAlbumIn(BaseModel):
-    mode: Literal["existing", "new"]
-    album_id: int | None = None  # mode=existing
-    title: str | None = None  # mode=new
-    album_artist: str | None = None
+    """An album the files of a request go into, as the listener chose it among what its files and the catalog say.
+    `release_of`: an upload whose catalog record stands on this release — the album is that release then (its kind,
+    its catalog id). The cover: the catalog's picture of that upload's record (`cover_of_match`), or the picture
+    inside an uploaded file (`cover_of_file`); neither — the album keeps the cover it has."""
+
+    key: str = Field(max_length=600)
+    title: str = Field(min_length=1, max_length=512)
+    album_artist: str = Field(min_length=1, max_length=512)
     year: int | None = None
-    genre: str | None = None
-    release_type: Literal["album", "single", "ep", "compilation"] | None = "album"
+    single: bool = False  # a single: one file, the «album» is the track itself (its name is the track's)
+    release_of: int | None = None
+    cover_of_match: int | None = None
+    cover_of_file: int | None = None
+
+
+class UploadMatchIn(BaseModel):
+    """Which record of the catalog a file is: `ref` — this one, picked by hand; none — look for it again."""
+
+    ref: str | None = Field(default=None, max_length=64)
 
 
 class UploadCommitIn(BaseModel):
-    album: UploadAlbumIn
-    tracks: list[UploadTrackIn]
-    cover_from_upload_id: int | None = None  # use the embedded cover of this upload
-    playlist_id: str | None = None
+    tracks: list[UploadTrackIn] = Field(max_length=200)
+    albums: list[UploadAlbumIn] = Field(default_factory=list, max_length=200)
+    playlist_ids: list[str] = Field(default_factory=list, max_length=50)  # several playlists at once
+    star: bool = False  # the imported tracks go into «Любимое» too
+    # the playlist that keeps what was uploaded together («Загружено 14 ноября»): the user's playlist of this name,
+    # made when there is none — so the parts of one import, and the imports of one day, are one list
+    keep_in: str | None = Field(default=None, max_length=200)
+    tag_ids: list[int] = Field(default_factory=list, max_length=50)  # ... and get these tags
 
 
 class UploadCommitOut(BaseModel):
-    album_id: int
+    album_ids: list[int] = []  # the albums the files went into, in their order
+    track_ids: list[int] = []  # the tracks they became
+    weak: int = 0  # how many of them have a weak file: «Качество звука» looks for a better one
+    # how many were filed under their own names with a record of the catalog only like them: «Качество звука»
+    # settles by the sound whether the record is theirs
+    unsure: int = 0
     imported: int
 
 
@@ -497,9 +792,40 @@ class UploadCommitOut(BaseModel):
 class PlaylistOut(BaseModel):
     id: str
     name: str
-    song_count: int = 0
+    song_count: int = 0  # the tracks the library has a file of
+    pending_count: int = 0  # the playlist's tracks it has no file of yet
+    editable: bool = True  # the user's own: renamed, given a picture, deleted («Микс дня» is the Hub's: not)
     duration_s: int = 0
     cover_art: str | None = None
+    # the playlist's picture: the user's own, else the one Navidrome makes of its albums (add `&size=`)
+    cover_url: str | None = None
+
+
+class PlaylistRenameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class PlaylistOfSongOut(PlaylistOut):
+    has: bool = False  # the song is in this playlist
+
+
+class PlaylistMembershipIn(BaseModel):
+    track_id: int
+    add: list[str] = Field(default_factory=list, max_length=100)  # playlists to put the song into
+    remove: list[str] = Field(default_factory=list, max_length=100)  # ... and to take it out of
+
+
+class PlaylistOfSongsOut(PlaylistOut):
+    count: int = 0  # how many of the asked songs are in this playlist
+
+
+class PlaylistSongsIn(BaseModel):
+    track_ids: list[int] = Field(min_length=1, max_length=1000)
+
+
+class PlaylistMembershipManyIn(PlaylistSongsIn):
+    add: list[str] = Field(default_factory=list, max_length=100)  # playlists to put the songs into (the missing ones)
+    remove: list[str] = Field(default_factory=list, max_length=100)  # ... and to take them all out of
 
 
 class PlaylistCreateIn(BaseModel):
@@ -519,6 +845,17 @@ class NdSongOut(TrackOut):
 
     nd_album_id: str | None = None
     nd_artist_id: str | None = None
+    nd_artist_ids: list[str | None] = []  # the library artists of `artists`, in their order (None: unknown)
+
+
+class FileRowOut(NdSongOut):
+    """A track of «Все файлы»: the track as any list shows it (`added_at` — when its file came), and what the page
+    sorts it out by."""
+
+    added_by: str | None = None  # who brought it (None: nobody the Hub knows — a file found in the folder)
+    mine: bool = False  # the asker brought it
+    kept: bool = False  # it is in the asker's «Любимое» or in a playlist of theirs
+    no_album: bool = False
 
 
 class NdAlbumOut(BaseModel):
@@ -545,6 +882,12 @@ class NdArtistOut(BaseModel):
 class NdArtistPageOut(BaseModel):
     artist: NdArtistOut
     albums: list[NdAlbumOut] = []
+    # the same artist in the catalog — by what the Hub knows of their tracks, else by the very name: their page is
+    # the catalog's then
+    catalog_ref: str | None = None
+    # their tracks in the library (also where they are credited on somebody's album): the page of an artist the
+    # catalog does not know is drawn of these
+    tracks: list[NdSongOut] = []
 
 
 class NdLikedOut(BaseModel):
@@ -562,12 +905,11 @@ class NdHomeOut(BaseModel):
 
 
 class PlaylistPageOut(PlaylistOut):
-    tracks: list[NdSongOut] = []
+    tracks: list[NdSongOut] = []  # every track in its place; one without a file has `owned` false
 
 
 class PlaylistAddIn(BaseModel):
-    song_ids: list[str] = []
-    library_track_ids: list[int] = []
+    track_ids: list[int] = Field(min_length=1, max_length=5000)
 
 
 # --- assistant -----------------------------------------------------------------------------
@@ -638,8 +980,9 @@ class AssistantTextIn(BaseModel):
 
 # --- imports from music services ----------------------------------------------------------
 
-ImportSource = Literal["yandex", "spotify"]
-ImportMethod = Literal["device", "token", "profile", "file"]  # file: a Spotify export (POST /api/imports/spotify)
+ImportSource = Literal["yandex", "spotify", "vk"]
+# file: a Spotify export (POST /api/imports/spotify); csv: Exportify playlists; password/link: VK
+ImportMethod = Literal["device", "token", "profile", "file", "csv", "password", "link"]
 ImportMode = Literal["economy", "full"]
 
 
@@ -647,14 +990,29 @@ class ImportIn(BaseModel):
     source: Literal["yandex"] = "yandex"  # a Spotify export comes as files: POST /api/imports/spotify
     method: Literal["device", "token", "profile"] = "device"
     token: str | None = None  # method "token"
-    url: str | None = None  # method "profile": a link to the profile or the login
+    url: str | None = None  # method "profile": a link to the profile or the login; "link": to a playlist or an album
+    # method "password" (VK): used for the sign-in only, never kept beyond it
+    login: str | None = None
+    password: str | None = None
+
+
+class ImportAuthIn(BaseModel):
+    """What VK asked for at the sign-in: the code, or what its captcha page answered with (`success_token`)."""
+
+    code: str | None = None
+    captcha: str | None = None
 
 
 class ImportAuthOut(BaseModel):
-    """Sign-in by code in progress: the user enters `user_code` at `verification_url`."""
+    """Sign-in in progress. `device` (Yandex): the user enters `user_code` at `verification_url`. `code` (VK): the
+    service sent the user a code, they type it here (`hint`: where it was sent; `wrong`: the last one did not fit).
+    `captcha` (VK): the page at `verification_url` has to be passed, what it answers with is given here."""
 
-    user_code: str
-    verification_url: str
+    kind: Literal["device", "code", "captcha"] = "device"
+    user_code: str = ""
+    verification_url: str = ""
+    hint: str | None = None
+    wrong: bool = False
     expires_at: datetime
 
 
@@ -682,7 +1040,7 @@ class ImportCollectionOut(BaseModel):
     count: int
     owned: int = 0
     cover_url: str | None = None
-    nd_playlist_id: str | None = None
+    playlist_id: str | None = None  # the Hub's playlist made of the collection
 
 
 class ImportOut(BaseModel):
@@ -710,6 +1068,10 @@ class ImportStartIn(BaseModel):
     mode: ImportMode = "economy"
     download_albums: bool = False  # liked albums: download them whole (else only ★ the owned ones)
     keep_token: bool = False  # keep the sign-in for «Обновить»
+    # «После переноса»: every track of the chosen likes and playlists, once the library has it, also gets…
+    star: bool = False  # … a ♥
+    playlist_ids: list[str] = Field(default_factory=list, max_length=50)  # … a place in these playlists
+    tag_ids: list[int] = Field(default_factory=list, max_length=50)  # … these tags
 
 
 class ImportItemOut(BaseModel):
@@ -728,6 +1090,7 @@ class ImportItemOut(BaseModel):
     # pending/waiting/queued/done/failed/not_found/skipped
     status: str
     nd_song_id: str | None = None  # in the library: plays from Navidrome
+    track_id: int | None = None  # the Hub's track the item turned out to be
     download_item_id: int | None = None
     download_status: str | None = None
     error: str | None = None
@@ -753,7 +1116,7 @@ class HealthOut(BaseModel):
     today: date | None = None
     # id of the PWA build the Hub serves (index.html <meta name="hm-build">); pages compare it with their own
     web_build: str | None = None
-    capabilities: list[str] = ["typed_favorites_v1", "favorite_compensation_chains_v1", "catalog_favorite_download_v1",
+    capabilities: list[str] = ["typed_favorites_v1", "favorite_compensation_chains_v1",
                                "listening_checkpoints_v1", "launch_events_v1", "wave_origin_v1", "smart_shuffle_v1"]
 
 
@@ -799,6 +1162,7 @@ class PlayEventIn(FavoriteTarget):
     position_s: float | None = Field(default=None, ge=0, le=86400)
     duration_s: float | None = Field(default=None, ge=0, le=86400)
     context: str | None = Field(default=None, max_length=128)
+    page: str | None = Field(default=None, max_length=128)  # the page the list was started on ("/playlist/12")
     client: str = Field(min_length=1, max_length=32)
     reverts_event_id: str | None = Field(default=None, min_length=1, max_length=64)
     # analytics only (the taste profile never reads them): one id for every event of a launched list ("wave:<sid>"
@@ -848,6 +1212,7 @@ class DislikeIn(BaseModel):
     """«Не нравится»: a track (`ref` and/or `nd_song_id`) or an artist (`artist_ref`, catalog). `artist`/`title`
     are for showing the list."""
 
+    track_id: int | None = Field(default=None, ge=1)  # the Hub's track, if the Hub knows it
     ref: str | None = Field(default=None, max_length=64)
     nd_song_id: str | None = Field(default=None, max_length=64)
     artist_ref: str | None = Field(default=None, max_length=64)
@@ -858,14 +1223,15 @@ class DislikeIn(BaseModel):
 
     @model_validator(mode="after")
     def _one_target(self) -> DislikeIn:
-        track = bool(self.ref or self.nd_song_id)
+        track = bool(self.track_id or self.ref or self.nd_song_id)
         if track == bool(self.artist_ref):
-            raise ValueError("a track (ref / nd_song_id) or an artist (artist_ref)")
+            raise ValueError("a track (track_id / ref / nd_song_id) or an artist (artist_ref)")
         return self
 
 
 class DislikeOut(BaseModel):
     id: int
+    track_id: int | None = None  # the Hub's track, if the Hub knows the song
     ref: str | None = None
     nd_song_id: str | None = None
     artist_ref: str | None = None
@@ -873,6 +1239,10 @@ class DislikeOut(BaseModel):
     title: str | None = None
     source: str  # app/pwa/yandex_import
     created_at: datetime
+    # of an artist's mark: everything the artist is known by — every record a catalog keeps of them (`artist_ref`
+    # among them) and every spelling of the name. The mark is of all of it
+    artist_refs: list[str] = []
+    artist_names: list[str] = []
 
 
 MixMode = Literal["normal", "favorites", "discover"]
@@ -928,6 +1298,33 @@ class MixTodayOut(BaseModel):
     onboarding: bool = False  # a new user without history and picked artists: show «Что вы слушаете?»
 
 
+class ForYouItem(BaseModel):
+    """A list of «Для вас» (`/api/for-you`): "mix", "weekly" or a kind of the lists of a rule."""
+
+    kind: str
+    title: str
+    count: int | None = None  # tracks it has now; None: nothing was made yet
+    fresh: bool = False  # a mix or an issue made since the user last opened the list
+
+
+class ForYouOut(BaseModel):
+    """A list of «Для вас» as its page shows it: the tracks (`TrackOut`s of the list's own kind), and what is the
+    list's own beside them."""
+
+    kind: str
+    title: str
+    context: str  # the player's context of a list started from here
+    tracks: list[dict[str, Any]] = []
+    note: str | None = None  # one more thing to say under the name: «скачано 32», «прежний микс»
+    refresh_s: int | None = None  # the list is being made: ask again this soon
+    plays: dict[str, int] | None = None  # a top: Navidrome song id -> the listens its rule counted
+    plays_label: str | None = None
+    # «Микс дня»: {id, current, building, settings (`MixSettingsOut`), onboarding}
+    mix: dict[str, Any] | None = None
+    # «Открытия недели»: {issue, week, latest, building, issues: [{id, week, count}]}
+    weekly: dict[str, Any] | None = None
+
+
 class MixSettingsIn(BaseModel):
     mode: MixMode | None = None
     mix_hour: int | None = Field(default=None, ge=0, le=23)
@@ -940,11 +1337,26 @@ class MixRebuildIn(BaseModel):
 class TasteOnboardingOut(BaseModel):
     needed: bool  # no history and no picked artists: the mix can't be made yet
     selected: list[dict[str, Any]] = []  # [{ref, name}]
-    suggestions: list[CatalogArtist] = []  # the chart, or the search by `q`
+    suggestions: list[CatalogArtist] = []
+    # what `suggestions` are: those this server listens to, the catalog's chart (a server without music), the search
+    source: Literal["server", "chart", "search"] = "server"
+
+
+class ArtistNearOut(BaseModel):
+    artist: CatalogArtist
+    match: float  # 0…1, how near Last.fm holds them to be
+
+
+class ArtistMapOut(BaseModel):
+    """«Карта»: an artist and those around them, nearest first."""
+
+    center: CatalogArtist
+    around: list[ArtistNearOut] = []
+    more: bool = False  # asking for more (`n`) may give more
 
 
 class TasteArtistsIn(BaseModel):
-    artist_refs: list[str] = Field(min_length=1, max_length=20)
+    artist_refs: list[str] = Field(min_length=1, max_length=50)
 
 
 # --- «Моя волна» (MIXES.md 7) ---------------------------------------------------------------------------------------
@@ -1010,7 +1422,7 @@ class WaveOut(BaseModel):
 
 class SmartStartIn(BaseModel):
     context: str = Field(max_length=80, pattern=r"^(liked|playlist:\S{1,64})$")  # "liked" or "playlist:<Navidrome id>"
-    # the context's songs in its order (a playlist: new ones at the end; «Понравившиеся»: the newest first): a
+    # the context's songs in its order (a playlist: new ones at the end; «Любимое»: the newest first): a
     # Navidrome song id, or a catalog ref (has a colon) for a ♥ not downloaded yet
     songs: list[str] = Field(min_length=1, max_length=5000)
     current: str | None = Field(default=None, max_length=80)  # the song tapped or playing now: it plays first
@@ -1063,7 +1475,7 @@ class SmartOut(BaseModel):
 class SmartAddOut(BaseModel):
     ok: bool = True
     # added — put in the playlist; downloading — not in the library yet, it is downloaded and put in the playlist
-    # after; liked — «Понравившиеся»: the Hub only noted it, the client likes the track itself
+    # after; liked — «Любимое»: the Hub only noted it, the client likes the track itself
     status: Literal["added", "downloading", "liked"]
     playlist_id: str | None = None
 

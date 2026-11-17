@@ -5,45 +5,46 @@ from __future__ import annotations
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import listen
-from app.api.schemas import DownloadBatchOut, DownloadIn, DownloadItemOut, DownloadTrackIn, RetryIn
-from app.auth import current_user, user_navidrome
+from app.api.schemas import DownloadBatchOut, DownloadIdsIn, DownloadIn, DownloadItemOut, DownloadTrackIn, RetryIn
+from app.auth import current_user
 from app.catalog.models import split_ref
 from app.db import get_session
 from app.events import bus
 from app.jobs.downloads import create_items, item_links, item_out, item_ref
 from app.jobs.queue import enqueue, notify
-from app.library.owned import ACTIVE_STATUSES, find_existing, quiet
-from app.models import DownloadBatch, DownloadItem, Job, PendingPlaylistAdd, User
+from app.library.owned import ACTIVE_STATUSES, find_owned, quiet
+from app.library.tracks import current_file
+from app.models import DownloadBatch, DownloadItem, Job, User
 from app.providers.base import Candidate, TrackQuery, file_ref
 from app.services import svc
 
 router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 
 
-async def resolve_playlist(user: User, playlist_id: str | None, new_name: str | None) -> str | None:
+async def resolve_playlist(s: AsyncSession, user: User, playlist_id: str | None, new_name: str | None) -> str | None:
+    """The playlist a download's tracks go into: the one named, or a new one of this name."""
     if playlist_id:
         return playlist_id
-    if not new_name:
+    if not new_name or not new_name.strip():
         return None
-    nd = user_navidrome(user)
-    try:
-        pl = await nd.create_playlist(new_name.strip())
-    finally:
-        await nd.aclose()
-    return pl.get("id")
+    from app import playlists
+
+    return str((await playlists.create(s, user.id, new_name)).id)
 
 
-async def join_active(s: AsyncSession, user: User, refs: list[str], *, star: bool,
-                      favorite_event_id: str | None = None) -> set[str]:
-    """Catalog tracks this user is downloading already: no second download. ♥ marks the download to star the song
-    after the import; an explicit download makes a quiet one (♥ only, an import's) a visible download, and one an
-    import queued in the background goes first in the queue from then on. Returns the joined refs."""
+async def join_active(s: AsyncSession, user: User, refs: list[str], *, playlists: list[str] | None = None) -> set[str]:
+    """Catalog tracks this user is downloading already: no second download. An explicit download makes a quiet one
+    (an import's, a mix's) a visible download that goes first in the queue from then on. `playlists`: the track goes
+    into them too. Returns the joined refs."""
     if not refs:
         return set()
+    from app.jobs.downloads import into_playlists
+    from app.library import tracks as registry
+
     items = (await s.execute(
         select(DownloadItem).where(DownloadItem.user_id == user.id, DownloadItem.status.in_(ACTIVE_STATUSES))
     )).scalars().all()
@@ -55,20 +56,17 @@ async def join_active(s: AsyncSession, user: User, refs: list[str], *, star: boo
         if ref not in refs or ref in joined:
             continue
         joined.add(ref)
-        if star and favorite_event_id:
-            qj.update(star=True, star_event_id=favorite_event_id, star_cancelled=False, star_failed=False)
-        elif star and not qj.get("star"):
-            qj.update(star=True, requested=True)  # it was asked for explicitly: it stays a visible download
-        elif not star and quiet(qj):
-            qj["requested"] = True
-        elif not (star and qj.get("import") and not qj.get("requested")):
+        if playlists:
+            track = await registry.by_ref(s, ref)
+            if track is not None:
+                await into_playlists(s, user.id, playlists, [track.id])
+            else:  # a provider's file: it is a track once imported
+                qj["playlists"] = list(dict.fromkeys([*(qj.get("playlists") or []), *playlists]))
+                item.query_json = qj
+        if not quiet(qj):
             continue
-        else:
-            qj["requested"] = True  # ♥ on a track an import downloads quietly: the user wants it now
+        qj["requested"] = True
         item.query_json = qj
-        if star and not favorite_event_id:
-            from app.favorites import download_requested
-            await download_requested(s, item)
         changed.append(item)
     if changed:
         await s.execute(update(Job).where(
@@ -84,35 +82,13 @@ async def join_active(s: AsyncSession, user: User, refs: list[str], *, star: boo
 async def create_batch(
     s: AsyncSession, user: User, body: DownloadIn, *, origin: str, title: str | None = None
 ) -> DownloadBatchOut:
-    favorite_events = {}
-    if body.favorite_event_id:
-        from app.api.schemas import FavoriteTarget
-        from app.favorites import record, snapshot
-
-        ref = body.track_refs[0]
-        # Acquire the SQLite write lock before checking the idempotency marker.
-        await record(s, user.id, FavoriteTarget(ref=ref), True, event_id=body.favorite_event_id,
-                     ts=body.favorite_ts, client=body.favorite_client, context=body.favorite_context, mirror_pending=True)
-        previous = (await s.execute(select(DownloadBatch).where(
-            DownloadBatch.user_id == user.id, DownloadBatch.origin == "favorite-app",
-            DownloadBatch.title == body.favorite_event_id))).scalar_one_or_none()
-        if previous:
-            return DownloadBatchOut(batch_id=previous.id, queued=0, already_owned=0)
-        favorite_events[ref] = body.favorite_event_id
-        states = await snapshot(s, user.id)
-        current = next((x for x in states.values() if x.target_type == "track" and x.ref == ref), None)
-        if current is None or not current.liked:
-            batch = DownloadBatch(user_id=user.id, origin="favorite-app", title=body.favorite_event_id)
-            s.add(batch)
-            await s.flush()
-            return DownloadBatchOut(batch_id=batch.id, queued=0, already_owned=0)
-        origin, title = "favorite-app", body.favorite_event_id
-    # ♥ downloads stay out of playlists: the song is in «Понравившиеся» anyway, and the app keeps a batch's playlist
-    # on the phone
-    playlist_id = None if body.star else await resolve_playlist(user, body.playlist_id, body.new_playlist_name)
+    playlist_id = await resolve_playlist(s, user, body.playlist_id, body.new_playlist_name)
+    # every playlist asked for: the first is the batch's own, the rest only get the tracks
+    playlists = list(dict.fromkeys(x for x in (playlist_id, *body.playlist_ids) if x))
+    playlist_id = playlists[0] if playlists else None
+    also = playlists[1:]
     track_refs = list(body.track_refs)
-    joined = set() if body.force else await join_active(s, user, track_refs, star=body.star,
-                                                        favorite_event_id=body.favorite_event_id)
+    joined = set() if body.force else await join_active(s, user, track_refs, playlists=playlists)
     track_refs = [r for r in track_refs if r not in joined]
     items = list(body.items)
     # a provider's file listened to in the player (Files tab of the search): the file itself, as if picked there
@@ -139,25 +115,18 @@ async def create_batch(
             meta["track_ref"] = it.catalog_ref
             if src == "dz":
                 meta["deezer_track_id"] = id_
-        have = None if body.force else await find_existing(
+        have = None if body.force else await find_owned(
             s, artist=q.artist, title=q.title, duration_s=q.duration_s, isrc=q.isrc,
             deezer_track_id=meta.get("deezer_track_id"))
         # a picked file the library has not got is downloaded next to the song's older version (`jobs.downloads`)
-        if have and (it.candidate is None or have.source_url == it.candidate.page_url):
+        file = await current_file(s, have.id) if have else None
+        if have and (it.candidate is None or (file is not None and file.source_url == it.candidate.page_url)):
             owned += 1
         entries.append((q, meta, it.candidate))
-    queued = await create_items(s, batch, entries, force=body.force, star=body.star, favorite_events=favorite_events)
+    queued = await create_items(s, batch, entries, force=body.force, also_playlists=also)
 
     expanding = bool(track_refs or body.album_ref or body.artist_ref)
     if expanding:
-        if body.star and not body.favorite_event_id:
-            from app.api.schemas import FavoriteTarget
-            from app.favorites import record
-            for ref in track_refs:
-                event = await record(s, user.id, FavoriteTarget(ref=ref), True, mirror_pending=True,
-                                     client="assistant" if origin == "assistant" else "hub",
-                                     context="assistant:bulk" if origin == "assistant" else "download")
-                favorite_events[ref] = event.event_id
         await enqueue(s, "expand_batch", {
             "batch_id": batch.id,
             "track_refs": track_refs,
@@ -165,9 +134,7 @@ async def create_batch(
             "artist_ref": body.artist_ref,
             "record_types": body.record_types,
             "force": body.force,
-            "star": body.star,
-            "position": len(entries),
-            "favorite_events": favorite_events,
+            "also_playlists": also,
         })
     return DownloadBatchOut(batch_id=batch.id, queued=queued + len(joined), already_owned=owned, playlist_id=playlist_id,
                             expanding=expanding)
@@ -185,9 +152,9 @@ async def create(body: DownloadIn, user: User = Depends(current_user), s: AsyncS
 
 
 @router.get("", response_model=list[DownloadItemOut])
-async def list_items(status: str | None = None, limit: int = Query(100, le=500), user: User = Depends(current_user),
+async def list_items(status: str | None = None, limit: int = Query(100, le=5000), user: User = Depends(current_user),
                      s: AsyncSession = Depends(get_session, scope="function")):
-    stmt = select(DownloadItem).where(DownloadItem.user_id == user.id)
+    stmt = select(DownloadItem).where(DownloadItem.user_id == user.id, DownloadItem.hidden.is_(False))
     if status:
         stmt = stmt.where(DownloadItem.status.in_([x.strip() for x in status.split(",") if x.strip()]))
     rows = (await s.execute(stmt.order_by(DownloadItem.id.desc()).limit(limit))).scalars().all()
@@ -292,19 +259,60 @@ async def cancel(item_id: int, user: User = Depends(current_user), s: AsyncSessi
     item = await _own_item(s, user, item_id)
     if item.status != "done":
         item.status = "cancelled"
-        from app.favorites import download_failed
-        await download_failed(s, item)
     await s.flush()
     out = item_out(item)
     bus.publish(user.id, "download", out.model_dump(mode="json"))
     return out
 
 
+RETRIABLE = ("failed", "needs_review", "cancelled")
+
+
+async def _own_items(s: AsyncSession, user: User, ids: list[int]) -> list[DownloadItem]:
+    out: list[DownloadItem] = []
+    ids = list(dict.fromkeys(ids))
+    for i in range(0, len(ids), 400):
+        out += list((await s.execute(select(DownloadItem).where(
+            DownloadItem.user_id == user.id, DownloadItem.hidden.is_(False), DownloadItem.id.in_(ids[i:i + 400])))).scalars())
+    return out
+
+
+@router.post("/remove")
+async def remove(body: DownloadIdsIn, user: User = Depends(current_user),
+                 s: AsyncSession = Depends(get_session, scope="function")):
+    """«Убрать»: the downloads leave the list. One that is not finished is cancelled first — it will not be
+    downloaded, and a playlist that waited for it goes on without it; a finished one's track stays in the library.
+    The rows are kept: a playlist's order, an import and a mix lean on them."""
+    items = await _own_items(s, user, body.ids)
+    for item in items:
+        if item.status != "done" and item.status != "cancelled":
+            item.status = "cancelled"
+        item.hidden = True
+    await s.commit()
+    for item in items:
+        bus.publish(user.id, "download", item_out(item).model_dump(mode="json"))
+    return {"removed": len(items)}
+
+
+@router.post("/retry")
+async def retry_many(body: DownloadIdsIn, user: User = Depends(current_user),
+                     s: AsyncSession = Depends(get_session, scope="function")):
+    """«Повторить» for several downloads at once: each is looked for again, as with its own ↻."""
+    items = [x for x in await _own_items(s, user, body.ids) if x.status in RETRIABLE]
+    for item in items:
+        item.chosen_candidate_json, item.status, item.error, item.progress = None, "queued", None, 0
+        await enqueue(s, "download_item", {"item_id": item.id})
+    await s.commit()
+    notify()
+    for item in items:
+        bus.publish(user.id, "download", item_out(item).model_dump(mode="json"))
+    return {"queued": len(items)}
+
+
 @router.post("/clear")
 async def clear(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
-    res = await s.execute(
-        delete(DownloadItem).where(DownloadItem.user_id == user.id, DownloadItem.status.in_(("done", "cancelled")))
-        # Keep the anchors needed to put a reviewed song back in order. They can be cleared after it is resolved.
-        .where(~DownloadItem.id.in_(select(PendingPlaylistAdd.download_item_id)))
-    )
+    """The finished and the cancelled ones leave the list (the tracks stay in the library)."""
+    res = await s.execute(update(DownloadItem).where(
+        DownloadItem.user_id == user.id, DownloadItem.hidden.is_(False),
+        DownloadItem.status.in_(("done", "cancelled"))).values(hidden=True))
     return {"removed": res.rowcount or 0}

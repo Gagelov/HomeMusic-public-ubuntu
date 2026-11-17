@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
-import type { ImportCollectionOut, ImportItemOut, ImportMode, ImportOut } from '../api/types';
+import type { ImportCollectionOut, ImportItemOut, ImportMode, ImportOut, ImportSource } from '../api/types';
+import { BrandIcon } from '../components/BrandIcon';
+import { PlaylistsPick } from '../components/PlaylistsButton';
+import { AfterImport } from './Upload';
 import { Icon, type IconName } from '../components/Icon';
 import { ListenButton } from '../components/catalog';
-import { Button, Checkbox, Cover, Empty, ErrorState, IconButton, Loading, Notice, PageHeader, ProgressBar, Radio, SectionTitle, SkeletonRows, Spinner, cx } from '../components/ui';
+import { Button, Checkbox, Cover, Empty, ErrorState, IconButton, Loading, Notice, PageHeader, ProgressBar, Radio, SectionTitle, SkeletonRows, Spinner, StatusChip, cx } from '../components/ui';
 import { EMBEDDED } from '../lib/embedded';
 import { useHubEvent } from '../lib/events';
 import { fmtDuration, fmtSize, fmtWhen, plural, tracksWord } from '../lib/format';
@@ -15,8 +18,10 @@ import { Link, navigate } from '../lib/router';
 import { copyText } from '../lib/share';
 import { attempt, confirmDialog, toast } from '../lib/ui';
 
-/** «Перенести музыку»: Yandex Music collections and Spotify account-data exports.
- * Economy (the default): playlists and ♥ at once from what the library has, the
+/** «Перенести музыку»: a user's collection from Yandex Music, VK («Моя музыка» and the playlists: a sign-in with the
+ * login and the password, the code VK sends is typed here) or Spotify (files) — ♥, playlists in
+ * their order, liked albums and artists. The Hub reads the lists only (no audio): sign-in by a code on ya.ru/device,
+ * a token, or an open profile link. Economy (the default): playlists and ♥ at once from what the library has, the
  * rest plays from the sources and is downloaded once listened to; «Скачать всё» downloads everything in the
  * background, below the users' own downloads. */
 
@@ -34,7 +39,7 @@ function statusLine(imp: ImportOut): string {
   const st = imp.stats;
   switch (imp.status) {
     case 'auth':
-      return 'Ждём входа в Яндекс';
+      return SOURCES[imp.source]?.waits ?? 'Ждём входа';
     case 'fetching':
       return 'Читаем коллекцию…';
     case 'preview':
@@ -50,20 +55,38 @@ function statusLine(imp: ImportOut): string {
   }
 }
 
+const EXPORTIFY_URL = 'https://exportify.app/';
+
+/** A service as the page words it: its name, «из …» / «в …» for the buttons, what its sign-in waits for. */
+const SOURCES: Record<ImportSource, { name: string; page: string; from: string; into: string; waits: string }> = {
+  yandex: { name: 'Яндекс Музыка', page: 'Перенос из Яндекс Музыки', from: 'из Яндекса', into: 'в Яндекс', waits: 'Ждём входа в Яндекс' },
+  vk: { name: 'ВКонтакте', page: 'Перенос из ВКонтакте', from: 'из ВК', into: 'в ВК', waits: 'Ждём код для входа в ВК' },
+  spotify: { name: 'Spotify', page: 'Перенос из Spotify', from: 'из Spotify', into: 'в Spotify', waits: 'Ждём входа в Spotify' },
+};
+
+const sourceName = (source: ImportSource): string => SOURCES[source]?.name ?? source;
+
 function sourceTitle(imp: ImportOut): string {
-  const name = imp.source === 'spotify' ? 'Spotify' : 'Яндекс Музыка';
-  return `${name}${imp.account ? ` · ${imp.account}` : ''}`;
+  return `${sourceName(imp.source)}${imp.account ? ` · ${imp.account}` : ''}`;
 }
+
+/** The page of the service a transfer is from: where «Назад» leads, and where one is started anew. */
+const sourcePage = (source: ImportSource): string => `/import?from=${source}`;
 
 // --- the list of imports + a new one ---------------------------------------------------------------
 
-export function ImportsPage() {
+/** `from`: the page of one service — its past transfers and its way in («Ещё» has an entry for each); none: all. */
+export function ImportsPage({ from = null }: { from?: ImportSource | null }) {
   const res = useAsync((s) => api.imports(s), []);
+  const past = (res.data ?? []).filter((imp) => !from || imp.source === from);
   useHubEvent('import', () => res.reload(true));
-  const [busy, setBusy] = useState<'device' | 'profile' | 'token' | 'spotify' | null>(null);
+  const [busy, setBusy] = useState<'device' | 'profile' | 'token' | 'csv' | 'vk' | 'vk-token' | null>(null);
+  const [vkLogin, setVkLogin] = useState('');
+  const [vkPassword, setVkPassword] = useState('');
+  const [vkToken, setVkToken] = useState('');
+  const csvRef = useRef<HTMLInputElement>(null);
   const [profile, setProfile] = useState('');
   const [token, setToken] = useState('');
-  const spotifyFile = useRef<HTMLInputElement>(null);
 
   const start = async (method: 'device' | 'profile' | 'token') => {
     setBusy(method);
@@ -74,27 +97,35 @@ export function ImportsPage() {
     if (r) navigate(`/import/${r.id}`);
   };
 
-  const uploadSpotify = async (files: File[]) => {
-    if (!files.length) return;
-    setBusy('spotify');
-    const result = await attempt(() => api.importSpotify(files));
+  const startVk = async (how: 'vk' | 'vk-token') => {
+    setBusy(how);
+    const r = await attempt(() => api.createImport(how === 'vk' ? { source: 'vk', method: 'password', login: vkLogin.trim(), password: vkPassword } : { source: 'vk', method: 'token', token: vkToken.trim() }));
     setBusy(null);
-    if (result) navigate(`/import/${result.id}`);
+    if (!r) return;
+    setVkPassword('');
+    navigate(`/import/${r.id}`);
+  };
+
+  const startCsv = async (files: File[]) => {
+    setBusy('csv');
+    const r = await attempt(() => api.createImportCsv(files));
+    setBusy(null);
+    if (r) navigate(`/import/${r.id}`);
   };
 
   return (
     <div>
-      <PageHeader title="Перенести музыку" back={EMBEDDED ? '/library' : '/more'} />
+      <PageHeader title={from ? SOURCES[from].page : 'Перенести музыку'} back={EMBEDDED ? '/library' : '/more'} />
       {res.loading ? (
         <SkeletonRows n={2} />
       ) : res.error ? (
         <ErrorState text={res.error} onRetry={() => res.reload()} />
-      ) : res.data?.length ? (
-        <ul className="mx-4 mb-2 overflow-hidden rounded-xl bg-surface">
-          {res.data.map((imp) => (
+      ) : past.length ? (
+        <ul className="mx-4 lg:mx-6 mb-2 overflow-hidden rounded-2xl bg-surface">
+          {past.map((imp) => (
             <li key={imp.id} className="border-b border-line/60 last:border-0">
               <Link to={`/import/${imp.id}`} className="flex min-h-16 items-center gap-3 px-4 py-2 hover:bg-fg/5">
-                <Icon name="transfer" size={22} className="shrink-0 text-muted" />
+                <BrandIcon service={imp.source} size={22} className="shrink-0" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{sourceTitle(imp)}</span>
                   <span className={cx('block truncate text-xs', imp.status === 'failed' ? 'text-danger' : 'text-muted')}>{statusLine(imp)}</span>
@@ -106,8 +137,10 @@ export function ImportsPage() {
         </ul>
       ) : null}
 
-      <SectionTitle>Из Яндекс Музыки</SectionTitle>
-      <div className="card mx-4 space-y-3 p-4">
+      {(!from || from === 'yandex') && (
+      <>
+      {!from && <SectionTitle>Из Яндекс Музыки</SectionTitle>}
+      <div className={cx('card mx-4 lg:mx-6 space-y-3 p-4', from && 'mt-3')}>
         <p className="text-sm text-muted">«Мне нравится», плейлисты (и закрытые), любимые альбомы и исполнители. Подписка Плюс не нужна.</p>
         <Button variant="primary" block icon="lock" busy={busy === 'device'} disabled={!!busy} onClick={() => start('device')}>
           Войти через Яндекс
@@ -115,7 +148,7 @@ export function ImportsPage() {
         <p className="text-xs text-dim">Хаб покажет код — введите его на ya.ru/device. Хаб читает только списки треков, пароль он не видит. Вход можно удалить в любой момент.</p>
       </div>
 
-      <div className="card mx-4 mt-3 space-y-2 p-4">
+      <div className="card mx-4 lg:mx-6 mt-3 space-y-2 p-4">
         <div className="font-semibold">Без входа — по ссылке на профиль</div>
         <p className="text-xs text-muted">Если медиатека открыта всем. Закрытые плейлисты и «Не нравится» так не перенести.</p>
         <input className="input" value={profile} onChange={(e) => setProfile(e.target.value)} placeholder="music.yandex.ru/users/логин/playlists/3" inputMode="url" autoCapitalize="off" autoCorrect="off" />
@@ -124,7 +157,7 @@ export function ImportsPage() {
         </Button>
       </div>
 
-      <details className="card mx-4 mt-3 p-4">
+      <details className="card mx-4 lg:mx-6 mt-3 p-4">
         <summary className="cursor-pointer text-sm text-muted">Вставить токен Яндекс Музыки вручную</summary>
         <div className="mt-3 space-y-2">
           <input className="input" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Токен" autoComplete="off" />
@@ -133,19 +166,90 @@ export function ImportsPage() {
           </Button>
         </div>
       </details>
-      <section className="pb-4">
-        <SectionTitle>Из Spotify</SectionTitle>
-        <div className="card mx-4 space-y-3 p-4">
-          <p className="text-sm text-muted">Скачайте данные аккаунта Spotify и выберите файлы Playlist*.json или YourLibrary.json из архива.</p>
-          <input ref={spotifyFile} type="file" accept=".json,application/json" multiple hidden onChange={(event) => {
-            const files = Array.from(event.currentTarget.files ?? []);
-            event.currentTarget.value = '';
-            void uploadSpotify(files);
-          }} />
-          <Button variant="primary" block icon="upload" busy={busy === 'spotify'} disabled={!!busy}
-            onClick={() => spotifyFile.current?.click()}>Загрузить экспорт Spotify</Button>
+      </>
+      )}
+
+      {(!from || from === 'vk') && (
+      <>
+      {!from && <SectionTitle>Из ВКонтакте</SectionTitle>}
+      <form
+        className={cx('card mx-4 lg:mx-6 space-y-3 p-4', from && 'mt-3')}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!busy && vkLogin.trim() && vkPassword) void startVk('vk');
+        }}
+      >
+        <p className="text-sm text-muted">«Моя музыка» станет плейлистом «ВКонтакте», ваши плейлисты — плейлистами. Перед переносом вы выберете, что брать.</p>
+        <input className="input" value={vkLogin} onChange={(e) => setVkLogin(e.target.value)} placeholder="Телефон или почта" aria-label="Логин ВКонтакте" autoComplete="username" autoCapitalize="off" autoCorrect="off" />
+        <input className="input" type="password" value={vkPassword} onChange={(e) => setVkPassword(e.target.value)} placeholder="Пароль" aria-label="Пароль ВКонтакте" autoComplete="current-password" />
+        <Button type="submit" variant="primary" block icon="lock" busy={busy === 'vk'} disabled={!!busy || !vkLogin.trim() || !vkPassword}>
+          Войти во ВКонтакте
+        </Button>
+        <p className="text-xs text-dim">
+          У ВК нет открытого доступа к музыке, поэтому Хаб входит как приложение ВК для Android: пароль уходит во ВК один раз и не сохраняется. Если ВК попросит код из SMS, Хаб спросит его у вас.
+          Придёт уведомление о новом входе — это он. Хаб читает только списки треков.
+        </p>
+      </form>
+
+      <details className="card mx-4 lg:mx-6 mt-3 p-4">
+        <summary className="cursor-pointer text-sm text-muted">Вставить токен ВКонтакте вручную</summary>
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-dim">Подойдёт токен приложения ВК для Android с доступом к аудио (его выдаёт, например, vkpymusic).</p>
+          <input className="input" type="password" value={vkToken} onChange={(e) => setVkToken(e.target.value)} placeholder="Токен" autoComplete="off" />
+          <Button block busy={busy === 'vk-token'} disabled={!!busy || !vkToken.trim()} onClick={() => startVk('vk-token')}>
+            Продолжить с токеном
+          </Button>
         </div>
-      </section>
+      </details>
+      </>
+      )}
+
+      {(!from || from === 'spotify') && (
+      <>
+      {!from && <SectionTitle>Из Spotify</SectionTitle>}
+      <div className={cx('card mx-4 lg:mx-6 space-y-3 p-4', from && 'mt-3')}>
+        <p className="text-sm text-muted">Плейлисты и «Любимые треки» из файлов CSV. Подписка Premium не нужна.</p>
+        <ol className="list-decimal space-y-1 pl-5 text-sm text-muted">
+          <li>
+            Откройте{' '}
+            <a href={EXPORTIFY_URL} target="_blank" rel="noopener noreferrer" className="font-semibold text-accent underline">
+              exportify.app
+            </a>{' '}
+            и войдите в Spotify.
+          </li>
+          <li>Нажмите Export у нужных плейлистов — скачаются файлы CSV.</li>
+          <li>Выберите эти файлы здесь. Один файл — один плейлист.</li>
+        </ol>
+        <input
+          ref={csvRef}
+          type="file"
+          multiple
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = '';
+            if (files.length) void startCsv(files);
+          }}
+        />
+        <Button variant="primary" icon="upload" block busy={busy === 'csv'} disabled={!!busy} onClick={() => csvRef.current?.click()}>
+          Выбрать файлы CSV
+        </Button>
+        <p className="text-xs text-dim">Exportify — сторонний открытый сервис: вход идёт на сайте Spotify, Хаб получает только файл со списком треков.</p>
+      </div>
+      {!EMBEDDED && (
+        <Link to="/stats" className="card mx-4 lg:mx-6 mt-3 flex items-center gap-3 p-4 hover:bg-hover">
+          <Icon name="chart" size={22} className="shrink-0 text-muted" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold">История прослушиваний</span>
+            <span className="block text-xs text-muted">Что вы слушали в Spotify за все годы — импортируется на странице «Статистика»</span>
+          </span>
+          <Icon name="chevron" size={18} className="text-dim" />
+        </Link>
+      )}
+      </>
+      )}
+
     </div>
   );
 }
@@ -162,21 +266,21 @@ export function ImportPage({ id }: { id: number }) {
 
   return (
     <div>
-      <PageHeader title="Перенос музыки" sub={imp ? sourceTitle(imp) : undefined} back="/import" />
+      <PageHeader title="Перенос музыки" sub={imp ? sourceTitle(imp) : undefined} back={imp ? sourcePage(imp.source) : '/import'} />
       {res.loading ? (
         <Loading />
       ) : res.error || !imp ? (
         <ErrorState text={res.error ?? 'Не найдено'} onRetry={() => res.reload()} />
       ) : imp.status === 'auth' ? (
-        <AuthStep imp={imp} />
+        imp.auth && imp.auth.kind !== 'device' ? <VkAuthStep imp={imp} onChange={(r) => res.setData(r)} /> : <AuthStep imp={imp} />
       ) : imp.status === 'fetching' ? (
-        <Loading text="Читаем коллекцию из Яндекс Музыки…" />
+        <Loading text={`Читаем коллекцию: ${sourceName(imp.source)}…`} />
       ) : imp.status === 'preview' ? (
         <Preview imp={imp} onStarted={(r) => res.setData(r)} />
       ) : imp.status === 'failed' && !imp.started_at ? (
-        <div className="space-y-4 px-4 pt-2">
+        <div className="space-y-4 px-4 lg:px-6 pt-2">
           <Notice kind="error">{imp.error || 'Не получилось'}</Notice>
-          <Button block variant="primary" onClick={() => navigate('/import', { replace: true })}>
+          <Button block variant="primary" onClick={() => navigate(sourcePage(imp.source), { replace: true })}>
             Начать заново
           </Button>
         </div>
@@ -203,7 +307,7 @@ function AuthStep({ imp }: { imp: ImportOut }) {
     else toast('Не удалось скопировать — введите код вручную', 'info');
   };
   return (
-    <div className="space-y-4 px-4 pt-2">
+    <div className="space-y-4 px-4 lg:px-6 pt-2">
       <ol className="list-decimal space-y-1 pl-5 text-sm text-muted">
         <li>Откройте ya.ru/device и войдите в свой Яндекс ID.</li>
         <li>Введите код ниже и подтвердите доступ для «Яндекс Музыки».</li>
@@ -226,6 +330,58 @@ function AuthStep({ imp }: { imp: ImportOut }) {
         {left > 0 ? `Ждём подтверждения · код действует ${fmtDuration(left)}` : 'Код устарел — начните заново'}
       </div>
     </div>
+  );
+}
+
+/** VK asked for more at the sign-in: the code it sent (an SMS, a call, the authenticator), or its captcha — a page
+ * of VK's to pass, whose answer (`success_token`) is given here. The Hub signs in again with what is typed. */
+function VkAuthStep({ imp, onChange }: { imp: ImportOut; onChange: (r: ImportOut) => void }) {
+  const auth = imp.auth!;
+  const captcha = auth.kind === 'captcha';
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    if (!value.trim() || busy) return;
+    setBusy(true);
+    const r = await attempt(() => api.importAuth(imp.id, captcha ? { captcha: value.trim() } : { code: value.trim() }));
+    setBusy(false);
+    if (!r) return;
+    setValue('');
+    onChange(r);
+  };
+  return (
+    <form
+      className="space-y-4 px-4 lg:px-6 pt-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void send();
+      }}
+    >
+      <Notice kind={auth.wrong ? 'error' : 'info'}>{auth.hint || (captcha ? 'ВК просит подтвердить, что вы не робот' : 'ВК ждёт код подтверждения')}</Notice>
+      {captcha ? (
+        <div className="card space-y-3 p-4">
+          <ol className="list-decimal space-y-1 pl-5 text-sm text-muted">
+            <li>Откройте страницу проверки ВК и пройдите её.</li>
+            <li>
+              Проверка отвечает ключом <span className="font-mono text-fg">success_token</span>: он виден в инструментах разработчика браузера (вкладка «Сеть», ответ запроса <span className="font-mono text-fg">captchaNotRobot.check</span>).
+            </li>
+            <li>Вставьте ключ сюда.</li>
+          </ol>
+          <a href={auth.verification_url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-9 items-center gap-2 rounded-full bg-accent px-3.5 text-sm font-semibold text-on-accent">
+            <Icon name="external" size={18} />
+            Открыть проверку ВК
+          </a>
+          <input className="input" value={value} onChange={(e) => setValue(e.target.value)} placeholder="success_token" aria-label="Ключ проверки" autoComplete="off" autoCapitalize="off" autoCorrect="off" />
+          <p className="text-xs text-dim">Это неудобно, и проще подождать: капчу ВК обычно показывает после нескольких входов подряд. Через час-другой её может не быть — тогда начните перенос заново.</p>
+        </div>
+      ) : (
+        <input className="input text-center font-mono text-2xl tracking-[0.3em]" value={value} onChange={(e) => setValue(e.target.value)} placeholder="Код" aria-label="Код подтверждения" inputMode="numeric" autoComplete="one-time-code" autoFocus />
+      )}
+      <Button type="submit" variant="primary" block busy={busy} disabled={!value.trim()}>
+        Продолжить
+      </Button>
+      <p className="text-center text-xs text-dim">Вход ждёт 15 минут. Пароль хранится в Хабе зашифрованным только на это время и стирается, как только вход завершён.</p>
+    </form>
   );
 }
 
@@ -255,10 +411,22 @@ function Preview({ imp, onStarted }: { imp: ImportOut; onStarted: (r: ImportOut)
   const lowSpace = st.free_bytes != null && est.bytes > st.free_bytes * 0.9;
   const albumsPicked = imp.collections.some((c) => c.kind === 'albums' && picked.has(c.id));
 
+  // «После переноса»: what every transferred track also gets once the library has it
+  const [like, setLike] = useState(false);
+  const [toPlaylists, setToPlaylists] = useState<{ id: string; name: string }[]>([]);
+  const [tagIds, setTagIds] = useState<number[]>([]);
+  const [plPicker, setPlPicker] = useState(false);
+  const moved = imp.collections.filter((c) => (c.kind === 'likes' || c.kind === 'playlist') && picked.has(c.id)).reduce((n, c) => n + c.count, 0);
+  // what the transfer makes by itself: a playlist of each list brought over, ♥ for the liked tracks
+  const made = imp.collections.filter((c) => (c.kind === 'likes' || c.kind === 'playlist') && picked.has(c.id)).map((c) => ({ name: c.title, liked: c.kind === 'likes' }));
+
   const go = async () => {
     setBusy(true);
     const r = await attempt(() =>
-      api.importStart(imp.id, { collection_ids: [...picked], mode, download_albums: mode === 'full' && albums, keep_token: keep }),
+      api.importStart(imp.id, {
+        collection_ids: [...picked], mode, download_albums: mode === 'full' && albums, keep_token: keep,
+        star: like, playlist_ids: toPlaylists.map((p) => p.id), tag_ids: tagIds,
+      }),
     );
     setBusy(false);
     if (r) {
@@ -268,11 +436,11 @@ function Preview({ imp, onStarted }: { imp: ImportOut; onStarted: (r: ImportOut)
   };
 
   return (
-    <div className="pb-6">
-      <p className="px-4 pb-1 text-sm text-muted">
+    <div className="pb-10">
+      <p className="px-4 lg:px-6 pb-1 text-sm text-muted">
         Найдено {tracksWord(st.tracks)}, из них уже в библиотеке {st.owned}. Отметьте, что перенести.
       </p>
-      <ul className="mx-4 overflow-hidden rounded-xl bg-surface">
+      <ul className="mx-4 lg:mx-6 overflow-hidden rounded-2xl bg-surface">
         {imp.collections.map((c) => (
           <li key={c.id} className="flex items-center gap-1 border-b border-line/60 pr-2 last:border-0">
             <Checkbox checked={picked.has(c.id)} onChange={(v) => toggle(c.id, v)} label={c.title} />
@@ -286,9 +454,9 @@ function Preview({ imp, onStarted }: { imp: ImportOut; onStarted: (r: ImportOut)
       </ul>
 
       <SectionTitle>Как переносить</SectionTitle>
-      <div className="mx-4 space-y-2">
+      <div className="mx-4 lg:mx-6 space-y-2">
         <ModeCard on={mode === 'economy'} onClick={() => setMode('economy')} title="Экономно" badge="рекомендуем">
-          Плейлисты и ♥ появятся сразу. Всё слушается сразу, а на диск трек скачивается, когда вы его послушали.
+          Плейлисты и ♥ появятся сразу, со всеми треками — их можно слушать. На диск трек скачивается, когда вы его послушали.
         </ModeCard>
         <ModeCard on={mode === 'full'} onClick={() => setMode('full')} title="Скачать всё">
           Около {tracksWord(est.tracks)}, ~{fmtSize(est.bytes)}
@@ -301,14 +469,35 @@ function Preview({ imp, onStarted }: { imp: ImportOut; onStarted: (r: ImportOut)
             Скачивать любимые альбомы целиком
           </label>
         )}
-        {imp.method !== 'profile' && (
+        {imp.method !== 'profile' && imp.method !== 'csv' && imp.method !== 'link' && (
           <label className="flex items-center gap-1 text-sm">
             <Checkbox checked={keep} onChange={setKeep} label="Запомнить вход" />
             <span className="min-w-0">Запомнить вход, чтобы потом подтянуть новое</span>
           </label>
         )}
       </div>
-      <div className="px-4 pt-4">
+      {moved > 0 && (
+        <>
+          <AfterImport label="После переноса" className="mx-4 lg:mx-6 mt-4" made={made} count={moved} like={like} onLike={setLike} playlists={toPlaylists} onPlaylists={setToPlaylists} onPickPlaylists={() => setPlPicker(true)} tagIds={tagIds} onTags={setTagIds} />
+          {(like || toPlaylists.length > 0 || tagIds.length > 0) && (
+            <p className="px-5 pt-1.5 text-xs text-dim lg:px-7">Трек получает это, когда попадает в библиотеку{mode === 'economy' ? ' — в режиме «Экономно» после того, как вы его послушали' : ''}.</p>
+          )}
+        </>
+      )}
+      {plPicker && (
+        <PlaylistsPick
+          title={`${tracksWord(moved)} — в плейлисты`}
+          picked={toPlaylists}
+          liked={like}
+          onClose={() => setPlPicker(false)}
+          onDone={(list, liked) => {
+            setToPlaylists(list);
+            setLike(liked);
+            setPlPicker(false);
+          }}
+        />
+      )}
+      <div className="px-4 lg:px-6 pt-4">
         <Button variant="primary" block busy={busy} disabled={!picked.size || (mode === 'full' && lowSpace)} onClick={go}>
           Перенести
         </Button>
@@ -352,15 +541,15 @@ function Progress({ imp, onChange }: { imp: ImportOut; onChange: (r: ImportOut) 
     if (r) onChange(r);
   };
   const remove = async () => {
-    if (!(await confirmDialog({ title: 'Удалить перенос?', body: imp.source === 'spotify' ? 'Музыка, ♥ и плейлисты останутся. Удалится только этот отчёт.' : 'Музыка, ♥ и плейлисты останутся. Удалятся только этот отчёт и вход в Яндекс.', okLabel: 'Удалить', danger: true }))) return;
-    if (await attempt(() => api.importDelete(imp.id))) navigate('/import', { replace: true });
+    if (!(await confirmDialog({ title: 'Удалить перенос?', body: 'Музыка, ♥ и плейлисты останутся. Удалятся только этот отчёт и сохранённый вход в сервис.', okLabel: 'Удалить', danger: true }))) return;
+    if (await attempt(() => api.importDelete(imp.id))) navigate(sourcePage(imp.source), { replace: true });
   };
   const tracks = imp.collections.filter((c) => c.selected && (c.kind === 'likes' || c.kind === 'playlist'));
   const other = imp.collections.filter((c) => c.selected && (c.kind === 'albums' || c.kind === 'artists'));
 
   return (
-    <div className="pb-6">
-      <div className="card mx-4 space-y-2 p-4">
+    <div className="pb-10">
+      <div className="card mx-4 lg:mx-6 space-y-2 p-4">
         <div className="flex items-center gap-2 font-semibold">
           {imp.status === 'running' ? <Spinner size={16} className="text-accent" /> : <Icon name={imp.status === 'done' ? 'check' : 'alert'} size={18} className={imp.status === 'done' ? 'text-accent' : 'text-warn'} />}
           {imp.status === 'running' ? 'Переносим' : imp.status === 'done' ? 'Перенесено' : 'Остановлено'}
@@ -384,15 +573,15 @@ function Progress({ imp, onChange }: { imp: ImportOut; onChange: (r: ImportOut) 
       </div>
 
       <SectionTitle>Отчёт</SectionTitle>
-      <ul className="mx-4 overflow-hidden rounded-xl bg-surface">
-        <ReportRow to={`/import/${imp.id}/items?match=exact,manual,owned`} icon="check" tone="text-accent" title="Точно" value={st.exact + st.owned} />
+      <ul className="mx-4 lg:mx-6 overflow-hidden rounded-2xl bg-surface">
+        <ReportRow to={`/import/${imp.id}/items?match=exact,owned`} icon="check" tone="text-accent" title="Точно" value={st.exact + st.owned} />
         <ReportRow to={`/import/${imp.id}/items?match=probable`} icon="alert" tone="text-warn" title="Вероятно — проверьте" value={st.probable} />
         <ReportRow to={`/import/${imp.id}/items?match=not_found`} icon="x" tone="text-danger" title="Не найдено" value={st.not_found} />
         {st.failed > 0 && <ReportRow to={`/import/${imp.id}/items?status=failed`} icon="refresh" tone="text-danger" title="Не скачалось" value={st.failed} />}
       </ul>
 
       <SectionTitle>Что перенесли</SectionTitle>
-      <ul className="mx-4 overflow-hidden rounded-xl bg-surface">
+      <ul className="mx-4 lg:mx-6 overflow-hidden rounded-2xl bg-surface">
         {[...tracks, ...other].map((c) => (
           <li key={c.id} className="border-b border-line/60 last:border-0">
             <Link to={`/import/${imp.id}/items?c=${c.id}`} className="flex min-h-14 items-center gap-3 px-4 py-2 hover:bg-fg/5">
@@ -407,20 +596,20 @@ function Progress({ imp, onChange }: { imp: ImportOut; onChange: (r: ImportOut) 
         ))}
       </ul>
 
-      <div className="space-y-2 px-4 pt-4">
+      <div className="space-y-2 px-4 lg:px-6 pt-4">
         {imp.mode === 'economy' && st.waiting > 0 && (
           <Button block icon="download" busy={busy === 'all'} onClick={() => run('all', () => api.importDownloadAll(imp.id), 'Остальное скачается в фоне')}>
             Скачать всё сейчас ({st.waiting})
           </Button>
         )}
-        {imp.status !== 'running' && (imp.has_token || imp.method === 'profile') && (
-          <Button block icon="refresh" busy={busy === 'sync'} onClick={() => run('sync', () => api.importSync(imp.id), 'Подтягиваем новое из Яндекса')}>
-            Подтянуть новое из Яндекса
+        {imp.status !== 'running' && (imp.has_token || imp.method === 'profile' || imp.method === 'link') && (
+          <Button block icon="refresh" busy={busy === 'sync'} onClick={() => run('sync', () => api.importSync(imp.id), `Подтягиваем новое: ${sourceName(imp.source)}`)}>
+            Подтянуть новое {SOURCES[imp.source]?.from ?? ''}
           </Button>
         )}
         {imp.has_token && (
-          <Button block variant="ghost" icon="lock" busy={busy === 'token'} onClick={() => run('token', () => api.importForgetToken(imp.id), 'Вход в Яндекс удалён')}>
-            Удалить вход в Яндекс
+          <Button block variant="ghost" icon="lock" busy={busy === 'token'} onClick={() => run('token', () => api.importForgetToken(imp.id), 'Вход удалён')}>
+            Удалить вход {SOURCES[imp.source]?.into ?? ''}
           </Button>
         )}
         {imp.status === 'running' ? (
@@ -463,20 +652,38 @@ function ReportRow({ to, icon, tone, title, value }: { to: string; icon: IconNam
 const PAGE = 300;
 
 const MATCH_LABEL: Record<string, [string, string]> = {
-  owned: ['есть', 'text-accent'],
-  exact: ['точно', 'text-accent'],
-  manual: ['выбран вручную', 'text-accent'],
-  probable: ['вероятно', 'text-warn'],
-  not_found: ['не найдено', 'text-danger'],
+  owned: ['есть', 'bg-accent/15 text-accent'],
+  exact: ['точно', 'bg-accent/15 text-accent'],
+  probable: ['вероятно', 'bg-warn/15 text-warn'],
+  not_found: ['не найдено', 'bg-danger/15 text-danger'],
 };
 
-function rowState(it: ImportItemOut): string {
-  if (it.status === 'waiting') return it.kind === 'track' ? 'скачается после прослушивания' : 'в каталоге';
-  if (it.status === 'queued') return it.download_status === 'needs_review' ? 'выберите файл' : 'качается';
-  if (it.status === 'failed') return it.error || 'не скачалось';
-  if (it.status === 'pending') return 'сопоставляем…';
-  if (it.status === 'skipped') return 'пропущено';
-  return '';
+const PILL = 'shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px]';
+
+/** How the row was matched with the catalog; a doubtful match says how alike the names are. */
+function MatchPill({ it }: { it: ImportItemOut }) {
+  const [label, tone] = MATCH_LABEL[it.match ?? ''] ?? ['', ''];
+  if (!label) return null;
+  const score = it.score != null ? it.score.toFixed(2) : null;
+  return (
+    <span title={score ? `Сходство с записью каталога: ${score}` : undefined} className={cx(PILL, 'font-medium', tone)}>
+      {label}
+      {it.match === 'probable' && score ? ` ${score}` : ''}
+    </span>
+  );
+}
+
+/** What is going on with the row now: its download as any download shows it, else in a word. */
+function StatePill({ it }: { it: ImportItemOut }) {
+  if (it.status === 'queued') return <StatusChip status={it.download_status ?? 'queued'} />;
+  if (it.status === 'failed')
+    return (
+      <span title={it.error ?? undefined} className={cx(PILL, 'bg-danger/15 text-danger')}>
+        не скачалось
+      </span>
+    );
+  const text = it.status === 'waiting' ? (it.kind === 'track' ? 'после прослушивания' : 'в каталоге') : it.status === 'pending' ? 'сопоставляем…' : it.status === 'skipped' ? 'пропущено' : '';
+  return text ? <span className={cx(PILL, 'bg-fg/5 text-muted')}>{text}</span> : null;
 }
 
 export function ImportItemsPage({ id, collectionId, match, status }: { id: number; collectionId?: number; match?: string; status?: string }) {
@@ -510,6 +717,12 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
     setBusyId(null);
     if (r) navigate(`/downloads/${r.download_item_id}`);
   };
+  const skip = async (it: ImportItemOut) => {
+    setBusyId(it.id);
+    const r = await attempt(() => api.importSkip(it.id), 'Пропущено: этот трек не переносится');
+    setBusyId(null);
+    if (r) res.reload(true);
+  };
 
   return (
     <div>
@@ -521,8 +734,8 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
           canPlayAll() && playable.length ? <IconButton icon="play" label="Слушать все" onClick={() => play(playable[0])} className="!text-accent" /> : undefined
         }
       />
-      {match === 'not_found' && <p className="px-4 pb-2 text-sm text-muted">Таких треков нет в каталоге. Нажмите «Выбрать файл» — Хаб поищет по источникам, а вы выберете подходящий.</p>}
-      {match === 'probable' && <p className="px-4 pb-2 text-sm text-muted">Похоже, но не наверняка (другая длительность или версия). Если трек не тот — выберите файл сами.</p>}
+      {match === 'not_found' && <p className="px-4 pb-2 text-xs text-muted lg:px-6">Таких треков нет в каталоге. Нажмите «Выбрать файл» — Хаб поищет по источникам, а вы выберете подходящий.</p>}
+      {match === 'probable' && <p className="px-4 pb-2 text-xs text-muted lg:px-6">Похоже, но не наверняка (другая длительность или версия): на плашке — сходство названий от 0 до 1. Если трек не тот — выберите файл сами или пропустите его.</p>}
       {res.loading ? (
         <SkeletonRows />
       ) : res.error ? (
@@ -530,14 +743,14 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
       ) : items.length === 0 ? (
         <Empty icon="check" title="Здесь пусто" />
       ) : (
-        <ul className="divide-y divide-line/60">
+        <ul className="mx-4 overflow-hidden rounded-2xl bg-surface lg:mx-6">
           {items.map((it, i) => (
-            <ItemRow key={it.id} n={i + 1} it={it} review={collectionId == null} busy={busyId === it.id} onPlay={it.kind === 'track' && (it.nd_song_id || it.ref) ? () => play(it) : undefined} onPick={() => pick(it)} />
+            <ItemRow key={it.id} n={i + 1} it={it} review={collectionId == null} busy={busyId === it.id} onPlay={it.kind === 'track' && (it.nd_song_id || it.ref) ? () => play(it) : undefined} onPick={() => pick(it)} onSkip={() => skip(it)} />
           ))}
         </ul>
       )}
       {res.data && res.data.total > items.length && (
-        <div className="px-4 py-4">
+        <div className="px-4 lg:px-6 py-4">
           <Button block onClick={() => setLimit((n) => n + PAGE)}>
             Показать ещё
           </Button>
@@ -549,28 +762,29 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
 
 const listenItem = (x: ImportItemOut): ListenTrack => ({ ref: x.ref as string, title: x.title, artist: x.artist, cover_url: x.cover_url, duration_s: x.duration_s });
 
-/** `review`: a part of the report — a probable match offers to pick the file (in a collection it plays). */
-function ItemRow({ n, it, review, busy, onPlay, onPick }: { n: number; it: ImportItemOut; review: boolean; busy: boolean; onPlay?: () => void; onPick: () => void }) {
-  const [label, tone] = MATCH_LABEL[it.match ?? ''] ?? ['', ''];
-  const state = rowState(it);
+/** `review`: a part of the report — a probable match offers to pick the file (in a collection it plays). A row whose
+ * download waits for the user's choice of a file leads to that choice; one the user has to decide about can be left
+ * out («Пропустить»). */
+function ItemRow({ n, it, review, busy, onPlay, onPick, onSkip }: { n: number; it: ImportItemOut; review: boolean; busy: boolean; onPlay?: () => void; onPick: () => void; onSkip: () => void }) {
+  const choosing = it.status === 'queued' && it.download_status === 'needs_review' && it.download_item_id != null;
   const needsPick = it.kind === 'track' && (it.status === 'not_found' || it.status === 'failed' || (review && it.match === 'probable' && it.status !== 'queued'));
   const href = it.kind === 'album' && it.ref ? `/album/${encodeURIComponent(it.ref)}` : it.kind === 'artist' && it.ref ? `/artist/${encodeURIComponent(it.ref)}` : it.download_item_id ? `/downloads/${it.download_item_id}` : null;
   const inner = (
     <>
-      <span className="w-6 shrink-0 text-right text-xs text-dim">{n}</span>
-      <Cover src={it.cover_url} size={44} round={it.kind === 'artist'} icon={it.kind === 'album' ? 'disc' : it.kind === 'artist' ? 'user' : 'note'} />
+      <span className="w-6 shrink-0 text-right text-xs tabular-nums text-dim">{n}</span>
+      <Cover src={it.cover_url} size={40} round={it.kind === 'artist'} icon={it.kind === 'album' ? 'disc' : it.kind === 'artist' ? 'user' : 'note'} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[15px]">{it.title}</span>
         <span className="block truncate text-[13px] text-muted">{it.kind === 'artist' ? 'Исполнитель' : [it.artist, it.album].filter(Boolean).join(' · ')}</span>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
-          {label && <span className={cx('shrink-0 font-medium', tone)}>{label}</span>}
-          {state && <span className="truncate text-dim">{state}</span>}
+        <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 empty:hidden">
+          <MatchPill it={it} />
+          <StatePill it={it} />
         </span>
       </span>
     </>
   );
   return (
-    <li className="flex items-center gap-2 py-2 pl-2 pr-1">
+    <li className="flex items-center gap-2 border-b border-line/60 py-2.5 pl-2 pr-2 last:border-0">
       {href ? (
         <Link to={href} className="flex min-w-0 flex-1 items-center gap-3">
           {inner}
@@ -578,11 +792,18 @@ function ItemRow({ n, it, review, busy, onPlay, onPick }: { n: number; it: Impor
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-3">{inner}</div>
       )}
-      {it.kind === 'track' && (it.ref?.startsWith('dz:') || it.nd_song_id) && <TrackMenuButton track={{ title: it.title, artist: it.artist, ref: it.ref, nd_song_id: it.nd_song_id }} />}
-      {needsPick ? (
-        <Button small busy={busy} onClick={onPick}>
+      {it.kind === 'track' && (it.ref?.startsWith('dz:') || it.nd_song_id) && <TrackMenuButton track={{ title: it.title, artist: it.artist, ref: it.ref, nd_song_id: it.nd_song_id, library_track_id: it.track_id }} />}
+      {choosing ? (
+        <Button small onClick={() => navigate(`/downloads/${it.download_item_id}`)}>
           Выбрать файл
         </Button>
+      ) : needsPick ? (
+        <>
+          <Button small busy={busy} onClick={onPick}>
+            Выбрать файл
+          </Button>
+          <IconButton icon="x" label={`Пропустить «${it.title}»`} disabled={busy} onClick={onSkip} className="!text-dim hover:!text-fg" />
+        </>
       ) : onPlay ? (
         !canPlay() && !it.nd_song_id && it.ref ? (
           <ListenButton track={{ ref: it.ref, title: it.title }} onListen={onPlay} />

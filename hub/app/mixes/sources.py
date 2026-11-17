@@ -191,12 +191,25 @@ async def lastfm_similar_tracks(artist: str, title: str, limit: int = 50) -> lis
     return await _cached_hits(f"mix:lfm_track_sim:{_key(artist, title)}", produce)
 
 
-async def lastfm_similar_artists(artist: str, limit: int = 20) -> list[str]:
-    async def produce() -> list[str]:
-        body = await _lastfm("artist.getSimilar", artist=artist, limit=limit)
-        return [a["name"] for a in _as_list((body.get("similarartists") or {}).get("artist")) if a.get("name")]
+async def lastfm_near_artists(artist: str, limit: int = 20) -> list[tuple[str, float]]:
+    """The artists Last.fm holds to be like this one, nearest first, each with how near (`match`, 0…1: the share
+    of listeners the two have in common, as Last.fm counts it)."""
 
-    return await cached(f"mix:lfm_artist_sim:{_key(artist)}", TTL_S, produce) or []
+    def match(a: dict) -> float:
+        try:
+            return max(0.0, min(1.0, float(a.get("match") or 0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    async def produce() -> list[list]:
+        body = await _lastfm("artist.getSimilar", artist=artist, limit=limit)
+        return [[a["name"], match(a)] for a in _as_list((body.get("similarartists") or {}).get("artist")) if a.get("name")]
+
+    return [(n, float(m)) for n, m in await cached(f"mix:lfm_artist_near:{limit}:{_key(artist)}", TTL_S, produce) or []]
+
+
+async def lastfm_similar_artists(artist: str, limit: int = 20) -> list[str]:
+    return [name for name, _ in await lastfm_near_artists(artist, limit)]
 
 
 async def lastfm_artist_tags(artist: str, limit: int = 5) -> list[str]:

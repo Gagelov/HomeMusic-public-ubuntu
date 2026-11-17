@@ -27,6 +27,21 @@ export function fmtDate(iso?: string | null): string {
   return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+/** «Дата добавления» of a track: how long ago while it is recent (as Spotify does), then the date. */
+export function fmtAdded(iso?: string | null): string {
+  if (!iso) return '';
+  const d = parseTime(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return 'только что';
+  const ago = new Intl.RelativeTimeFormat('ru', { numeric: 'auto' });
+  if (diff < 3600) return ago.format(-Math.floor(diff / 60), 'minute');
+  if (diff < 86400) return ago.format(-Math.floor(diff / 3600), 'hour');
+  if (diff < 7 * 86400) return ago.format(-Math.floor(diff / 86400), 'day');
+  if (diff < 28 * 86400) return ago.format(-Math.floor(diff / (7 * 86400)), 'week');
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).replace(' г.', '');
+}
+
 export function todayRu(): string {
   return new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
@@ -212,8 +227,6 @@ export function toIntOrNull(v: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export const URL_RE = /https?:\/\/[^\s<>"']+/i;
-
 /** AI spending: cents matter, fractions of a cent are shown while the sum is small. */
 export function fmtUsd(v: number): string {
   if (!v) return '$0';
@@ -230,12 +243,6 @@ export const fmtNum = (n?: number | null): string => (n == null ? '—' : Math.r
 export function fmtDec(n?: number | null, digits = 2): string {
   if (n == null || !Number.isFinite(n)) return '—';
   return n.toLocaleString('ru-RU', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
-
-/** A signed weight: "+1,86" / "−0,88". */
-export function fmtSigned(n: number, digits = 2): string {
-  const s = fmtDec(Math.abs(n), digits);
-  return n > 0 ? `+${s}` : n < 0 ? `−${s}` : s;
 }
 
 /** `part / whole` in percent: "46 %"; no whole → "—". */
@@ -273,7 +280,7 @@ const codeLabel = (map: Record<string, string>, fallback?: string) => (code?: st
 
 /** What a launch played (`source`). */
 export const sourceLabel = codeLabel({
-  mix: 'Микс дня', wave: 'Моя волна', smart: 'Умное перемешивание', playlist: 'Плейлист', album: 'Альбом', artist: 'Исполнитель', liked: 'Понравившиеся',
+  mix: 'Микс дня', wave: 'Моя волна', smart: 'Умное перемешивание', playlist: 'Плейлист', album: 'Альбом', artist: 'Исполнитель', liked: 'Любимое',
   search: 'Поиск', queue: 'Очередь', continuous: 'Продолжение похожими', library: 'Библиотека', other: 'Другое',
   unknown: 'Без контекста', scrobble: 'История Navidrome',
 }, 'Без контекста');
@@ -288,7 +295,7 @@ export const waveOriginLabel = codeLabel({
 /** Where a list was launched (`launch_origin`). */
 export const launchOriginLabel = codeLabel({
   mix_page: 'Страница микса', mix_page_track: 'Трек на странице микса', mix_card: 'Карточка микса', nd_playlist: 'Плейлист микса',
-  album: 'Альбом', artist: 'Исполнитель', playlist: 'Плейлист', liked: 'Понравившиеся', search: 'Поиск', queue: 'Очередь',
+  album: 'Альбом', artist: 'Исполнитель', playlist: 'Плейлист', liked: 'Любимое', search: 'Поиск', queue: 'Очередь',
   library: 'Библиотека', wave: 'Волна',
 }, 'не записано');
 

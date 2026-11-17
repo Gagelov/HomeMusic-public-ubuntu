@@ -19,6 +19,8 @@ export interface MeOut {
   public_hub_url?: string;
   google_email?: string | null;
   email?: string | null;
+  /** the server has a Last.fm key: «Карта» of artists is there */
+  artist_map?: boolean;
 }
 
 export interface RegisterIn {
@@ -126,7 +128,7 @@ export interface Candidate {
 // --- catalog ----------------------------------------------------------------------------------
 
 /** `nd`: a library-only song; `file`: an exact search file used as a wave seed. */
-export type CatalogSource = 'dz' | 'hm' | 'mb' | 'nd' | 'file';
+export type CatalogSource = 'dz' | 'ym' | 'hm' | 'mb' | 'nd' | 'file';
 export type RecordType = 'album' | 'single' | 'ep' | 'compile';
 export type OwnedStatus = 'full' | 'partial' | 'none';
 
@@ -149,6 +151,8 @@ export interface CatalogTrack {
   title: string;
   artist: string;
   artists?: string[];
+  /** the catalog refs of `artists`, in their order (null: unknown) */
+  artist_refs?: (string | null)[];
   artist_ref?: string | null;
   album_ref?: string | null;
   album_title?: string | null;
@@ -163,6 +167,8 @@ export interface CatalogTrack {
   /** for lists (Deezer 250 px): the big `cover_url` only on a screen of the track or album itself */
   cover_small_url?: string | null;
   preview_url?: string | null;
+  /** how much the track is listened to, as its catalog counts it (Deezer); none: the catalog does not say */
+  rank?: number | null;
 }
 
 export interface CatalogAlbum {
@@ -172,6 +178,9 @@ export interface CatalogAlbum {
   title: string;
   artist: string;
   artist_ref?: string | null;
+  /** everyone the release is credited to, the main one first, and their refs (an album's own page only) */
+  artists?: string[];
+  artist_refs?: (string | null)[];
   record_type: RecordType;
   release_date?: ISODate | null;
   year?: number | null;
@@ -183,20 +192,51 @@ export interface CatalogAlbum {
   genre?: string | null;
 }
 
+/** The file a track plays from: where it came from (a provider; `upload`), what it is (mp3, flac, opus…), its bitrate,
+ * and what it sounds like when that is less than it says. */
+export interface FileOut {
+  source?: string | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  sounds_like_kbps?: number | null;
+  /** the download that brought it kept its journal (`/file/<track>`) */
+  journal?: boolean;
+}
+
+/** How a track's file came to the library: the journal of the download that brought it. */
+export interface FileJournalOut {
+  track_id: number;
+  artist: string;
+  title: string;
+  file?: FileOut | null;
+  steps: DownloadStep[];
+  /** the download itself, when it is one's own */
+  download_id?: number | null;
+}
+
 export interface TrackOut extends CatalogTrack {
   owned: boolean;
+  /** how many recordings the song it is has here, itself among them (0: it is nobody's version) */
+  versions?: number;
+  /** an owned track: its file */
+  file?: FileOut | null;
   library_track_id?: number | null;
   nd_song_id?: string | null;
   /** a download of it is under way (not counting ones queued only for ♥) */
   downloading: boolean;
+  /** known by its name alone: no file and no record of the catalog — nothing to play until it is given a file */
+  unknown?: boolean;
   /** the user ♥ it and a download that stars it is under way: the ♥ shows filled */
-  star_pending?: boolean;
+  /** in a list: when the track was added to it; else when it came into the library */
+  added_at?: string | null;
 }
 
 export interface AlbumOut extends CatalogAlbum {
   owned_status: OwnedStatus;
   owned_count: number;
   tracks?: TrackOut[] | null;
+  /** where the release can be opened: its own catalog, and another that has the same release (its own page only) */
+  links?: { service: string; url: string }[];
 }
 
 export interface ArtistPageOut {
@@ -205,6 +245,41 @@ export interface ArtistPageOut {
   albums: AlbumOut[];
   singles: AlbumOut[];
   compilations: AlbumOut[];
+  /** releases said to be a namesake's: not among these */
+  excluded?: number;
+  /** how many listened to the artist on Last.fm (not known: none) */
+  lastfm_listeners?: number | null;
+  /** the wide picture over the page, kept on the Hub (none: the round photo is the page's head) */
+  banner_url?: string | null;
+  /** how many of the last `top_tracks` are Last.fm's, added where the catalog's own list is short */
+  top_from_lastfm?: number;
+  /** the catalog's records the page is drawn of — one artist may have several; the first is the page's own address */
+  profiles?: string[];
+  /** each of them, and Last.fm, as they show the artist */
+  sources?: ArtistSourceOut[];
+}
+
+/** A place an artist is known in, as that place shows them: a record of a catalog, or Last.fm. */
+export interface ArtistSourceOut {
+  service: 'deezer' | 'catalog' | 'lastfm' | string;
+  ref?: string | null;
+  name: string;
+  picture_url?: string | null;
+  followers?: number | null;
+  listeners?: number | null;
+  releases?: number | null;
+  url?: string | null;
+}
+
+/** A release the catalog files under an artist that is a namesake's — said so by someone here, for everyone. */
+export interface NamesakeOut {
+  artist_ref: string;
+  artist: string;
+  album_ref: string;
+  title: string;
+  record_type?: string | null;
+  year?: number | null;
+  cover_url?: string | null;
 }
 
 // --- library ----------------------------------------------------------------------------------
@@ -230,6 +305,10 @@ export interface LibTrackOut {
   locked: boolean;
   warnings: unknown[];
   path: string;
+  /** a search found it by these — its other names, its artists' other spellings — not by what the row shows */
+  found_by?: string[];
+  /** how many recordings the song it is has here (0: it is nobody's version) */
+  versions?: number;
 }
 
 export interface LibAlbumOut {
@@ -241,8 +320,11 @@ export interface LibAlbumOut {
   release_type: string | null;
   genre: string | null;
   deezer_album_id: string | null;
+  /** the tracks of it the listener sees: their own (an admin: all) */
   track_count: number;
   has_cover: boolean;
+  /** the album itself can be changed by the listener: all of its tracks are theirs */
+  can_edit: boolean;
   nd_album_id?: string | null;
   tracks?: LibTrackOut[] | null;
 }
@@ -296,6 +378,8 @@ export type FavoriteType = 'track' | 'album' | 'artist';
 
 export interface FavoriteTarget {
   target_type: FavoriteType;
+  /** a track: the Hub's id of it, if the Hub knows it */
+  track_id?: number | null;
   ref?: string | null;
   nd_song_id?: string | null;
   nd_album_id?: string | null;
@@ -337,8 +421,25 @@ export interface StarIn {
 
 // --- search -----------------------------------------------------------------------------------
 
+/** A line of «Недавнее» of the search: a result that was opened, or a query asked for with Enter. */
+export interface SearchRecent {
+  /** what the line is known by (to take it out) */
+  key: string;
+  kind: 'query' | 'track' | 'album' | 'artist';
+  /** the query itself, or the name of what was opened */
+  title: string;
+  /** whose it is: the artist of a track or an album */
+  subtitle?: string | null;
+  ref?: string | null;
+  cover_url?: string | null;
+  /** the page a tap opens; none: the title is searched for */
+  link?: string | null;
+}
+
 export interface SearchHistoryOut {
-  queries: string[];
+  items: SearchRecent[];
+  /** «Вы часто ищете»: what was come back to more than once, the most often first */
+  frequent: SearchRecent[];
 }
 
 export interface SearchOut {
@@ -393,10 +494,10 @@ export interface DownloadIn {
   artist_ref?: string | null;
   record_types?: string[];
   playlist_id?: string | null;
+  /** several playlists at once: the songs go into each as they are imported */
+  playlist_ids?: string[];
   new_playlist_name?: string | null;
   force?: boolean;
-  /** ♥ before download: the Hub stars the songs in Navidrome once they are imported */
-  star?: boolean;
 }
 
 /** GET /api/listen: what plays for a catalog track before it is downloaded. */
@@ -409,9 +510,18 @@ export interface ListenOut {
   duration_s?: number | null;
   provider?: string | null;
   bitrate_kbps?: number | null;
+  /** the file that plays: where it came from (a provider; `upload`), what it is (mp3, flac, opus…), and what it sounds
+   * like when that is less than it says */
+  source?: string | null;
+  codec?: string | null;
+  sounds_like_kbps?: number | null;
+  /** an own file whose download kept its journal */
+  journal?: boolean;
   page_url?: string | null;
   /** library: the Navidrome song (♥), once Navidrome has scanned the file */
   nd_song_id?: string | null;
+  /** the Hub's track, if the Hub knows the song (tags, playlists) */
+  track_id?: number | null;
   /** audio with Range support (same session cookie) */
   stream_url: string;
 }
@@ -423,6 +533,14 @@ export interface DownloadBatchOut {
   playlist_id?: string | null;
   /** catalog refs are expanded in the background; `queued` counts only explicit items */
   expanding?: boolean;
+}
+
+/** A line of a download's journal: what happened, and the file it is about. */
+export interface DownloadStep {
+  t: ISODateTime;
+  kind: 'info' | 'ok' | 'warn' | 'bad';
+  text: string;
+  cand?: { artist: string; title: string; provider: string; bitrate_kbps?: number | null; duration_s?: number | null; page_url: string } | null;
 }
 
 export interface DownloadItemOut {
@@ -443,16 +561,16 @@ export interface DownloadItemOut {
   playlist_id?: string | null;
   /** catalog track the item came from */
   track_ref?: string | null;
-  /** queued only for ♥ or by an import (nobody asked to download it): not shown as a download; false once a
-   * download queued only for ♥ fails (the user sees it then) */
-  star?: boolean;
-  /** queued with ♥: the song is starred once imported */
-  liked?: boolean;
+  /** queued by an import, a mix or the wave (nobody asked to download it): not shown as a download */
+  quiet?: boolean;
   /** queued by this import (`/api/imports`) */
   import_id?: number | null;
   candidates?: Candidate[] | null;
-  preview_refs?: string[] | null;
+  /** the journal (the detail view only): the steps of the download in order */
+  log?: DownloadStep[] | null;
   chosen?: Candidate | null;
+  /** taken off the list by the user (comes with an event: every open page drops it) */
+  hidden?: boolean;
   created_at: ISODateTime;
   updated_at: ISODateTime;
 }
@@ -468,6 +586,14 @@ export interface ClearOut {
 
 // --- uploads ----------------------------------------------------------------------------------
 
+export interface CoverInfo {
+  hash?: string;
+  w?: number;
+  h?: number;
+  format?: string | null;
+  size?: number;
+}
+
 export interface UploadTags {
   title?: string | null;
   artist?: string | null;
@@ -478,6 +604,9 @@ export interface UploadTags {
   year?: number | null;
   genre?: string | null;
   has_cover?: boolean;
+  /** the picture inside the file: the mark of its bytes (one picture in two files is told by it), its size in
+   * pixels, its kind and its weight */
+  cover_info?: CoverInfo | null;
   duration_s?: number | null;
   [key: string]: unknown;
 }
@@ -490,38 +619,225 @@ export interface UploadOut {
   tags: UploadTags;
   error?: string | null;
   created_at: ISODateTime;
-}
-
-export interface UploadTrackIn {
-  upload_id: number;
+  /** the artists read out of the file's line of them, the main one first */
+  artists?: string[];
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  /** the library has this recording already */
+  twin?: UploadTwin | null;
+  /** what song of the catalog the file is */
+  match?: UploadMatch | null;
+  /** the file is heard to be poor */
+  weak?: boolean;
+  /** the file's own names: its tags and, where they are empty, its name */
   title: string;
   artist: string;
-  track_no?: number | null;
-  disc_no?: number | null;
-  genre?: string | null;
-  explicit?: boolean | null;
+  /** its «album» is no album: nothing, «Single», the track's own name */
+  single?: boolean;
+  duration_s?: number | null;
 }
 
-export interface UploadAlbumIn {
-  mode: 'existing' | 'new';
-  album_id?: number | null;
-  title?: string | null;
-  album_artist?: string | null;
+/** The library's track an uploaded file is of already. */
+export interface UploadTwin {
+  track_id: number;
+  title: string;
+  artist: string;
+  album?: string | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  /** told by the sound of the two files, or by their names and length */
+  by: 'sound' | 'name';
+  /** the same recording — or (false) only alike by its sound: a version in another language, a cover over the same
+   * music */
+  sure: boolean;
+  /** the uploaded file is the better one */
+  better: boolean;
+}
+
+/** A file to bring into the library. `catalog`: as the song of the catalog it was told to be (`UploadOut.match`) —
+ * the fields below are not read then. Else by them: `album` empty (or the track's own name) makes a single. */
+export interface UploadTrackIn {
+  upload_id: number;
+  catalog: boolean;
+  /** another name the song is known by: the one its file had, kept by the listener's word */
+  also_title?: string | null;
+  /** the file is another recording of the song the catalog took it for: filed under its own names, tied to that
+   * record as a version */
+  version_of_match?: boolean;
+  /** a record only like the file is not to be weighed against it by the sound afterwards */
+  no_check?: boolean;
+  title?: string;
+  artist?: string;
+  album?: string | null;
   year?: number | null;
-  genre?: string | null;
-  release_type?: ReleaseType | null;
+  /** the library's track whose file this one takes the place of */
+  replace_track_id?: number | null;
+  /** the album of the request it goes into (`UploadCommitIn.albums`); none: a single */
+  album_key?: string | null;
+  /** a single's picture: the catalog's or the one in the file */
+  cover?: 'catalog' | 'file' | null;
+}
+
+/** An album the files of a request go into, as it was chosen among what its files and the catalog say.
+ * `release_of`: an upload whose catalog record stands on this release; the cover — the catalog's picture of an
+ * upload's record, or the picture inside an uploaded file. */
+export interface UploadAlbumIn {
+  key: string;
+  title: string;
+  album_artist: string;
+  year?: number | null;
+  /** a single: one file, the «album» is the track itself */
+  single?: boolean;
+  release_of?: number | null;
+  cover_of_match?: number | null;
+  cover_of_file?: number | null;
+}
+
+/** The song of the catalog an uploaded file was told to be: `found` — it is that song; `doubt` — a record is like
+ * the file but not surely it (`why`), used only when the listener says so; `none` — the catalog has nothing like it. */
+export interface UploadMatch {
+  state: 'found' | 'doubt' | 'none';
+  why?: string | null;
+  by_hand?: boolean;
+  ref?: string | null;
+  title?: string | null;
+  artist?: string | null;
+  artists?: string[];
+  album?: string | null;
+  album_artist?: string | null;
+  /** everyone the release is credited to (the main one first) */
+  album_artists?: string[];
+  /** the release in the catalog: its page shows what it is */
+  album_ref?: string | null;
+  record_type?: string | null;
+  year?: number | null;
+  duration_s?: number | null;
+  cover_url?: string | null;
+  track_no?: number | null;
+}
+
+/** Albums that are one album in pieces («Мои файлы»): `target_id` — the one the rest are joined into. */
+export interface SplitAlbums {
+  title: string;
+  target_id: number;
+  albums: { id: number; title: string; album_artist: string; year?: number | null; track_count: number; has_cover: boolean }[];
 }
 
 export interface UploadCommitIn {
-  album: UploadAlbumIn;
   tracks: UploadTrackIn[];
-  cover_from_upload_id?: number | null;
-  playlist_id?: string | null;
+  albums?: UploadAlbumIn[];
+  /** the playlists the imported tracks go into as well */
+  playlist_ids?: string[];
+  /** the imported tracks go into «Любимое» too */
+  star?: boolean;
+  /** ... and get these tags of one's own */
+  tag_ids?: number[];
+  /** the playlist that keeps what was uploaded together: the user's playlist of this name, made when there is none */
+  keep_in?: string | null;
 }
 
 export interface UploadCommitOut {
-  album_id: number;
+  album_ids: number[];
   imported: number;
+  /** the tracks they became */
+  track_ids: number[];
+  /** how many of them have a weak file: «Качество звука» looks for a better one */
+  weak: number;
+  /** how many were filed under their own names with a record only like them: the sound settles it there */
+  unsure: number;
+}
+
+/** A track of «Качество звука»: a weak file a better one is looked for in the place of. `state`: queued, searching,
+ * found (a file is kept aside for the listener to say), replaced, none (nothing better: `note` says why), kept. */
+export interface QualityRow {
+  id: number;
+  track_id: number;
+  title: string;
+  artist: string;
+  cover_url?: string | null;
+  state: 'queued' | 'searching' | 'found' | 'replaced' | 'none' | 'kept';
+  /** identify: whether the track is the catalog's record `record`, told by the sound */
+  kind: 'better' | 'identify' | 'picked';
+  record?: string | null;
+  progress: number;
+  /** the catalog knows the song */
+  known: boolean;
+  was_codec?: string | null;
+  was_kbps?: number | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  likeness?: number | null;
+  /** by the sound it is the same recording (though the two files may differ in length or at places) */
+  sure?: boolean;
+  /** the file found is the better one of the two */
+  better?: boolean;
+  provider?: string | null;
+  note?: string | null;
+  duration_s?: number | null;
+  /** the file it had is still kept: both can be heard, the old one brought back */
+  can_revert?: boolean;
+  updated_at: string;
+}
+
+/** A track of the library and the file it plays from, as «Найти другой файл» shows it. */
+export interface TrackFileOut {
+  track_id: number;
+  title: string;
+  artist: string;
+  duration_s?: number | null;
+  cover_url?: string | null;
+  explicit?: boolean | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  source?: string | null;
+  name?: string | null;
+}
+
+/** How a file found for a track compares with the track's own: by the sound (`verdict`: same / alike / other /
+ * unknown) and as a file. `taken`: it is the track's file now. */
+export interface PickOut {
+  likeness?: number | null;
+  verdict: 'same' | 'alike' | 'other' | 'unknown';
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  duration_s?: number | null;
+  better: boolean;
+  taken: boolean;
+  /** where the two part though they are one recording: the track's file's moments, and which falls quiet there */
+  gaps?: FileGap[];
+  /** the file as it lies on the Hub for now: what it is heard by, who its source says it is, and the loudness of
+   * the two along their lengths */
+  key?: string | null;
+  title?: string | null;
+  artist?: string | null;
+  provider?: string | null;
+  peaks?: { mine?: number[]; other?: number[] };
+  length?: { mine?: number | null; other?: number | null };
+}
+
+/** A place where two files of one recording part — what a censor's cut shows as: `at`…`to` in the first file (the
+ * track's own, the upper lane), `other_at`…`other_to` in the second; `quieter` — which of them falls quiet there. */
+export interface FileGap {
+  at: number;
+  to: number;
+  other_at: number;
+  other_to: number;
+  depth: number;
+  quieter?: 'mine' | 'other' | 'upper' | 'lower' | null;
+}
+
+export interface QualityPeaks {
+  current: number[];
+  found: number[];
+  was: number[];
+  gaps: FileGap[];
+  length: Record<string, number | null>;
+}
+
+export interface QualityOut {
+  rows: QualityRow[];
+  /** weak files nothing was looked for yet */
+  weak: number;
 }
 
 // --- playlists --------------------------------------------------------------------------------
@@ -529,21 +845,52 @@ export interface UploadCommitOut {
 export interface PlaylistOut {
   id: string;
   name: string;
+  /** the tracks the library has */
   song_count: number;
+  /** the playlist's tracks the library has no file of yet: they play, and are downloaded when listened to */
+  pending_count?: number;
+  /** the user's own: it can be renamed, given a picture, deleted («Микс дня» is the Hub's: it cannot) */
+  editable?: boolean;
   duration_s: number;
   cover_art?: string | null;
+  /** the playlist's picture, the user's own or Navidrome's (add `&size=`) */
+  cover_url?: string | null;
+}
+
+export interface PlaylistOfSongOut extends PlaylistOut {
+  /** the song is in this playlist */
+  has: boolean;
+}
+
+export interface PlaylistOfSongsOut extends PlaylistOut {
+  /** how many of the asked songs are in this playlist */
+  count: number;
 }
 
 export interface PlaylistPageOut extends PlaylistOut {
+  /** every track in its place; one the library has no file of yet has `owned: false` */
   tracks: NdSongOut[];
 }
 
 // --- the Navidrome library (the PWA in a browser: /api/nd) ------------------------------------
 
 /** A library song or a catalog-only favorite (/nd/liked, without nd_song_id until downloaded). */
+/** A track of «Все файлы»: the track as any list shows it (`added_at` — when its file came), and what the page
+ * sorts it out by. */
+export interface FileRowOut extends NdSongOut {
+  /** who brought it */
+  added_by?: string | null;
+  mine: boolean;
+  /** it is in one's «Любимое» or in a playlist of one's own */
+  kept: boolean;
+  no_album: boolean;
+}
+
 export interface NdSongOut extends TrackOut {
   nd_album_id?: string | null;
   nd_artist_id?: string | null;
+  /** the library artists of `artists`, in their order */
+  nd_artist_ids?: (string | null)[];
 }
 
 export interface NdAlbumOut {
@@ -567,7 +914,21 @@ export interface NdArtistOut {
   starred: boolean;
 }
 
+/** Everything an artist released, newest first, each release with its tracks. */
+export interface DiscographyOut {
+  artist: CatalogArtist;
+  albums: AlbumOut[];
+  /** releases said to be a namesake's: not among `albums` */
+  excluded?: number;
+  /** as `ArtistPageOut.profiles` */
+  profiles?: string[];
+}
+
 export interface NdArtistPageOut {
+  /** the same artist in the catalog: their page is the catalog's then */
+  catalog_ref?: string | null;
+  /** their tracks in the library: what the page of an artist the catalog does not know is drawn of */
+  tracks?: NdSongOut[];
   artist: NdArtistOut;
   albums: NdAlbumOut[];
 }
@@ -589,13 +950,9 @@ export interface NdHomeOut {
 
 export type NdAlbumList = 'recent' | 'frequent' | 'newest' | 'starred' | 'alphabeticalByName' | 'alphabeticalByArtist' | 'random';
 
-export interface PlaylistCreateIn {
-  name: string;
-}
-
 export interface PlaylistAddIn {
-  song_ids?: string[];
-  library_track_ids?: number[];
+  /** the Hub's ids of the tracks */
+  track_ids: number[];
 }
 
 // --- assistant --------------------------------------------------------------------------------
@@ -669,22 +1026,11 @@ export interface AssistantTaskOut {
   created_at: ISODateTime;
 }
 
-export interface AssistantTextIn {
-  text?: string | null;
-  url?: string | null;
-}
-
 // --- assistant free chat (stage 3.8) --------------------------------------------------------------
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
-}
-
-export interface ChatIn {
-  messages: ChatMessage[];
-  /** the saved chat this turn continues; none → the Hub starts a new one */
-  chat_id?: number | null;
 }
 
 /** What the assistant may not do without a tap: everything else it does itself (`ChatOut.done`). */
@@ -704,11 +1050,6 @@ export interface ChatOut {
   /** the saved chat this turn went into */
   chat_id: number;
   title: string;
-}
-
-export interface ChatConfirmIn {
-  confirm_token: string;
-  chat_id?: number | null;
 }
 
 /** A saved chat in the history list. */
@@ -749,16 +1090,32 @@ export interface ChatConfirmOut {
 
 // --- imports from music services ------------------------------------------------------------
 
-export type ImportMethod = 'device' | 'token' | 'profile' | 'file';
+export type ImportSource = 'yandex' | 'spotify' | 'vk';
+export type ImportMethod = 'device' | 'token' | 'profile' | 'csv' | 'password' | 'link';
 export type ImportMode = 'economy' | 'full';
 export type ImportStatus = 'auth' | 'fetching' | 'preview' | 'running' | 'done' | 'failed' | 'cancelled';
 export type ImportCollectionKind = 'likes' | 'playlist' | 'albums' | 'artists' | 'dislikes';
 
 export interface ImportIn {
-  source?: 'yandex';
+  source?: 'yandex' | 'vk';
   method: ImportMethod;
   token?: string;
   url?: string;
+  /** method `password` (VK): used for the sign-in only */
+  login?: string;
+  password?: string;
+}
+
+/** A sign-in in progress. `device` (Yandex): `user_code` is entered at `verification_url`. `code` (VK): the service
+ * sent the user a code, it is typed in the Hub (`hint`: where it went; `wrong`: the last one did not fit). `captcha`
+ * (VK): the page at `verification_url` has to be passed, what it answers with is given to the Hub. */
+export interface ImportAuthOut {
+  kind: 'device' | 'code' | 'captcha';
+  user_code: string;
+  verification_url: string;
+  hint?: string | null;
+  wrong: boolean;
+  expires_at: ISODateTime;
 }
 
 export interface ImportStatsOut {
@@ -785,12 +1142,13 @@ export interface ImportCollectionOut {
   count: number;
   owned: number;
   cover_url?: string | null;
-  nd_playlist_id?: string | null;
+  /** the Hub's playlist made of the collection */
+  playlist_id?: string | null;
 }
 
 export interface ImportOut {
   id: number;
-  source: 'yandex' | 'spotify';
+  source: ImportSource;
   method: ImportMethod;
   status: ImportStatus | string;
   mode: ImportMode;
@@ -798,8 +1156,8 @@ export interface ImportOut {
   has_token: boolean;
   keep_token: boolean;
   download_albums: boolean;
-  /** sign-in by code in progress */
-  auth?: { user_code: string; verification_url: string; expires_at: ISODateTime } | null;
+  /** sign-in in progress */
+  auth?: ImportAuthOut | null;
   error?: string | null;
   stats: ImportStatsOut;
   collections: ImportCollectionOut[];
@@ -813,10 +1171,15 @@ export interface ImportStartIn {
   mode: ImportMode;
   download_albums?: boolean;
   keep_token?: boolean;
+  /** «После переноса»: every transferred track, once the library has it, also gets a ♥ … */
+  star?: boolean;
+  /** … a place in these playlists … */
+  playlist_ids?: string[];
+  /** … and these tags */
+  tag_ids?: number[];
 }
 
-/** `manual`: the user picked the file by hand (`importPick`) — counted and listed as «Точно». */
-export type ImportMatch = 'owned' | 'exact' | 'probable' | 'not_found' | 'manual';
+export type ImportMatch = 'owned' | 'exact' | 'probable' | 'not_found';
 export type ImportItemStatus = 'pending' | 'waiting' | 'queued' | 'done' | 'failed' | 'not_found' | 'skipped';
 
 export interface ImportItemOut {
@@ -834,6 +1197,8 @@ export interface ImportItemOut {
   score?: number | null;
   status: ImportItemStatus | string;
   nd_song_id?: string | null;
+  /** the Hub's track the item turned out to be */
+  track_id?: number | null;
   download_item_id?: number | null;
   download_status?: string | null;
   error?: string | null;
@@ -854,6 +1219,178 @@ export interface ImportEvent {
 export interface AssistantEvent {
   id: number;
   status: string;
+}
+
+/** The user's ListenBrainz account (pages/ListenBrainz.tsx). */
+export interface ListenBrainzOut {
+  connected: boolean;
+  user?: string | null;
+  /** the last listen that went there, UTC */
+  sent_until?: string | null;
+  /** `send`: how many listens went this time */
+  sent?: number;
+}
+
+/** A track's names as they are, what the catalog calls it and who changed it last (`components/TrackEdit.tsx`). */
+export interface TrackEditOut {
+  track_id: number;
+  title: string;
+  artist: string;
+  catalog_title?: string | null;
+  catalog_artist?: string | null;
+  renamed: boolean;
+  last_by?: string | null;
+  last_at?: string | null;
+  own_cover: boolean;
+  cover_url?: string | null;
+  /** its album of the library, whose cover can be changed too */
+  album_id?: number | null;
+  album_title?: string | null;
+  has_file: boolean;
+  /** who made the beat, where the track's name said so («(prod. by X)»): taken out of the name */
+  producer?: string | null;
+  /** the other names it is known by — the search reads them (`id` null: the catalog's, which cannot be dropped) */
+  names?: TrackNameOut[];
+}
+
+/** A recording of a song: a track of its own, and what it is among the others (`components/Versions.tsx`). */
+export interface VersionOut {
+  track_id: number;
+  title: string;
+  artist: string;
+  album?: string | null;
+  duration_s?: number | null;
+  /** what it is, in a word: «старая версия», «Deluxe» */
+  label?: string | null;
+  preferred: boolean;
+  cover_url?: string | null;
+  ref?: string | null;
+  nd_song_id?: string | null;
+  codec?: string | null;
+  bitrate_kbps?: number | null;
+  has_file: boolean;
+}
+
+/** The song a track is: every version of it, the preferred one first (one alone: the track is nobody's version). */
+export interface VersionsOut {
+  track_id: number;
+  song_id?: number | null;
+  title: string;
+  versions: VersionOut[];
+}
+
+export interface TrackNameOut {
+  id?: number | null;
+  name: string;
+  source: 'renamed' | 'file' | 'manual' | 'catalog' | string;
+}
+
+/** An artist as the Hub knows them: the one name, the other spellings, the projects linked, and who looks like the
+ * same artist under another spelling. `rewriting`: the library is being written in the name just now. */
+export interface ArtistCardOut {
+  id: number;
+  name: string;
+  /** `id` null: the name of a namesake — not a spelling of theirs to change */
+  names: { id: number | null; name: string; source: string; main: boolean }[];
+  /** a namesake: bare text of this name is taken for that artist */
+  held_by?: string | null;
+  /** the catalog's records of the artist */
+  profiles?: string[];
+  projects: (ArtistBriefOut & { also: string[] })[];
+  suggestions: ArtistBriefOut[];
+  rewriting?: boolean;
+}
+
+/** The photos and the wide pictures an artist may be shown with, and which is chosen (none: as by itself — the
+ * photo of the catalog's record the page is of, the wide picture the Hub finds). */
+export interface ArtistLooksOut {
+  id: number;
+  name: string;
+  photo?: string | null;
+  banner?: string | null;
+  photos: ArtistLookOption[];
+  banners: ArtistLookOption[];
+}
+
+export interface ArtistLookOption {
+  /** what is sent back to choose it */
+  choice: string;
+  label: string;
+  note: string;
+  url: string;
+}
+
+/** Another artist, as a page names them: the catalog's record that leads to their page, and a picture. */
+export interface ArtistBriefOut extends ArtistPickOut {
+  ref?: string | null;
+  nb_fans?: number | null;
+  picture_url?: string | null;
+}
+
+export interface ArtistPickOut {
+  id: number;
+  name: string;
+}
+
+/** Another artist: one the Hub knows, or a name. */
+export interface ArtistOtherIn {
+  other_id?: number;
+  name?: string;
+}
+
+/** A list the user played from lately («Продолжить» of the home): where it leads and how it is drawn. */
+export interface RecentPlaceOut {
+  /** the address of its page */
+  to: string;
+  kind: 'liked' | 'playlist' | 'album' | 'artist' | 'for-you' | 'selection';
+  title: string;
+  cover_url?: string | null;
+  /** the mark drawn where it has no picture */
+  icon: string;
+  /** an artist: the picture is a circle */
+  round?: boolean;
+}
+
+/** A release of a followed artist («Подписки», pages/Subscriptions.tsx). */
+export interface ReleaseOut {
+  album_ref: string;
+  title: string;
+  artist: string;
+  artist_ref: string;
+  record_type: string;
+  /** YYYY-MM-DD */
+  release_date: string;
+  cover_url?: string | null;
+  nb_tracks?: number | null;
+  /** not seen before this opening of the feed */
+  new: boolean;
+  /** its tracks; null: the catalog has not been asked for them yet */
+  tracks?: TrackOut[] | null;
+}
+
+/** An artist the user follows. */
+export interface FollowOut {
+  /** the artist in the catalog */
+  ref: string;
+  name: string;
+  /** what the follow itself is kept by: to unfollow by */
+  like_ref?: string | null;
+  nd_id?: string | null;
+  picture_url?: string | null;
+  /** the latest thing they released, however long ago (YYYY-MM-DD) */
+  last_release_date?: string | null;
+  last_release_title?: string | null;
+  /** how many of their releases the user has not seen */
+  new: number;
+}
+
+export interface ReleasesOut {
+  /** how many artists are followed */
+  artists: number;
+  unseen: number;
+  /** the ones with something new first, then by their latest release */
+  following: FollowOut[];
+  items: ReleaseOut[];
 }
 
 export interface LibraryEvent {
@@ -883,12 +1420,6 @@ export interface HubEventMap {
 
 // --- misc ---------------------------------------------------------------------------------------
 
-export interface SoulseekStatusOut {
-  state: 'disabled' | 'unreachable' | 'auth_error' | 'connecting' | 'disconnected' | 'ready';
-  search_matches: number | null;
-  search_error: boolean;
-}
-
 export interface HealthOut {
   capabilities?: string[];
   ok: boolean;
@@ -904,6 +1435,8 @@ export type PlayKind = 'start' | 'progress' | 'interrupted' | 'error' | 'skip' |
 
 export interface PlayEventIn {
   target_type?: FavoriteType;
+  /** a track: the Hub's id of it, if the Hub knows it */
+  track_id?: number | null;
   nd_album_id?: string | null;
   nd_artist_id?: string | null;
   target_data?: Record<string, unknown> | null;
@@ -922,6 +1455,8 @@ export interface PlayEventIn {
   duration_s?: number | null;
   /** where the list was started from: album, playlist, search, liked, queue, other (mix:<id>, wave:<id> later) */
   context?: string | null;
+  /** the page the list was started on (`/playlist/12`): «История» names the list by it */
+  page?: string | null;
   client: string;
   /** analytics only (INSIGHTS.md 6.5): one id for every event of a launched list (`wave:<id>` for a wave) */
   launch_id?: string | null;
@@ -939,6 +1474,7 @@ export interface PlayEventsOut {
 }
 
 export interface DislikeIn {
+  track_id?: number | null;
   ref?: string | null;
   nd_song_id?: string | null;
   artist_ref?: string | null;
@@ -950,6 +1486,8 @@ export interface DislikeIn {
 
 export interface DislikeOut {
   id: number;
+  /** the Hub's track, if the Hub knows the song */
+  track_id?: number | null;
   ref: string | null;
   nd_song_id: string | null;
   artist_ref: string | null;
@@ -957,6 +1495,10 @@ export interface DislikeOut {
   title: string | null;
   source: 'app' | 'pwa' | 'yandex_import' | string;
   created_at: string;
+  /** of an artist's mark: everything the artist is known by — every record a catalog keeps of them and every
+   * spelling of the name. The mark is of all of it */
+  artist_refs?: string[];
+  artist_names?: string[];
 }
 
 // --- «Микс дня» and the taste (MIXES.md 6) ----------------------------------------------------------
@@ -1001,6 +1543,87 @@ export interface MixSettingsOut {
   artists: Array<{ ref: string; name: string }>;
 }
 
+/** A listen of «История» (`/api/plays/history`). */
+export interface HistoryItem {
+  /** names the listen: what «убрать из истории» is told */
+  uid: string;
+  ts: ISODateTime;
+  /** the day it is of, in the Hub's time zone (YYYY-MM-DD) */
+  day: string;
+  /** listened */
+  ms: number;
+  duration_ms?: number | null;
+  /** played long enough to count; false: left early */
+  finished: boolean;
+  title: string;
+  artist: string;
+  /** where it was played from, and the page of that list when the Hub knows which */
+  from?: string | null;
+  from_to?: string | null;
+  origin: string;
+  /** the library's track, when it has one */
+  track?: TrackOut | null;
+  /** a catalog track the library has not got: it plays by this */
+  ref?: string | null;
+}
+
+export interface HistoryOut {
+  items: HistoryItem[];
+  /** the totals of the days the items are of */
+  days: Record<string, { count: number; ms: number }>;
+  total: number;
+  next_offset?: number | null;
+}
+
+/** A list of «Для вас» (`/api/for-you`): `mix`, `weekly` or a kind of the lists of a rule. */
+export interface ForYouItem {
+  kind: string;
+  title: string;
+  /** tracks it has now; null: nothing was made yet */
+  count: number | null;
+  /** a mix or an issue made since the user last opened the list */
+  fresh?: boolean;
+}
+
+/** A change somebody made to a track (`components/TrackEdit.tsx`): each field as it was and as it became. */
+export interface TrackEditEntry {
+  id: number;
+  by?: string | null;
+  at: string;
+  changes: Record<string, [unknown, unknown]>;
+}
+
+/** A track whose file was deleted lately and is still kept («Корзина», pages/Trash.tsx). */
+export interface TrashedOut {
+  id: number;
+  title: string;
+  artist: string;
+  album?: string | null;
+  deleted_by?: string | null;
+  deleted_at: string;
+  days_left: number;
+  /** how many playlists it stood in */
+  playlists: number;
+}
+
+/** A list of «Для вас» as its page shows it: the tracks, and what is the list's own beside them. */
+export interface ForYouOut {
+  kind: string;
+  title: string;
+  /** the player's context of a list started from here */
+  context: string;
+  tracks: TrackOut[];
+  /** one more thing to say under the name: «скачано 32», «прежний микс» */
+  note?: string | null;
+  /** the list is being made: ask again this soon (seconds) */
+  refresh_s?: number | null;
+  /** a top: Navidrome song id -> the listens its rule counted */
+  plays?: Record<string, number> | null;
+  plays_label?: string | null;
+  mix?: { id: number | null; current: boolean; building: boolean; settings: MixSettingsOut; onboarding: boolean } | null;
+  weekly?: { issue: number | null; week: string | null; latest: boolean; building: boolean; issues: { id: number; week: string; count: number }[] } | null;
+}
+
 export interface MixTodayOut {
   mix: MixOut | null;
   /** a build is queued or running */
@@ -1015,10 +1638,20 @@ export interface MixSettingsIn {
   mix_hour?: number;
 }
 
+/** «Карта»: an artist and those Last.fm holds to be near them, nearest first; `match` 0…1 */
+export interface ArtistMapOut {
+  center: CatalogArtist;
+  around: Array<{ artist: CatalogArtist; match: number }>;
+  /** asking for more may give more */
+  more?: boolean;
+}
+
 export interface TasteOnboardingOut {
   needed: boolean;
   selected: Array<{ ref: string; name: string }>;
   suggestions: CatalogArtist[];
+  /** what the suggestions are: those this server listens to, the catalog's chart (a server without music), the search */
+  source: 'server' | 'chart' | 'search';
 }
 
 // «Моя волна» (MIXES.md 7, hub/API.md «Моя волна»)
@@ -1064,7 +1697,7 @@ export interface WaveTrackOut extends TrackOut {
 export interface SmartStartIn {
   /** `liked` or `playlist:<Navidrome id>` */
   context: string;
-  /** the context's songs in its order (a playlist: new ones at the end; «Понравившиеся»: the newest first): a Navidrome
+  /** the context's songs in its order (a playlist: new ones at the end; «Любимое»: the newest first): a Navidrome
    * song id, or a catalog ref for a ♥ not downloaded yet */
   songs: string[];
   /** the song tapped or playing now: it plays first */
@@ -1100,7 +1733,7 @@ export interface SmartOut {
 
 export interface SmartAddOut {
   ok: boolean;
-  /** added to the playlist / downloading and will be added / «Понравившиеся»: the client likes it itself */
+  /** added to the playlist / downloading and will be added / «Любимое»: the client likes it itself */
   status: 'added' | 'downloading' | 'liked';
   playlist_id?: string | null;
 }

@@ -7,7 +7,8 @@ Three ways in:
   `yandex-music` by MarshalX documents it). No Plus subscription is needed: only lists are read, never audio;
 - a token pasted by hand (the same token, got elsewhere);
 - an open profile without signing in (`music.yandex.ru/users/<login>/…`): likes of tracks, albums and artists and
-  public playlists; no private playlists, no dislikes.
+  public playlists; no private playlists, no dislikes;
+- a link to one open playlist or album (`fetch_link`): that playlist alone, without signing in.
 
 The `yandex-music` client is synchronous (its async one needs aiohttp): `fetch_snapshot` runs in a worker thread.
 """
@@ -86,6 +87,61 @@ def profile_login(text: str) -> str:
         if _LOGIN_RE.match(parts[1]):
             return parts[1]
     raise SourceError("Нужна ссылка на профиль: music.yandex.ru/users/<логин>/playlists/3")
+
+
+def link_target(url: str) -> tuple[str, tuple[str, ...]]:
+    """A link to a playlist or an album of Yandex Music → what it points at (`ai.links.parse_yandex_path`)."""
+    from app.ai.links import UnsupportedLink, parse_yandex_path
+
+    raw = (url or "").strip()
+    if "://" not in raw:
+        raw = "https://" + raw
+    p = urlparse(raw)
+    try:
+        if not _HOST_RE.match((p.hostname or "").lower()):
+            raise UnsupportedLink()
+        kind, ids = parse_yandex_path(p.path)
+    except UnsupportedLink as e:
+        raise SourceError("Нужна ссылка на плейлист или альбом Яндекс Музыки") from e
+    if kind == "track":
+        raise SourceError("Это ссылка на трек — нужна на плейлист или альбом")
+    return kind, ids
+
+
+def fetch_link(url: str) -> Snapshot:
+    """Sync (run in a thread): the playlist — or the album, as a playlist — behind a link, read without signing in:
+    its tracks in its order, with the days they were added."""
+    from yandex_music.exceptions import BadRequestError, NotFoundError, UnauthorizedError, YandexMusicError
+
+    kind, ids = link_target(url)
+    client = yandex_client()
+    try:
+        if kind == "album":
+            album = client.albums_with_tracks(ids[0])
+            if album is None or not album.title:
+                raise SourceError("Альбом не найден в Яндекс Музыке")
+            items = [SnapItem(external_id=str(t.id), raw=raw) for vol in (album.volumes or []) for t in vol
+                     if (raw := track_raw(t))]
+            title = " — ".join(x for x in (_names(album.artists), album.title) if x)
+            cover, external, account = _cover(album), f"album:{ids[0]}", _names(album.artists) or None
+        else:
+            pl = client.users_playlists(int(ids[1]), ids[0]) if kind == "user_playlist" else client.playlist(ids[0])
+            if pl is None:
+                raise SourceError("Плейлист не найден в Яндекс Музыке")
+            items = _track_items(client, list(pl.tracks or []), liked=True)
+            if not items and (pl.track_count or 0) > 0:
+                raise SourceError("Плейлист закрыт: без входа в Яндекс его не прочитать")
+            owner = getattr(pl, "owner", None)
+            title, cover, external = pl.title or "Плейлист", _cover(pl), ":".join(ids)
+            account = (getattr(owner, "name", None) or getattr(owner, "login", None)) if owner else None
+    except (NotFoundError, BadRequestError, UnauthorizedError) as e:
+        raise SourceError("Не найдено в Яндекс Музыке: ссылка устарела или плейлист закрыт") from e
+    except YandexMusicError as e:
+        raise SourceError(f"Яндекс Музыка не ответила: {e}") from e
+    if not items:
+        raise SourceError("По ссылке нет треков")
+    return Snapshot(account=account, collections=[
+        SnapCollection(kind="playlist", external_id=external, title=title, items=items, cover_url=cover)])
 
 
 # --- the collection --------------------------------------------------------------------------------

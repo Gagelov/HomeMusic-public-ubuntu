@@ -13,12 +13,12 @@ import logging
 
 from sqlalchemy.exc import IntegrityError
 
-from app.catalog.cache import cache_get, cache_set
+from app.catalog.cache import cache_get, cache_put, cache_set
 from app.catalog.models import CatalogTrack, split_ref
 from app.config import get_settings
 from app.db import session_scope
 from app.imports.resolve import Resolution, _remember, _remembered
-from app.library.owned import find_existing
+from app.library.owned import find_owned
 from app.matching.select import classify_scores, match_catalog
 from app.mixes.sources import Hit
 from app.services import svc
@@ -31,8 +31,8 @@ PARALLEL = 4
 
 def library_track(t) -> CatalogTrack:
     """A library song as a catalog-like track: its Deezer record when it has one, else `nd:<song>`."""
-    if t.deezer_track_id:
-        return CatalogTrack(ref=f"dz:{t.deezer_track_id}", source="dz", id=str(t.deezer_track_id), title=t.title,
+    if t.ref and t.ref.startswith("dz:"):
+        return CatalogTrack(ref=t.ref, source="dz", id=t.ref[3:], title=t.title,
                             artist=t.artist, artists=[t.artist], album_title=t.album, duration_s=t.duration_s,
                             isrc=t.isrc, explicit=t.explicit)
     return CatalogTrack(ref=f"nd:{t.nd_song_id}", source="nd", id=str(t.nd_song_id), title=t.title, artist=t.artist,
@@ -47,19 +47,28 @@ def external_id(hit: Hit) -> str:
     return raw if len(raw) <= 128 else hashlib.sha1(raw.encode()).hexdigest()
 
 
-async def remember_track(t: CatalogTrack) -> None:
-    await cache_set(f"mix:track:{t.ref}", t.model_dump(mode="json"), TRACK_TTL_S)
+async def remember_track(t: CatalogTrack, s=None) -> None:
+    """Keep the catalog's record of a track (`s`: within this transaction)."""
+    if s is not None:
+        await cache_put(s, f"mix:track:{t.ref}", t.model_dump(mode="json"), TRACK_TTL_S)
+    else:
+        await cache_set(f"mix:track:{t.ref}", t.model_dump(mode="json"), TRACK_TTL_S)
+
+
+async def remembered_track(ref: str) -> CatalogTrack | None:
+    """The catalog record of a track as the Hub has kept it (`remember_track`); the catalog is not asked."""
+    hit = await cache_get(f"mix:track:{ref}")
+    return CatalogTrack.model_validate(hit) if hit is not None else None
 
 
 async def catalog_track(ref: str) -> CatalogTrack | None:
-    """The catalog record of a Deezer track (a source's match remembered, else Deezer's `track/{id}`)."""
-    if (hit := await cache_get(f"mix:track:{ref}")) is not None:
-        return CatalogTrack.model_validate(hit)
-    src, id_ = split_ref(ref)
-    if src != "dz" or svc.deezer is None:
+    """The catalog's record of a track (a source's match remembered, else read from the catalog it is of)."""
+    if (hit := await remembered_track(ref)) is not None:
+        return hit
+    if split_ref(ref)[0] not in ("dz", "ym"):
         return None
     try:
-        t = await svc.deezer.get_track(id_)
+        t = await svc.track(ref)
     except Exception as e:
         log.info("mix: catalog track %s: %r", ref, e)
         return None
@@ -82,7 +91,7 @@ async def _search(hit: Hit) -> Resolution:
 
 async def resolve_hit(source: str, hit: Hit) -> CatalogTrack | None:
     async with session_scope() as s:
-        lib = await find_existing(s, artist=hit.artist, title=hit.title, duration_s=hit.duration_s)
+        lib = await find_owned(s, artist=hit.artist, title=hit.title, duration_s=hit.duration_s)
         if lib is not None and lib.nd_song_id:
             return library_track(lib)
         known = await _remembered(s, source, "track", external_id(hit))

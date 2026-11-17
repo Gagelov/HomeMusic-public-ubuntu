@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import accounts, auth, mailer
+from app import accounts, auth, guard, mailer
 from app.api.schemas import (
     AuthOptionsOut,
     EmailCodeIn,
@@ -25,7 +25,7 @@ def me_out(user: User) -> MeOut:
     settings = get_settings()
     return MeOut(id=user.id, username=user.nd_username, is_admin=user.is_admin,
                  public_music_url=settings.public_music_url, public_hub_url=settings.public_hub_url,
-                 google_email=user.google_email, email=user.email)
+                 google_email=user.google_email, email=user.email, artist_map=bool(settings.lastfm_api_key.strip()))
 
 
 @router.get("/options", response_model=AuthOptionsOut)
@@ -38,7 +38,15 @@ async def options():
 @router.post("/login", response_model=MeOut)
 async def login(body: LoginIn, request: Request, response: Response, s: AsyncSession = Depends(get_session, scope="function")):
     username = await accounts.username_for_login(s, body.username)
-    user, token = await auth.password_login(s, username, body.password)
+    address = request.client.host if request.client else None
+    guard.check(address, body.username)  # a guesser of passwords waits (app/guard.py)
+    try:
+        user, token = await auth.password_login(s, username, body.password)
+    except HTTPException as e:
+        if e.status_code == 401:
+            guard.wrong(address, body.username)
+        raise
+    guard.right(body.username)
     auth.set_session_cookie(request, response, token)
     return me_out(user)
 

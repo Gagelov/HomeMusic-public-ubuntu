@@ -19,18 +19,16 @@ import { onPlayEvent } from './plays';
 import { toggleLike } from './stars';
 import { toast, toastError } from './ui';
 
-/** «Умное перемешивание» (MIXES.md 8): a playlist or «Понравившиеся» in the shuffle, with recommendations "in the mood
+/** «Умное перемешивание» (MIXES.md 8): a playlist or «Любимое» in the shuffle, with recommendations "in the mood
  * of the list" put between its songs — one after every 3 own songs (every 2 in a list of 15 or fewer). All the logic
  * is the Hub's (`POST /api/smart-shuffle/*`); this module keeps the session, hands the Hub the events and the place of
  * the player, and puts what it answers in the page player's queue (`lib/listen.ts`).
  *
  * The shuffle button goes off → shuffle → smart → off; smart is offered only for a list started from a playlist's or
- * «Понравившиеся» page (`useSmartPage`) and only with the setting «Умное перемешивание в режимах» on (More). The first
+ * «Любимое» page (`useSmartPage`): the shuffle button goes round — off, shuffle, smart shuffle. The first
  * track starts at once in the plain shuffle; the Hub's order replaces what is after it a moment later. The playlist
  * itself is never changed. A recommendation is told by `ListenTrack.rec` (✨ and the line «Рекомендация на основе …»);
- * «+» puts it in the list (in «Понравившиеся» — ♥), «−» skips it and the Hub never recommends it in this list again. */
-
-const SETTING_KEY = 'hm-smart-shuffle';
+ * «+» puts it in the list (in «Любимое» — ♥), «−» skips it and the Hub never recommends it in this list again. */
 
 const subscribers = new Set<() => void>();
 const emit = () => subscribers.forEach((fn) => fn());
@@ -41,28 +39,6 @@ const subscribe = (fn: () => void) => {
   };
 };
 
-/** «Умное перемешивание в режимах»: on by default (off — the button goes between shuffle and off only). */
-export function smartEnabled(): boolean {
-  try {
-    return localStorage.getItem(SETTING_KEY) !== '0';
-  } catch {
-    return true;
-  }
-}
-
-export function setSmartEnabled(on: boolean) {
-  try {
-    localStorage.setItem(SETTING_KEY, on ? '1' : '0');
-  } catch {
-    /* the choice is just not remembered */
-  }
-  emit();
-}
-
-export function useSmartEnabled(): boolean {
-  return useSyncExternalStore(subscribe, smartEnabled);
-}
-
 // --- the screen's context ------------------------------------------------------------------------------------------
 
 interface Page {
@@ -72,7 +48,7 @@ interface Page {
 
 let page: Page | null = null;
 
-/** The screen shows a playlist or «Понравившиеся»: a list started from it may be played in the smart shuffle. */
+/** The screen shows a playlist or «Любимое»: a list started from it may be played in the smart shuffle. */
 export function useSmartPage(context: string | null, title: string | null) {
   useEffect(() => {
     if (!context) return;
@@ -85,12 +61,15 @@ export function useSmartPage(context: string | null, title: string | null) {
   }, [context, title]);
 }
 
-/** The list at the top of the screen can be played in the smart shuffle (and the setting is on): the button of
- * «Перемешать» shows it. */
+/** The screen is a playlist's or «Любимое»: its shuffle button has the smart shuffle in its round. */
+export function useSmartPossible(): boolean {
+  return useSyncExternalStore(subscribe, () => STANDALONE && page !== null);
+}
+
+/** The list at the top of the screen can be played in the smart shuffle: the button of «Перемешать» shows it. */
 export function useSmartForPage(): boolean {
   const chosen = useSmartChosen();
-  const enabled = useSmartEnabled();
-  return useSyncExternalStore(subscribe, () => STANDALONE && enabled && chosen && page !== null);
+  return useSyncExternalStore(subscribe, () => STANDALONE && chosen && page !== null);
 }
 
 // --- the session ---------------------------------------------------------------------------------------------------
@@ -232,8 +211,8 @@ registerSmart({
     listPage = (context === 'playlist' || context === 'liked') && page && (page.context === 'liked') === (context === 'liked') ? page : null;
   },
   canStart() {
-    if (!STANDALONE || !smartEnabled()) return false;
-    // a list of a playlist's / «Понравившиеся» page, noted when it was started (or, for a restored one, the session)
+    if (!STANDALONE) return false;
+    // a list of a playlist's / «Любимое» page, noted when it was started (or, for a restored one, the session)
     return listPage !== null && !getListenState().context.startsWith('wave:');
   },
   begin(list, current) {
@@ -257,7 +236,7 @@ registerSmart({
 
 // --- «+» and «−» of a playing recommendation -----------------------------------------------------------------------
 
-/** «+»: the recommendation joins the list (a playlist: put in it, downloaded first if the library lacks it; «Понравившиеся»:
+/** «+»: the recommendation joins the list (a playlist: put in it, downloaded first if the library lacks it; «Любимое»:
  * ♥). It is the list's own song from now on (no ✨). */
 export async function addRec(track: ListenTrack): Promise<void> {
   const s = session;
@@ -265,9 +244,9 @@ export async function addRec(track: ListenTrack): Promise<void> {
   if (!rec) return;
   try {
     if (s?.context === 'liked' || (!s && getListenState().context === 'liked')) {
-      await toggleLike({ targetType: 'track', songId: track.nd_song_id, ref: track.ref, data: { ...track } });
+      await toggleLike({ targetType: 'track', trackId: track.library_track_id, songId: track.nd_song_id, ref: track.ref, data: { ...track } });
       await api.smartAdd(rec.session, { ref: track.ref, nd_song_id: track.nd_song_id });
-      toast(`«${track.title}» в понравившихся`, 'success');
+      toast(`«${track.title}» в любимом`, 'success');
     } else {
       const r = await api.smartAdd(rec.session, { ref: track.ref, nd_song_id: track.nd_song_id });
       toast(r.status === 'downloading' ? `«${track.title}» скачивается и появится в плейлисте` : `«${track.title}» добавлен в плейлист`, 'success');

@@ -33,13 +33,38 @@ export interface Toast {
 const toastStore = createStore<Toast[]>([]);
 let toastSeq = 0;
 
+/** An error shown to a listener is told to the Hub too (its log): what was said and on which page — so that «у меня
+ * не работает» can be looked up, not guessed at. Nothing waits for it, and nothing comes of its failing. */
+function report(text: string) {
+  try {
+    void fetch('/api/system/client-error', {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.slice(0, 500), page: window.location.hash.slice(0, 200) }),
+    }).catch(() => undefined);
+  } catch {
+    /* no network, no matter */
+  }
+}
+
+const toastTimers = new Map<number, number>();
+
+/** Said again while it is still shown (a button tapped twice), a toast is not shown twice: the one on the screen
+ * stays where it is, for its whole time anew — with the new button, whose undo is of the last action. */
 export function toast(text: string, kind: Toast['kind'] = 'info', link?: Toast['link']) {
-  const t: Toast = { id: ++toastSeq, text, kind, link };
-  toastStore.set([...toastStore.get().slice(-2), t]);
-  window.setTimeout(() => dismissToast(t.id), kind === 'error' ? 6000 : 3500);
+  if (kind === 'error') report(text);
+  const shown = toastStore.get().find((x) => x.text === text && x.kind === kind);
+  const t: Toast = { id: shown?.id ?? ++toastSeq, text, kind, link };
+  toastStore.set(shown ? toastStore.get().map((x) => (x === shown ? t : x)) : [...toastStore.get().slice(-2), t]);
+  window.clearTimeout(toastTimers.get(t.id));
+  toastTimers.set(t.id, window.setTimeout(() => dismissToast(t.id), kind === 'error' ? 6000 : 3500));
 }
 
 export function dismissToast(id: number) {
+  window.clearTimeout(toastTimers.get(id));
+  toastTimers.delete(id);
   toastStore.set(toastStore.get().filter((t) => t.id !== id));
 }
 

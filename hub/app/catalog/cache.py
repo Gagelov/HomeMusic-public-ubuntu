@@ -32,6 +32,15 @@ async def cache_set(key: str, value: Any, ttl_s: int) -> None:
         await s.execute(stmt)
 
 
+async def cache_put(s, key: str, value: Any, ttl_s: int) -> None:
+    """`cache_set` within the caller's transaction: one that has written already is the database's only writer, and
+    a write beside it would wait for it in vain."""
+    row = {"key": key, "payload_json": {"v": value}, "ttl_s": ttl_s, "fetched_at": utcnow()}
+    stmt = insert(CatalogCache).values(**row)
+    await s.execute(stmt.on_conflict_do_update(index_elements=[CatalogCache.key],
+                                               set_={k: stmt.excluded[k] for k in row if k != "key"}))
+
+
 async def cache_set_many(values: dict[str, Any], ttl_s: int) -> None:
     """Several keys in one transaction (`cache_set` each)."""
     if not values:

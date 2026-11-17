@@ -47,7 +47,7 @@ GENERATOR_TITLES = {
     "favorites": "Любимое", "stash": "Тайник", "ytm_radio": "Похожее: радио YouTube Music",
     "lastfm_similar": "Похожее: Last.fm", "deezer_radio": "Похожее: радио Deezer",
     "yandex_similar": "Незнакомое: похожие Яндекса", "similar_artists": "Незнакомое: похожие исполнители",
-    "new_releases": "Новинки", "yandex_wave": "Моя волна Яндекса",
+    "new_releases": "Новинки", "yandex_wave": "Моя волна Яндекса", "listenbrainz": "ListenBrainz: Weekly Exploration",
 }
 BANNED_VERSIONS = {"karaoke", "instrumental", "cover", "slowed", "sped up", "8d", "bass boosted", "remix", "live"}
 REJECT_REASONS = ("disliked", "version", "duration", "recent", "negative_score")  # `keep_reason`
@@ -341,10 +341,20 @@ async def cold_seeds(p: Profile, n: int) -> list[TasteTrack]:
     """A new user: the top tracks of the artists picked on «Что вы слушаете?»."""
     if svc.deezer is None or not p.picked_artists:
         return []
+    from app.library import artists
+
     refs = [a["ref"] for a in p.picked_artists if str(a.get("ref", "")).startswith("dz:")]
-    tops = await asyncio.gather(*(svc.deezer.get_artist_top(split_ref(r)[1], limit=2) for r in refs),
-                                return_exceptions=True)
-    tracks = _interleave([x for x in tops if not isinstance(x, BaseException)])
+    # a catalog may keep several records of one artist: their two most popular tracks are of all of them
+    async with session_scope() as s:
+        theirs = [[x for x in (await artists.whole(s, r))[0] if x.startswith("dz:")] for r in refs]
+    flat = list(dict.fromkeys(x for xs in theirs for x in xs))
+    got = dict(zip(flat, await asyncio.gather(*(svc.deezer.get_artist_top(split_ref(r)[1], limit=2) for r in flat),
+                                              return_exceptions=True)))
+    tops = []
+    for xs in theirs:
+        own = {t.ref: t for r in xs if not isinstance(got[r], BaseException) for t in got[r]}
+        tops.append(sorted(own.values(), key=lambda t: -(t.rank or 0))[:2])
+    tracks = _interleave(tops)
     return [TasteTrack(key=t.ref, ref=t.ref, artist=t.artist, title=t.title, duration_s=t.duration_s, track=t)
             for t in tracks][:n]
 
@@ -455,13 +465,23 @@ async def link_library(cands: dict[str, Cand]) -> None:
             for tid, song in (await s.execute(select(Track.id, Track.nd_song_id)
                                               .where(Track.nd_song_id.in_(list(nd))))).all():
                 nd[song].nd_song_id, nd[song].library_track_id = song, tid
+        # a song goes into what plays by itself once: of its versions (app/library/versions.py) the preferred one
+        # where it is among the candidates, else the first of them
+        from app.library import versions
+
+        keys = list(cands)
+        kept = {id(c) for c in await versions.once(s, [cands[k] for k in keys])}
+        for k in keys:
+            if id(cands[k]) not in kept:
+                del cands[k]
 
 
 def keep_reason(c: Cand, p: Profile, cfg) -> str | None:
     """Return the first rejection reason, or None when kept; sets `familiar`."""
     t = c.track
     ref = t.ref if t.source == "dz" else None
-    if p.disliked(ref=ref, nd_song_id=c.nd_song_id, artist=t.artist, artist_ref=t.artist_ref):
+    if p.disliked(ref=ref, nd_song_id=c.nd_song_id, artist=t.artist, artist_ref=t.artist_ref, artists=t.artists,
+                  artist_refs=t.artist_refs):
         return "disliked"
     if version_kind(split_version(t.title)[1]) in BANNED_VERSIONS:
         return "version"
@@ -723,6 +743,9 @@ def fallback_name(local: datetime, songs: list[Cand]) -> tuple[str, str]:
     return f"Микс дня · {WEEKDAYS[local.weekday()]}", desc
 
 
+NAME_BUDGETS = (300, 2048, 4096)  # tokens for the name: enough for a plain model, then for one that reasons
+
+
 async def name_mix(user_id: int, songs: list[Cand], local: datetime, stats: dict[str, Any]) -> tuple[str, str]:
     """A daylist-like name by an LLM from the songs' tags (Last.fm), the weekday and the time; no AI — a template."""
     from app.ai import llm
@@ -748,12 +771,25 @@ async def name_mix(user_id: int, songs: list[Cand], local: datetime, stats: dict
               f"Знакомых песен {fam}, новых {len(songs) - fam}.")
     try:
         async with llm.LLMClient() as client:
-            out, usage = await client.call_tool(
-                system=("Ты придумываешь название ежедневному музыкальному миксу в духе Spotify daylist: жанр или "
-                        "настроение + день недели или время суток, например «Ночной русский пост-панк на "
-                        f"{WEEKDAYS_ACC[4]}». По-русски, живо, без кавычек и эмодзи."),
-                user_content=prompt, tool_name="mix_name", tool_description="Название и описание микса дня",
-                parameters=NAME_TOOL, max_tokens=300)
+            usage = llm.LLMUsage()
+            # a name is two lines, but a reasoning model thinks out of the same budget: cut off, it is asked again
+            # with more room rather than the mix being left with the plain name
+            for budget in NAME_BUDGETS:
+                try:
+                    out, used = await client.call_tool(
+                        system=("Ты придумываешь название ежедневному музыкальному миксу в духе Spotify daylist: жанр "
+                                "или настроение + день недели или время суток, например «Ночной русский пост-панк на "
+                                f"{WEEKDAYS_ACC[4]}». По-русски, живо, без кавычек и эмодзи."),
+                        user_content=prompt, tool_name="mix_name", tool_description="Название и описание микса дня",
+                        parameters=NAME_TOOL, max_tokens=budget)
+                except llm.LLMTruncatedError as e:
+                    usage += e.usage
+                    if budget == NAME_BUDGETS[-1]:
+                        raise
+                    log.info("mix name: the answer was cut off at %s tokens, asking again with more", budget)
+                    continue
+                usage += used
+                break
     except Exception as e:
         log.info("mix name: llm failed: %r", e)
         return title, desc

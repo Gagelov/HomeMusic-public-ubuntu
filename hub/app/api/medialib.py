@@ -1,9 +1,11 @@
-"""The Navidrome library as the user's player sees it: artists, albums, «Понравившиеся», covers. The Android app
+"""The Navidrome library as the user's player sees it: artists, albums, «Любимое», covers. The Android app
 has these as native screens (Tempus); the PWA in a plain browser shows them from here (`web/src/pages/Home.tsx`,
 `MediaLibrary.tsx`). Everything is asked of Navidrome as the user, so their stars and play counts are the ones shown.
 """
 
 from __future__ import annotations
+
+import logging
 
 import asyncio
 from datetime import datetime
@@ -15,13 +17,16 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.library import tracks as registry
+from app.library.owned import HAS_FILE, put_right, with_files
 from app.api.schemas import NdAlbumOut, NdArtistOut, NdArtistPageOut, NdHomeOut, NdLikedOut, NdSongOut
 from app.auth import current_user, user_navidrome
 from app.db import get_session
 from app.library.navidrome import NavidromeClient, SubsonicError
 from app.mixes.resolve import library_track
-from app.models import CatalogCache, ImportItem, Track, User
+from app.models import Track, TrackFile, User
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/nd", tags=["medialib"])
 
 ALBUM_LISTS = ("recent", "frequent", "newest", "starred", "alphabeticalByName", "alphabeticalByArtist", "random")
@@ -52,9 +57,12 @@ async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
     listening data know the song by it), the rest are `nd:<song>`."""
     ids = [x["id"] for x in songs if x.get("id")]
     rows: dict[str, Track] = {}
+    acquired: dict[str, datetime] = {}
     for i in range(0, len(ids), 500):
-        q = select(Track).where(Track.nd_song_id.in_(ids[i:i + 500]))
-        rows.update((t.nd_song_id, t) for t in (await s.execute(q)).scalars())
+        q = (select(Track, TrackFile.nd_song_id, TrackFile.acquired_at).join(TrackFile, TrackFile.track_id == Track.id)
+             .where(TrackFile.nd_song_id.in_(ids[i:i + 500])))
+        for t, song, at in (await s.execute(q)).all():
+            rows[song], acquired[song] = t, at
     out = []
     for x in songs:
         sid = x.get("id")
@@ -63,17 +71,31 @@ async def songs_out(s: AsyncSession, songs: list[dict]) -> list[NdSongOut]:
         t = rows.get(sid)
         ref = library_track(t).ref if t is not None else f"nd:{sid}"
         artist = x.get("artist") or ""
-        names = [a["name"] for a in x.get("artists") or [] if a.get("name")] or ([artist] if artist else [])
+        credited = [a for a in x.get("artists") or [] if a.get("name")]
+        names = [a["name"] for a in credited] or ([artist] if artist else [])
+        artist_ids = [a.get("id") for a in credited] or ([x.get("artistId")] if artist else [])
+        cat = (t.catalog or {}) if t is not None else {}
+        main = cat.get("artist_ref") if str(cat.get("artist_ref") or "").startswith("dz:") else None
+        refs = cat.get("artist_refs") or []
+        # the catalog's artists of the song, by their places: the names may be spelt otherwise in the files
+        artist_refs = refs if len(refs) == len(names) else ([main, *[None] * (len(names) - 1)] if main and names else [])
         out.append(NdSongOut(
             ref=ref, source="dz" if ref.startswith("dz:") else "nd", id=ref.split(":", 1)[1], title=x.get("title") or "",
-            artist=artist, artists=names, album_title=x.get("album"), album_artist=x.get("displayAlbumArtist"),
+            artist=artist, artists=names, artist_ref=main, artist_refs=artist_refs, album_title=x.get("album"), album_artist=x.get("displayAlbumArtist"),
             duration_s=x.get("duration"), track_no=x.get("track"), disc_no=x.get("discNumber"),
             isrc=(x.get("isrc") or [None])[0] if isinstance(x.get("isrc"), list) else x.get("isrc"),
             explicit=t.explicit if t is not None else None,
             cover_url=cover_url(x.get("coverArt"), BIG_COVER), cover_small_url=cover_url(x.get("coverArt")),
             owned=True, library_track_id=t.id if t is not None else None, nd_song_id=sid,
-            nd_album_id=x.get("albumId"), nd_artist_id=x.get("artistId"),
+            added_at=acquired.get(sid),
+            nd_album_id=x.get("albumId"), nd_artist_id=x.get("artistId"), nd_artist_ids=artist_ids,
         ))
+        if t is not None:
+            put_right(out[-1], t)  # Navidrome learns a new name at its next scan; the Hub knows it now
+    await with_files(s, out)
+    from app.library import versions
+
+    await versions.mark(s, out)  # how many recordings the song of each has
     return out
 
 
@@ -136,83 +158,132 @@ async def artists(user: User = Depends(current_user)):
     return [artist_out(a) for a in await nd_call(user, lambda nd: nd.get_artists())]
 
 
+LIB_ARTIST_TRACKS = 50
+
+
+def _credited(t: Track) -> list[str]:
+    return [x.strip().casefold() for x in (t.artist or "").split(",") if x.strip()]
+
+
+async def _artist_tracks(s: AsyncSession, name: str) -> list[Track]:
+    """The library's tracks the artist is credited on, the newest first."""
+    want = name.strip().casefold()
+    if not want:
+        return []
+    rows = (await s.execute(select(Track).where(HAS_FILE, Track.artist.ilike(f"%{name.strip()}%"))
+                            .order_by(Track.id.desc()))).scalars().all()
+    return [t for t in rows if want in _credited(t)]
+
+
+def _catalog_ref_of(tracks: list[Track], name: str) -> str | None:
+    """The catalog's artist these tracks are of: the main artist of the catalog's records of the tracks this artist
+    is named first on. It is the same person whatever the spelling — the catalog writes «Mikhail Krug» where the
+    files say «Михаил Круг», and a search by the name finds nobody."""
+    want = name.strip().casefold()
+    votes: dict[str, int] = {}
+    for t in tracks:
+        ref = (t.catalog or {}).get("artist_ref")
+        if ref and str(ref).startswith("dz:") and (_credited(t) or [""])[0] == want:
+            votes[ref] = votes.get(ref, 0) + 1
+    return max(votes, key=lambda r: votes[r]) if votes else None
+
+
 @router.get("/artists/{artist_id}", response_model=NdArtistPageOut)
-async def artist(artist_id: str, user: User = Depends(current_user)):
+async def artist(artist_id: str, user: User = Depends(current_user),
+                 s: AsyncSession = Depends(get_session, scope="function")):
     a = await nd_call(user, lambda nd: nd.get_artist(artist_id))
     if not a.get("id"):
         raise HTTPException(404, "Исполнитель не найден")
+    name = a.get("name") or ""
+    theirs = await _artist_tracks(s, name)
+    # the few of their own tracks that do not say yet who they are of in the catalog are asked about now
+    first = [t for t in theirs if (_credited(t) or [""])[0] == name.strip().casefold()][:3]
+    if await registry.fill_catalog(s, first):
+        await s.commit()
+    catalog_ref = _catalog_ref_of(theirs, name) or await _in_catalog(name)
+    tracks: list[NdSongOut] = []
+    if catalog_ref is None:  # the page is the library's own: their tracks, as the Hub has them
+        from app.api.playlists import track_with_file
+
+        tracks = [track_with_file(t) for t in theirs[:LIB_ARTIST_TRACKS]]
+        for o, t in zip(tracks, theirs, strict=False):
+            put_right(o, t)
+        await with_files(s, tracks)
     # newest year first, albums without a year last, ties by title
     albums_ = sorted(a.get("album") or [], key=lambda x: (not x.get("year"), -(x.get("year") or 0),
                                                           (x.get("name") or x.get("title") or "").casefold(), x.get("id") or ""))
-    return NdArtistPageOut(artist=artist_out(a), albums=[album_out(x) for x in albums_])
+    return NdArtistPageOut(artist=artist_out(a), albums=[album_out(x) for x in albums_], catalog_ref=catalog_ref,
+                           tracks=tracks)
+
+
+async def _in_catalog(name: str) -> str | None:
+    """The catalog's artist of this very name (the best known of them, as the catalog orders its search); none: the
+    catalog has nobody called so, or does not answer."""
+    from app.services import svc
+
+    if not name.strip() or svc.deezer is None:
+        return None
+    try:
+        found = await svc.deezer.search(name, kinds=("artist",), limit=5)
+    except Exception as e:
+        log.info("library artist %r not looked up in the catalog: %r", name, e)
+        return None
+    want = name.strip().casefold()
+    return next((x.ref for x in found.artists if x.name.strip().casefold() == want), None)
+
+
+ALL_SONGS_PAGE = 500
+ALL_SONGS_MAX = 50_000
+
+
+@router.get("/songs", response_model=list[NdSongOut])
+async def all_songs(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
+    """Every song of the library (a selection by tags looks through all of it)."""
+    from app.library import songs as library_songs
+
+    return await songs_out(s, await nd_call(user, library_songs.load))
 
 
 @router.get("/liked", response_model=NdLikedOut)
 async def liked(user: User = Depends(current_user), s: AsyncSession = Depends(get_session, scope="function")):
-    from app.favorites import parse_time, snapshot
-    from app.imports.apply import _user_likes
+    """«Любимое»: the tracks are the Hub's playlist of them (`favorites.project_liked`) — the newest like on top,
+    one the library has no file of among the rest. The albums and artists are Navidrome's stars."""
+    from app import playlists
+    from app.api.playlists import tracks_out
+    from app.favorites import project_liked, snapshot
 
-    body = await nd_call(user, lambda nd: nd.get_starred2())
+    try:
+        body = await nd_call(user, lambda nd: nd.get_starred2())
+    except HTTPException:  # Navidrome is away: the tracks are the Hub's own, the rest waits
+        body = None
+    await project_liked(s, user.id, body.get("song") or [] if body is not None else None)
+    await s.commit()
+    body = body or {}
+    rows = await playlists.items(s, (await playlists.liked(s, user.id)).id)
+    songs = await tracks_out(s, user, [t for _, t in rows])
+    for (item, _), song in zip(rows, songs, strict=True):
+        song.added_at = item.added_at
     states = await snapshot(s, user.id)
     decisions = {(st.target_type, alias): st for st in states.values() for alias in st.aliases}
+    # a song starred in Navidrome that the Hub has no track of (a file put into the library by hand) is no part
+    # of the playlist: it is listed as Navidrome gives it
+    have = {x.nd_song_id for x in songs}
+    foreign = [x for x in body.get("song") or [] if x.get("id") and x["id"] not in have
+               and not ((st := decisions.get(("track", f"nd:{x['id']}"))) and not st.liked)]
+    if foreign:
+        from app.favorites import parse_time
+        from app.models import naive
 
-    def state(typ, *, ref=None, nd_id=None):
-        return decisions.get((typ, f"ref:{ref}")) or decisions.get((typ, f"nd:{nd_id}"))
-
-    # The same own decisions as /api/starred override delayed ND/import snapshots.
-    ranked = []
-    seen = set()
-    songs = body.get("song") or []
-    for obj, song in zip([x for x in songs if x.get("id")], await songs_out(s, songs), strict=True):
-        st = state("track", ref=song.ref, nd_id=song.nd_song_id)
-        if st is not None and not st.liked:
-            continue
-        seen.update([f"ref:{song.ref}", f"nd:{song.nd_song_id}", *(st.aliases if st else [])])
-        ranked.append((st.since if st else parse_time(obj.get("starred")), song))
-
-    pending = {}
-    for item in (await s.execute(_user_likes(user.id).where(ImportItem.status.in_(("waiting", "queued"))))).scalars():
-        st = state("track", ref=item.ref)
-        if st is None:
-            pending.setdefault(item.ref, (item.raw_json or {}, None, None, []))
-    for st in states.values():
-        if st.target_type == "track" and st.liked:
-            ref = st.ref or (f"nd:{st.nd_id}" if st.nd_id else None)
-            if ref:
-                pending[ref] = (st.data or {}, st.since, st.nd_id, st.aliases)
-
-    # Read stored metadata in batches. Listing likes must never depend on a catalog
-    # request or start a download; old likes can recover names from playback caches.
-    cache_keys = {key for ref in pending for key in (f"listen:{ref}", f"mix:track:{ref}",
-                  f"dz:track:{ref[3:]}" if ref.startswith("dz:") else "") if key}
-    cached = {}
-    keys = sorted(cache_keys)
-    for start in range(0, len(keys), 500):
-        for row in (await s.execute(select(CatalogCache).where(CatalogCache.key.in_(keys[start:start + 500])))).scalars():
-            cached[row.key] = row.payload_json.get("v") or {}
-    for ref, (data, since, nd_id, links) in pending.items():
-        aliases = {f"ref:{ref}", *links, *([f"nd:{nd_id}"] if nd_id else [])}
-        if seen.intersection(aliases):
-            continue
-        meta = {**cached.get(f"listen:{ref}", {}), **cached.get(f"mix:track:{ref}", {}),
-                **cached.get(f"dz:track:{ref[3:]}", {}), **data}
-        src, _, ident = ref.partition(":")
-        if src not in ("dz", "hm", "mb", "nd", "file") or not ident:
-            continue
-        song = NdSongOut(ref=ref, source=src, id=ident, title=meta.get("title") or ref,
-                         artist=meta.get("artist") or "", duration_s=meta.get("duration_s") or meta.get("duration"),
-                         album_title=meta.get("album_title"), artist_ref=meta.get("artist_ref"),
-                         album_ref=meta.get("album_ref"), cover_url=meta.get("cover_url"),
-                         cover_small_url=meta.get("cover_small_url"), nd_song_id=nd_id, owned=bool(nd_id))
-        ranked.append((since or parse_time(meta.get("liked_at")), song))
-        seen.update(aliases)
+        for raw, song in zip(foreign, await songs_out(s, foreign), strict=True):
+            song.added_at = naive(parse_time(raw.get("starred"))) or song.added_at
+            songs.append(song)
+        songs.sort(key=lambda x: x.added_at or datetime.min, reverse=True)
 
     def visible(typ, obj):
-        st = state(typ, nd_id=obj.get("id"))
+        st = decisions.get((typ, f"nd:{obj.get('id')}"))
         return st is None or st.liked
 
-    ranked.sort(key=lambda pair: pair[0] or datetime.min, reverse=True)
-    return NdLikedOut(songs=[song for _, song in ranked],
+    return NdLikedOut(songs=songs,
                       albums=[album_out(a) for a in sorted(body.get("album") or [], key=lambda x: x.get("starred") or "", reverse=True)
                               if visible("album", a)],
                       artists=[artist_out(a) for a in body.get("artist") or [] if visible("artist", a)])

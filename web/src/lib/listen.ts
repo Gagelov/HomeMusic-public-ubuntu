@@ -1,4 +1,7 @@
 import { useSyncExternalStore } from 'react';
+import { imageUrl } from './img';
+import { ofHiddenArtist } from './dislikes';
+import { keptInfo } from './offline';
 import { api, errorMessage, isAbort, listenStreamUrl } from '../api/client';
 import type { LaunchOrigin, ListenOut } from '../api/types';
 import { startDownload } from './actions';
@@ -27,9 +30,13 @@ export interface ListenTrack {
   ref: string;
   /** the library song, when the track is one: the Hub knows a playlist's song by this id (`idOf`) */
   nd_song_id?: string | null;
+  /** the Hub's track, if the Hub knows the song: what tags and playlists go by (`lib/tags.ts` `tagKey`) */
+  library_track_id?: number | null;
   /** a recommendation of the smart shuffle (`lib/smartShuffle.ts`): ✨ in the player and the queue; `label` — «Рекомендация
    * на основе …», `session` — the Hub's session (its events carry the context `smart:<session>`) */
   rec?: { label: string; session: string } | null;
+  /** put into the queue by hand («Играть следующим», «В очередь»): the quick queue button marks it and takes it out */
+  queued?: boolean;
   title: string;
   artist: string;
   cover_url?: string | null;
@@ -37,11 +44,33 @@ export interface ListenTrack {
   cover_small_url?: string | null;
   album_ref?: string | null;
   artist_ref?: string | null;
-  artists?: { name: string; ref?: string }[];
+  /** every credited artist, with the page each opens: the catalog's (`ref`) when the Hub knows it, else the library's
+   * (`nd`: Navidrome's artist) — `artistTo` */
+  artists?: { name: string; ref?: string; nd?: string }[];
   album?: string;
   isrc?: string;
   year?: number;
   duration_s?: number | null;
+}
+
+/** A file on «Загрузить файлы» that is played before it is brought in (`up:<upload>`): it is no track of the library
+ * or of the catalog yet, so nothing is done with it but listening — the players show none of a track's buttons (keep,
+ * tags, share, the menu). */
+export const isUpload = (t: { ref: string } | null | undefined): boolean => !!t?.ref.startsWith('up:');
+
+/** The page of a credited artist of a playing track: the catalog's when the track says which (`ref`), the library's
+ * (`nd`), else the one found by the name (`pages/Artist.tsx`, `ArtistNamedPage`) — a wave, a recommendation or a
+ * line of the history names its artists and nothing more. Null: there is not even a name. */
+export const artistTo = (a: { name?: string | null; ref?: string | null; nd?: string | null }): string | null =>
+  a.ref ? `/artist/${encodeURIComponent(a.ref)}` : a.nd ? `/lib/artist/${encodeURIComponent(a.nd)}` : a.name?.trim() ? `/artist-named/${encodeURIComponent(a.name.trim())}` : null;
+
+/** Everyone credited on a playing track, each with what opens their page (`artistTo`). A track that names its
+ * artists one by one says so itself; one that has only a line of them («Eliminate, fussy» — a wave's, a line of the
+ * history) is read by its commas, the first being the one its `artist_ref` is of. */
+export function creditedOf(t: Pick<ListenTrack, 'artist' | 'artist_ref' | 'artists'>): { name: string; ref?: string; nd?: string }[] {
+  if (t.artists?.length) return t.artists;
+  const names = t.artist.split(',').map((x) => x.trim()).filter(Boolean);
+  return (names.length ? names : [t.artist]).map((name, i) => ({ name, ...(i === 0 && t.artist_ref ? { ref: t.artist_ref } : {}) }));
 }
 
 /** off; all: the queue starts over after its end; one: the track plays again. */
@@ -57,6 +86,8 @@ export interface ListenState {
   index: number;
   /** where the list was started from (`routeContext()`, `wave:<id>`) */
   context: string;
+  /** the page the list was started on (`/playlist/<id>`): the player says what it plays and links there */
+  page: string;
   phase: ListenPhase;
   info: ListenOut | null;
   error: string | null;
@@ -104,6 +135,7 @@ let state: ListenState = {
   queue: [],
   index: 0,
   context: 'other',
+  page: '',
   phase: 'paused',
   info: null,
   error: null,
@@ -149,14 +181,17 @@ let audio: HTMLAudioElement | null = null;
 export const listenAudio = (): HTMLAudioElement | null => audio;
 let pendingSeek = 0;
 let resolving: AbortController | null = null;
-let prefetching: { ref: string; ctl: AbortController } | null = null;
+/** How many tracks of the queue are loaded ahead (`prefetchNext`): the next one whole, the rest only their start. */
+const AHEAD = 3;
+/** What the Hub was asked to load ahead: ref -> how much of it, and the request. */
+const prefetching = new Map<string, { how: 'whole' | 'head'; ctl: AbortController }>();
 /** Seconds into a track after which ⏮ restarts it instead of going to the previous one. */
 const RESTART_AFTER_S = 3;
 /** Left after this share of a track: it counts as played to the end (`finish`), earlier — `skip`. */
 const FINISH_SHARE = 0.9;
 
 /** The track being played, as reported to the Hub: `started` once its `start` was sent. */
-type OpenPlay = { ref: string; context: string; launch: Launch; started: boolean; playbackId: string; listenedMs: number; anchor: number | null; account: number | null; ndSongId?: string | null };
+type OpenPlay = { ref: string; context: string; page?: string; launch: Launch; started: boolean; playbackId: string; listenedMs: number; anchor: number | null; account: number | null; ndSongId?: string | null; trackId?: number | null };
 let played: OpenPlay | null = null;
 let OPEN_PLAY_KEY = (() => {
   try {
@@ -188,11 +223,11 @@ function checkpoint() {
   const p = played;
   if (!p?.started) return;
   accrue(p);
-  const snapshot = { ref: p.ref, context: p.context, playback_id: p.playbackId, device_id: deviceId,
+  const snapshot = { ref: p.ref, context: p.context, page: p.page, playback_id: p.playbackId, device_id: deviceId,
     listened_ms: Math.round(p.listenedMs), nd_song_id: p.ndSongId, track_metadata: metadata(), account: p.account, updated_ms: Date.now(),
     launch_id: p.launch.id, launch_origin: p.launch.origin };
   try { localStorage.setItem(OPEN_PLAY_KEY, JSON.stringify(snapshot)); } catch (e) { console.error('Could not persist listening checkpoint', e); }
-  playEvent('progress', { ref: p.ref, nd_song_id: p.ndSongId }, snapshot);
+  playEvent('progress', { ref: p.ref, nd_song_id: p.ndSongId, track_id: p.trackId }, snapshot);
 }
 
 type SavedPlay = { ref: string; context: string; playback_id: string; device_id: string; listened_ms: number;
@@ -254,12 +289,13 @@ window.addEventListener('pageshow', (event) => {
   lockTab();
   const t = state.track;
   if (t) {
-    played = { ref: t.ref, context: state.context, launch: listLaunch, started: false, playbackId: newEventId(), listenedMs: 0, anchor: null, account: listeningAccount() };
+    played = { ref: t.ref, context: state.context, page: state.page, launch: listLaunch, started: false, playbackId: newEventId(), listenedMs: 0, anchor: null, account: listeningAccount() };
     reportStart();
   }
 });
 
 /** The screen the playing list was started from. */
+let listPage = '';
 let listContext = 'other';
 /** The launch of the playing list: its tracks' events carry it (INSIGHTS.md 6.5). */
 let listLaunch: Launch = newLaunch(listContext);
@@ -277,8 +313,9 @@ function reportStart() {
   if (state.phase !== 'playing') return;
   p.started = true;
   p.ndSongId = state.info.nd_song_id;
+  p.trackId = state.info.track_id ?? state.track?.library_track_id ?? null;
   p.anchor = performance.now();
-  playEvent('start', { ref: p.ref, nd_song_id: p.ndSongId }, { context: p.context, playback_id: p.playbackId, device_id: deviceId, listened_ms: 0, track_metadata: metadata(), account: p.account, launch_id: p.launch.id, launch_origin: p.launch.origin });
+  playEvent('start', { ref: p.ref, nd_song_id: p.ndSongId, track_id: p.trackId }, { context: p.context, page: p.page, playback_id: p.playbackId, device_id: deviceId, listened_ms: 0, track_metadata: metadata(), account: p.account, launch_id: p.launch.id, launch_origin: p.launch.origin });
   checkpoint();
 }
 
@@ -291,7 +328,7 @@ function reportEnd(ended = false, failed = false, interrupted = false) {
   const duration = state.duration || state.track.duration_s || 0;
   const position = ended ? duration : state.position;
   const kind = interrupted ? 'interrupted' : failed ? 'error' : ended || (duration > 0 && position >= duration * FINISH_SHARE) ? 'finish' : 'skip';
-  const persisted = playEvent(kind, { ref: p.ref, nd_song_id: p.ndSongId }, { position_s: position, duration_s: duration || null, context: p.context, playback_id: p.playbackId, device_id: deviceId, listened_ms: Math.round(p.listenedMs), track_metadata: metadata(), account: p.account, launch_id: p.launch.id, launch_origin: p.launch.origin });
+  const persisted = playEvent(kind, { ref: p.ref, nd_song_id: p.ndSongId, track_id: p.trackId }, { position_s: position, duration_s: duration || null, context: p.context, page: p.page, playback_id: p.playbackId, device_id: deviceId, listened_ms: Math.round(p.listenedMs), track_metadata: metadata(), account: p.account, launch_id: p.launch.id, launch_origin: p.launch.origin });
   if (persisted) try { localStorage.removeItem(OPEN_PLAY_KEY); } catch (e) { console.error('Could not close listening checkpoint', e); }
 }
 
@@ -335,9 +372,10 @@ function el(): HTMLAudioElement {
   // the same element plays on: it was unlocked by the first tap, so the next track may start without one
   a.addEventListener('ended', () => {
     reportEnd(true);
+    const after = ahead(state.index);
     if (state.repeat === 'one') start(state.queue, state.index, true);
-    else if (hasNext(state)) start(state.queue, state.index + 1, true);
-    else if (state.repeat === 'all' && !onWave()) start(state.queue, 0, true);
+    else if (after < state.queue.length) start(state.queue, after, true);
+    else if (state.repeat === 'all' && !onWave() && ahead(-1) < state.queue.length) start(state.queue, ahead(-1), true);
     else set({ phase: 'ended' });
   });
   a.addEventListener('error', () => {
@@ -362,20 +400,27 @@ function start(queue: readonly ListenTrack[], index: number, auto = false, posit
   const a = el();
   reportEnd();
   // a recommendation of the smart shuffle reports under its session, the playlist's own songs under their list
-  played = { ref: track.ref, context: track.rec ? `smart:${track.rec.session}` : listContext, launch: listLaunch, started: false, playbackId: newEventId(), listenedMs: 0, anchor: null, account: listeningAccount() };
+  played = { ref: track.ref, context: track.rec ? `smart:${track.rec.session}` : listContext, page: listPage, launch: listLaunch, started: false, playbackId: newEventId(), listenedMs: 0, anchor: null, account: listeningAccount() };
   resolving?.abort();
   const ctl = new AbortController();
   resolving = ctl;
   pendingSeek = position;
-  set({ track, queue, index, context: listContext, phase: autoplay ? 'resolving' : 'paused', info: null, error: null, position, duration: track.duration_s ?? 0 });
+  set({ track, queue, index, context: listContext, page: listPage, phase: autoplay ? 'resolving' : 'paused', info: null, error: null, position, duration: track.duration_s ?? 0 });
   a.src = listenStreamUrl(track.ref);
   if (autoplay) play(a);
   else a.load();
   mediaSession(track);
-  // the prefetch of this very track (it was next) is the request to wait for: don't abort it
-  if (prefetching?.ref !== track.ref) prefetching?.ctl.abort();
-  prefetching = null;
-  api.listen(track.ref, ctl.signal).then(
+  // what was asked for ahead is asked anew from here (`prefetchNext`); an abort stops only the page's waiting,
+  // the Hub goes on with what it has begun
+  for (const p of prefetching.values()) p.ctl.abort();
+  prefetching.clear();
+  // a track kept on the device (`lib/offline.ts`) plays from it: when the Hub cannot be asked, what it said of the
+  // file when the track was kept is shown
+  api.listen(track.ref, ctl.signal).catch((e: unknown) => {
+    const kept = isAbort(e) ? null : keptInfo(track.ref);
+    if (!kept) throw e;
+    return kept;
+  }).then(
     (info) => {
       if (resolving !== ctl) return;
       set({ info, duration: info.kind === 'preview' ? (info.duration_s ?? 30) : state.duration });
@@ -406,14 +451,27 @@ function refreshInfo() {
 
 /** Asks the Hub to pick the next track's file now (it remembers the pick), so it starts at once. */
 function prefetchNext() {
-  const nextTrack = state.queue[state.index + 1] ?? (state.repeat === 'all' && !onWave() ? state.queue[0] : undefined);
-  if (!nextTrack || prefetching?.ref === nextTrack.ref) return;
-  prefetching?.ctl.abort();
-  const ctl = new AbortController();
-  prefetching = { ref: nextTrack.ref, ctl };
-  api.listen(nextTrack.ref, ctl.signal).catch(() => {
-    /* the track itself will show the error when it is reached */
-  });
+  // the tracks the queue plays next, the nearest first: the Hub opens their files now (opening a source is what
+  // takes seconds) — the next one whole, the ones after it only their start, so skipping through them is instant
+  const ahead: ListenTrack[] = [];
+  for (let k = 1; k <= AHEAD && state.index + k < state.queue.length; k++) ahead.push(state.queue[state.index + k]);
+  if (!ahead.length && state.repeat === 'all' && !onWave() && state.queue.length) ahead.push(state.queue[0]);
+  const want = new Map(ahead.map((t, k) => [t.ref, k === 0 ? 'whole' : 'head'] as const));
+  for (const [ref, p] of prefetching) {
+    if (want.get(ref) === p.how) want.delete(ref); // asked for already, and for as much
+    else if (!want.has(ref)) {
+      p.ctl.abort(); // no longer coming up
+      prefetching.delete(ref);
+    }
+  }
+  for (const [ref, how] of want) {
+    prefetching.get(ref)?.ctl.abort(); // it was a start, it is the next track now
+    const ctl = new AbortController();
+    prefetching.set(ref, { how, ctl });
+    api.listen(ref, ctl.signal, how).catch(() => {
+      /* the track itself will show the error when it is reached */
+    });
+  }
 }
 
 // --- tracks on screen -------------------------------------------------------------------------------------
@@ -488,8 +546,9 @@ export function listen(track: ListenTrack, queue?: readonly ListenTrack[], conte
   startList(track, queue, context, origin);
 }
 
-function startList(track: ListenTrack, queue?: readonly ListenTrack[], context?: string, origin?: LaunchOrigin) {
+function startList(track: ListenTrack, queue?: readonly ListenTrack[], context?: string, origin?: LaunchOrigin, page?: string) {
   listContext = context ?? routeContext();
+  listPage = page ?? location.hash.replace(/^#/, '').split('?')[0];
   listLaunch = newLaunch(listContext, origin);
   const list = queue?.some((t) => t.ref === track.ref) ? queue : [track];
   const at = list.findIndex((t) => t.ref === track.ref);
@@ -499,7 +558,7 @@ function startList(track: ListenTrack, queue?: readonly ListenTrack[], context?:
     unshuffled = list;
     set({ smart: false });
     start([list[at], ...shuffled(list.filter((_, i) => i !== at))], 0);
-    // the smart shuffle chosen and this list is a playlist / «Понравившиеся»: the Hub orders it and puts recommendations
+    // the smart shuffle chosen and this list is a playlist / «Любимое»: the Hub orders it and puts recommendations
     // in, a moment after the tapped track has started (the plain shuffle plays until then)
     if (smartChosen && smartHooks?.canStart()) {
       set({ smart: true });
@@ -513,11 +572,11 @@ function startList(track: ListenTrack, queue?: readonly ListenTrack[], context?:
 }
 
 /** «Слушать» of a whole list: from its first track (with shuffle on, a random one). `shuffle` sets the mode. */
-export function listenAll(list: readonly ListenTrack[], opts: { shuffle?: boolean; context?: string; origin?: LaunchOrigin } = {}) {
+export function listenAll(list: readonly ListenTrack[], opts: { shuffle?: boolean; context?: string; origin?: LaunchOrigin; page?: string } = {}) {
   if (!list.length) return;
   if (opts.shuffle !== undefined) setModes({ shuffle: opts.shuffle });
   // starts over even when the first track is the one playing (listen() would pause it)
-  startList(state.shuffle ? list[Math.floor(Math.random() * list.length)] : list[0], list, opts.context, opts.origin);
+  startList(state.shuffle ? list[Math.floor(Math.random() * list.length)] : list[0], list, opts.context, opts.origin, opts.page);
 }
 
 // --- the queue: shuffle, repeat, «Играть следующим», «В очередь» -----------------------------------------
@@ -534,6 +593,7 @@ interface SavedSession {
   queue: ListenTrack[];
   index: number;
   context: string;
+  page?: string;
   /** the list's launch: a reload goes on with the same one */
   launch?: Launch;
   position: number;
@@ -552,7 +612,7 @@ function persistListening(force = false) {
     if (!state.track) localStorage.removeItem(key);
     else {
       const saved: SavedSession = {
-        version: 1, queue: [...state.queue], index: state.index, context: state.context, launch: listLaunch,
+        version: 1, queue: [...state.queue], index: state.index, context: state.context, page: state.page, launch: listLaunch,
         position: state.position, autoplay: listenBusy(), shuffle: state.shuffle, smart: state.smart, repeat: state.repeat,
         originalOrder: unshuffled?.map((t) => state.queue.indexOf(t)).filter((i) => i >= 0) ?? null,
       };
@@ -577,6 +637,7 @@ export function restoreListening(account: number | null) {
     unshuffled = Array.isArray(saved.originalOrder) && saved.originalOrder.every((i) => Number.isInteger(i) && i >= 0 && i < saved.queue.length)
       ? saved.originalOrder.map((i) => saved.queue[i]) : null;
     listContext = saved.context;
+    listPage = typeof saved.page === 'string' ? saved.page : '';
     listLaunch = saved.launch && typeof saved.launch.id === 'string' && saved.launch.id
       ? { id: saved.launch.id, origin: typeof saved.launch.origin === 'string' ? saved.launch.origin : null }
       : newLaunch(saved.context);
@@ -641,7 +702,7 @@ export function setShuffle(on: boolean) {
 }
 
 /** The shuffle button: off → shuffle → smart shuffle (only where the playing list can have one: a playlist or
- * «Понравившиеся», and the setting on) → off. */
+ * «Любимое», and the setting on) → off. */
 export function cycleShuffle() {
   if (onWave()) return;
   if (!state.shuffle) return setShuffle(true);
@@ -656,9 +717,20 @@ export function cycleShuffle() {
   setShuffle(false);
 }
 
+/** The shuffle button of a list's page (beside its ▶): the same round — off → shuffle → smart shuffle (`canSmart`:
+ * the page is a playlist's or «Любимое») → off. It is the choice for what ▶ starts; a list of this page that plays
+ * already takes it at once. */
+export function cyclePageShuffle(canSmart: boolean) {
+  if (!state.shuffle) return setShuffle(true);
+  if (smartChosen || !canSmart) return setShuffle(false);
+  if (state.track && !onWave() && smartHooks?.canStart()) return cycleShuffle();
+  smartChosen = true;
+  setModes({});
+}
+
 /** The smart shuffle's own calls (`lib/smartShuffle.ts` registers them). */
 export interface SmartHooks {
-  /** a new list was started: its screen's smart context (a playlist, «Понравившиеся») is noted, an old session ends */
+  /** a new list was started: its screen's smart context (a playlist, «Любимое») is noted, an old session ends */
   listStarted(context: string): void;
   /** the playing list can have a smart shuffle (and the setting is on) */
   canStart(): boolean;
@@ -715,21 +787,12 @@ export function cycleRepeat() {
   prefetchNext();
 }
 
-/** «Играть следующим»: right after the current track (when nothing plays, they start now). */
-export function playNext(tracks: readonly ListenTrack[]) {
-  if (!tracks.length) return;
-  if (!state.track) return listen(tracks[0], tracks);
-  const added = tracks.map((t) => ({ ...t })); // own objects: the same track may be in the queue twice
-  set({ queue: [...state.queue.slice(0, state.index + 1), ...added, ...state.queue.slice(state.index + 1)] });
-  prefetchNext();
-}
-
 /** «Добавить в очередь»: after the last track (when nothing plays, they start now). */
 export function addToQueue(tracks: readonly ListenTrack[]) {
   if (!tracks.length) return;
   if (!state.track) return listen(tracks[0], tracks);
   const ended = state.phase === 'ended';
-  set({ queue: [...state.queue, ...tracks.map((t) => ({ ...t }))] });
+  set({ queue: [...state.queue, ...tracks.map((t) => ({ ...t, queued: true }))] });
   if (ended) start(state.queue, state.index + 1, true);
   else prefetchNext();
 }
@@ -741,14 +804,35 @@ export function removeFromQueue(index: number) {
   prefetchNext();
 }
 
+/** The refs of the tracks the user queued by hand that are still to play. */
+export function queuedRefs(): Set<string> {
+  const out = new Set<string>();
+  for (let i = state.index + 1; i < state.queue.length; i++) if (state.queue[i].queued) out.add(state.queue[i].ref);
+  return out;
+}
+
+/** Takes these tracks out of what the user queued by hand (the list that plays keeps its own tracks). */
+export function unqueue(refs: readonly string[]): number {
+  const drop = new Set(refs);
+  const queue = state.queue.filter((t, i) => !(i > state.index && t.queued && drop.has(t.ref)));
+  const removed = state.queue.length - queue.length;
+  if (removed) {
+    set({ queue });
+    prefetchNext();
+  }
+  return removed;
+}
+
 /** Moves a track of the queue to another place (the current one too). */
 export function moveInQueue(from: number, to: number) {
   const q = [...state.queue];
   if (from === to || from < 0 || to < 0 || from >= q.length || to >= q.length) return;
-  const current = q[state.index];
   const [t] = q.splice(from, 1);
   q.splice(to, 0, t);
-  set({ queue: q, index: q.indexOf(current) });
+  // where the playing track is now — counted, not looked up: the same track may stand in the queue twice
+  const i = state.index;
+  const index = from === i ? to : from < i && to >= i ? i - 1 : from > i && to <= i ? i + 1 : i;
+  set({ queue: q, index });
   prefetchNext();
 }
 
@@ -782,15 +866,25 @@ export const hasPrev = (s: ListenState) => s.index > 0;
 
 /** Plays the next track of the queue; false at its end. */
 export function next(): boolean {
-  if (hasNext(state)) start(state.queue, state.index + 1);
-  else if (state.repeat === 'all' && state.track && !onWave()) start(state.queue, 0);
+  const after = ahead(state.index);
+  if (after < state.queue.length) start(state.queue, after);
+  else if (state.repeat === 'all' && state.track && !onWave() && ahead(-1) < state.queue.length) start(state.queue, ahead(-1));
   else return false;
   return true;
 }
 
+/** The place of the queue the player goes to from `from` by itself (`step` 1: on, −1: back): the tracks of an artist
+ * the user does not listen to (`lib/dislikes.ts`) are passed. Such a track plays only when it is tapped. Past the
+ * end of the queue (or before its start) when there is none. */
+function ahead(from: number, step: 1 | -1 = 1): number {
+  let i = from + step;
+  while (i >= 0 && i < state.queue.length && ofHiddenArtist(state.queue[i])) i += step;
+  return i;
+}
+
 /** ⏮: back to the start of the track, or (near its start) the previous track. */
 export function prev() {
-  if (hasPrev(state) && (state.position < RESTART_AFTER_S || state.phase === 'error')) start(state.queue, state.index - 1);
+  if (hasPrev(state) && ahead(state.index, -1) >= 0 && (state.position < RESTART_AFTER_S || state.phase === 'error')) start(state.queue, ahead(state.index, -1));
   else if (state.track) {
     seek(0);
     if (state.phase === 'ended' || state.phase === 'paused') resume();
@@ -839,8 +933,8 @@ export function stopListening() {
   reportEnd();
   resolving?.abort();
   resolving = null;
-  prefetching?.ctl.abort();
-  prefetching = null;
+  for (const p of prefetching.values()) p.ctl.abort();
+  prefetching.clear();
   pendingSeek = 0;
   if (audio) {
     audio.pause();
@@ -876,8 +970,8 @@ window.addEventListener(HUB_DOWNLOAD_EVENT, (e) => {
 
 hubEvents.on('download', (d) => {
   const ref = d.track_ref;
-  // a download queued only for ♥ is never «качается», but once imported the track is in the library
-  if (ref && d.star && d.status === 'done' && state.downloads.get(ref) !== 'done') {
+  // a quiet download is never «качается», but once imported the track is in the library
+  if (ref && d.quiet && d.status === 'done' && state.downloads.get(ref) !== 'done') {
     set({ downloads: new Map(state.downloads).set(ref, 'done') });
     return;
   }
@@ -896,7 +990,7 @@ function mediaSession(track: ListenTrack) {
   ms.metadata = new MediaMetadata({
     title: track.title,
     artist: track.artist,
-    artwork: track.cover_url ? [{ src: track.cover_url, sizes: '500x500' }] : [],
+    artwork: track.cover_url ? [{ src: imageUrl(track.cover_url), sizes: '500x500' }] : [],
   });
   try {
     ms.setActionHandler('play', resume);

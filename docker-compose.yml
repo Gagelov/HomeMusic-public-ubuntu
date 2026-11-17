@@ -86,7 +86,7 @@ services:
       start_period: 20s
     logging: *logging
 
-  # PO tokens for yt-dlp's mweb client. Internal only: no host port or cookie/music mounts.
+  # PO tokens for the YouTube clients yt-dlp asks as. Internal only: no host port or cookie/music mounts.
   # Keep the image version in sync with bgutil-ytdlp-pot-provider in hub/pyproject.toml.
   youtube-pot:
     image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
@@ -166,6 +166,7 @@ services:
   # Reverse SSH tunnel: the VPS listens on 127.0.0.1:4533 / 127.0.0.1:8080 and Caddy serves them over HTTPS.
   # The tunnel key only allows these two remote listens. Enabled with COMPOSE_PROFILES=vps.
   tunnel:
+    profiles: ["tunnel"]  # only for a home behind a VPS: COMPOSE_PROFILES=tunnel in .env
     build: ./gateway/tunnel
     image: homemusic-tunnel:local
     container_name: homemusic_tunnel
@@ -193,7 +194,30 @@ services:
         max-size: "1m"
         max-file: "3"
 
+  # A home with a public static IP: Caddy here serves the Hub over HTTPS at PUBLIC_DOMAIN (gateway/direct/Caddyfile).
+  # COMPOSE_PROFILES=direct in .env; the router forwards 80 and 443 to this computer.
+  caddy:
+    profiles: ["direct"]
+    image: caddy:2.8.4-alpine
+    container_name: homemusic_caddy
+    restart: unless-stopped
+    depends_on:
+      - hub
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+    volumes:
+      - ./gateway/direct/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging: *logging
+
 volumes:
+  caddy-data:
+  caddy-config:
   # SQLite databases and model weights live on the Docker volume (native Linux filesystem), not on a bind mount:
   # locking/WAL are unreliable on network and Windows/FAT mounts. The Hub copies daily backups of both into
   # MUSIC_ROOT/.backups.

@@ -9,6 +9,8 @@ import { toast, toastError } from './ui';
  * ref and/or its Navidrome song; the Hub fills in the other id where it can. Marking shows a toast with «Отменить». */
 
 export interface DislikeTarget {
+  /** the Hub's id of the track, if the Hub knows it */
+  track_id?: number | null;
   ref?: string | null;
   nd_song_id?: string | null;
   artist_ref?: string | null;
@@ -35,6 +37,13 @@ function subscribe(fn: () => void) {
   };
 }
 
+/** The account is left: its marks go with it. */
+export function resetDislikes() {
+  rows = [];
+  loadedAt = 0;
+  emit();
+}
+
 export function refreshDislikes(force = false): Promise<void> {
   if (loading) return loading;
   if (!force && Date.now() - loadedAt < REFRESH_MS) return Promise.resolve();
@@ -57,10 +66,44 @@ export function refreshDislikes(force = false): Promise<void> {
 }
 
 const matches = (d: DislikeOut, t: DislikeTarget) =>
-  t.artist_ref ? d.artist_ref === t.artist_ref : (!!t.ref && d.ref === t.ref) || (!!t.nd_song_id && d.nd_song_id === t.nd_song_id);
+  t.artist_ref ? d.artist_ref === t.artist_ref || !!d.artist_refs?.includes(t.artist_ref) : (!!t.track_id && d.track_id === t.track_id) || (!!t.ref && d.ref === t.ref) || (!!t.nd_song_id && d.nd_song_id === t.nd_song_id);
 
 export function isDisliked(t: DislikeTarget): boolean {
   return rows.some((d) => matches(d, t));
+}
+
+/** Every mark, as last read; re-renders on changes. */
+export function useDislikes(): readonly DislikeOut[] {
+  useEffect(() => {
+    void refreshDislikes();
+  }, []);
+  useSyncExternalStore(subscribe, () => version);
+  return rows;
+}
+
+const nameKey = (s: string) => s.trim().toLocaleLowerCase('ru');
+
+/** One of the track's artists — the first named or any credited with them — is one the user does not listen to: the
+ * track does not play by itself (a tap on it still plays it). An artist is known by their catalog ref, and by their
+ * name where a track carries none (a library file). */
+export function ofHiddenArtist(t: { artist?: string | null; artist_ref?: string | null; artist_refs?: (string | null)[] | null; artists?: readonly (string | { name: string; ref?: string })[] | null }): boolean {
+  const hidden = rows.filter((d) => d.artist_ref);
+  if (!hidden.length) return false;
+  const credited = t.artists?.length ? t.artists.map((a) => (typeof a === 'string' ? { name: a } : a)) : (t.artist ?? '').split(',').map((name) => ({ name }));
+  // who the track is by: each artist with the catalog's record of them, where the track says it
+  const by = credited.map((a, i): { name: string; ref: string | null } => ({ name: nameKey(a.name), ref: (('ref' in a ? a.ref : null) as string | null | undefined) ?? t.artist_refs?.[i] ?? (i === 0 ? t.artist_ref : null) ?? null }));
+  // a mark is of the whole artist — every record a catalog keeps of them, every spelling. An artist is told by
+  // the record; by the name only where the track gives none (a library file): a namesake is not hidden
+  return hidden.some((d) => {
+    const refs = new Set([d.artist_ref as string, ...(d.artist_refs ?? [])]);
+    const names = new Set([d.artist, ...(d.artist_names ?? [])].filter((x): x is string => !!x).map(nameKey));
+    return by.some((a) => (a.ref ? refs.has(a.ref) : !!a.name && names.has(a.name)));
+  });
+}
+
+export function useOfHiddenArtist(t: Parameters<typeof ofHiddenArtist>[0]): boolean {
+  useDislikes();
+  return ofHiddenArtist(t);
 }
 
 /** Whether the track (or, with `artist_ref` alone, the artist) is marked «Не нравится»; re-renders on changes. */
@@ -75,9 +118,9 @@ export function useDisliked(t: DislikeTarget): boolean {
 /** Marks or unmarks «Не нравится»; the toast after marking undoes it. */
 export async function setDisliked(t: DislikeTarget, on: boolean, quiet = false): Promise<boolean> {
   const before = rows;
-  const what = t.artist_ref ? { artist_ref: t.artist_ref } : { ref: t.ref, nd_song_id: t.nd_song_id };
+  const what = t.artist_ref ? { artist_ref: t.artist_ref } : { track_id: t.track_id, ref: t.ref, nd_song_id: t.nd_song_id };
   rows = on
-    ? [{ id: 0, ref: t.ref ?? null, nd_song_id: t.nd_song_id ?? null, artist_ref: t.artist_ref ?? null, artist: t.artist ?? null, title: t.title ?? null, source: 'pwa', created_at: new Date().toISOString() }, ...rows]
+    ? [{ id: 0, track_id: t.track_id ?? null, ref: t.ref ?? null, nd_song_id: t.nd_song_id ?? null, artist_ref: t.artist_ref ?? null, artist: t.artist ?? null, title: t.title ?? null, source: 'pwa', created_at: new Date().toISOString() }, ...rows]
     : rows.filter((d) => !matches(d, t));
   emit();
   try {
@@ -86,13 +129,13 @@ export async function setDisliked(t: DislikeTarget, on: boolean, quiet = false):
       rows = [row, ...rows.filter((d) => d.id !== 0 && d.id !== row.id)];
       emit();
       if (!quiet)
-        toast(t.artist_ref ? 'Исполнитель не будет попадать в миксы' : 'Трек не будет попадать в миксы', 'success', {
+        toast(t.artist_ref ? 'Исполнитель скрыт: его треки не включаются сами' : 'Трек не будет попадать в миксы', 'success', {
           label: 'Отменить',
           run: () => void setDisliked(t, false, true),
         });
     } else {
       await api.undislike(what);
-      if (!quiet) toast('Отметка «Не нравится» снята', 'success');
+      if (!quiet) toast(t.artist_ref ? 'Исполнитель возвращён' : 'Отметка «Не нравится» снята', 'success');
     }
     return true;
   } catch (e) {

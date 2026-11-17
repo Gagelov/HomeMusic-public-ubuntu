@@ -11,10 +11,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import HealthOut, SoulseekStatusOut
-from app.auth import admin_user
+from app.auth import admin_user, current_user
 from app.config import get_settings
 from app.db import get_session
 from app.library.navidrome import admin_client
@@ -205,7 +206,6 @@ async def apk_file():
 async def apk_artifact(name: str):
     from fastapi import HTTPException
     from fastapi.responses import FileResponse
-
     from starlette.concurrency import run_in_threadpool
 
     path = await run_in_threadpool(_artifact, name, verify=True)
@@ -213,3 +213,19 @@ async def apk_artifact(name: str):
         raise HTTPException(404, "Нет сборки приложения")
     media_type = "application/vnd.android.package-archive" if name.endswith(".apk") else "application/octet-stream"
     return FileResponse(path, media_type=media_type, filename=name, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+class ClientErrorIn(BaseModel):
+    """An error the app showed to a listener: its words, and the page it was shown on."""
+
+    text: str = Field(max_length=500)
+    page: str = Field(default="", max_length=200)
+
+
+@router.post("/api/system/client-error")
+async def client_error(body: ClientErrorIn, request: Request, user: User = Depends(current_user)) -> dict:
+    """Written to the Hub's log: who saw which error where, and in what browser. Nothing else is done with it."""
+    log.warning("shown to %s on %s: %s | %s", user.nd_username, body.page or "/", body.text,
+                (request.headers.get("user-agent") or "")[:160], extra={"user_id": user.id})
+    return {"ok": True}
+
