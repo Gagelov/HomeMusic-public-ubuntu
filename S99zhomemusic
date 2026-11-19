@@ -1,0 +1,51 @@
+#!/bin/sh
+# Start the HomeMusic voice bridge after Quasar/Alice on a rooted Station Lite.
+# Every daemon takes its own lock directory, so repeated starts are harmless.
+DIR=/data/opt/homemusic
+
+matching() {
+    sig=$1
+    for d in /proc/[0-9]*; do
+        p=${d#/proc/}
+        [ "$p" = "$$" ] && continue
+        [ -r "$d/cmdline" ] || continue
+        c=$(cat "$d/cmdline" 2>/dev/null | tr '\0' ' ')
+        # Skip shell wrappers that carry a whole multi-line script: their
+        # cmdline contains the paths below and they would kill themselves.
+        case "$c" in *"
+"*) continue ;; esac
+        case "$c" in
+            *"$DIR/voice-bridge.sh"*|*"$DIR/alice-text.sh"*|*"$DIR/mediad-guard.sh"*|*"$DIR/command-watch.sh"*|*"$DIR/hm-play.sh"*|*"socat -x -u TCP:127.0.0.1:9875"*|*"alice-text.awk"*)
+                kill -$sig "$p" 2>/dev/null ;;
+        esac
+    done
+}
+
+case "$1" in
+    start)
+        [ -x "$DIR/voice-bridge.sh" ] || exit 0
+        # /tmp is tmpfs, so this marker only survives within one boot. After a
+        # reboot every lock and player state is stale and must be dropped.
+        if [ ! -f /tmp/homemusic.booted ]; then
+            rm -rf "$DIR"/*.lock "$DIR/player.pid" "$DIR/guard.pid" \
+                   "$DIR/paused" "$DIR/seek" "$DIR/duck" "$DIR/level" "$DIR/jump"
+            : > /tmp/homemusic.booted
+        fi
+        [ -x "$DIR/mediad-guard.sh" ] &&
+            ( cd "$DIR" && setsid "$DIR/mediad-guard.sh" >>"$DIR/mediad-guard.log" 2>&1 </dev/null & )
+        [ -x "$DIR/command-watch.sh" ] &&
+            ( cd "$DIR" && setsid "$DIR/command-watch.sh" >>"$DIR/command-watch.log" 2>&1 </dev/null & )
+        ( cd "$DIR" && setsid "$DIR/voice-bridge.sh" >>"$DIR/voice.log" 2>&1 </dev/null & )
+        ;;
+    stop)
+        matching TERM
+        sleep 2
+        matching KILL
+        [ -x "$DIR/hm-play.sh" ] && "$DIR/hm-play.sh" stop >/dev/null 2>&1
+        rm -rf "$DIR/bridge.pid" "$DIR/mediad-guard.pid" "$DIR/command-watch.pid" \
+               "$DIR/voice-bridge.lock" "$DIR/mediad-guard.lock" "$DIR/command-watch.lock" "$DIR/command-watch.fifo"
+        ;;
+    restart)
+        "$0" stop; sleep 1; "$0" start ;;
+esac
+exit 0
