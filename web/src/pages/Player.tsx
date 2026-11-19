@@ -1,7 +1,7 @@
 import { tagKey } from '../lib/tags';
 import { imageUrl, retryImage } from '../lib/img';
 import { FileCard, PlayLine } from '../components/FileInfo';
-import { useEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { api } from '../api/client';
 import { Icon } from '../components/Icon';
 import { LikeButton } from '../components/LikeButton';
@@ -26,12 +26,14 @@ import { isUpload,
   playQueueAt,
   prev,
   removeFromQueue,
+  setVolume,
   toggle,
   useListen,
   type ListenTrack,
   artistTo,
   creditedOf,
 } from '../lib/listen';
+import { useStation } from '../lib/station';
 import { Link, enc, goBack } from '../lib/router';
 import { openShare } from '../lib/shareTrack';
 import { addRec, hideRec } from '../lib/smartShuffle';
@@ -56,6 +58,8 @@ export function PlayerPage() {
   const error = useListen((s) => s.error);
   const position = useListen((s) => s.position);
   const duration = useListen((s) => s.duration);
+  const volume = useListen((s) => s.volume);
+  const stationSource = useStation((s) => s.source === 'station');
   const shuffle = useListen((s) => s.shuffle);
   const smart = useListen((s) => s.smart);
   const repeat = useListen((s) => s.repeat);
@@ -257,6 +261,26 @@ export function PlayerPage() {
           <span>{fmtDuration(duration) || '–:––'}</span>
         </div>
       </div>
+
+      {/* The station has no system volume keys of this device: its Master is changed from here. */}
+      {stationSource && (
+        <div className="flex items-center gap-3 px-6 pt-2">
+          <Icon name="volume" size={18} className="shrink-0 text-muted" />
+          <input
+            type="range"
+            aria-label="Громкость станции"
+            aria-valuetext={`${Math.round(volume * 100)}%`}
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(volume * 100)}
+            style={{ '--p': `${volume * 100}%` } as CSSProperties}
+            onChange={(e) => setVolume(Number(e.target.value) / 100)}
+            className="hm-range min-w-0 flex-1"
+          />
+          <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted">{Math.round(volume * 100)}%</span>
+        </div>
+      )}
 
       <div className="flex items-center justify-between px-4 pt-3">
         <IconButton
