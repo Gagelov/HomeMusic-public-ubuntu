@@ -31,6 +31,7 @@ handle() {
             # Alice also hears the phrase; stop her "track not found" reply
             # before we spend a second fetching the queue from Navidrome.
             "$DIR/hm-native.sh" cancel >>"$LOG" 2>&1
+            "$DIR/hm-native.sh" mute >>"$LOG" 2>&1
             q=$(query_after "$t")
             case "$t" in
                 *любим*|*избранн*|*сердеч*)
