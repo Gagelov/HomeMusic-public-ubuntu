@@ -167,6 +167,9 @@ class Settings(BaseSettings):
     navidrome_url: str = "http://navidrome:4533"
     navidrome_admin_user: str = "admin"
     navidrome_admin_password: str = ""
+    # Yandex Station Lite with the native HomeMusic bridge (station API on 8099)
+    station_url: str = ""
+    station_token: str = ""
 
     public_music_url: str = ""
     public_hub_url: str = ""

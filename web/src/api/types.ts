@@ -104,6 +104,32 @@ export interface OkOut {
   ok: boolean;
 }
 
+/** The Yandex Station Lite playing HomeMusic through its native player. */
+export interface StationStatus {
+  playing: boolean;
+  paused: boolean;
+  index: number;
+  position: number;
+  duration: number;
+  id: string;
+  artist: string;
+  title: string;
+  queue: number;
+}
+
+export interface StationTrackIn {
+  id: string;
+  artist: string;
+  title: string;
+  duration: number;
+}
+
+export interface StationPlayIn {
+  index: number;
+  position: number;
+  tracks: StationTrackIn[];
+}
+
 // --- providers ------------------------------------------------------------------------------
 
 export interface Candidate {

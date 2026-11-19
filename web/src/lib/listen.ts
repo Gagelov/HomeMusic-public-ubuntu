@@ -179,6 +179,11 @@ let audio: HTMLAudioElement | null = null;
 
 /** The page player's `<audio>` (null until the first track): `lib/waveAudio.ts` reads its loudness. */
 export const listenAudio = (): HTMLAudioElement | null => audio;
+
+/** Pauses the page player (switching the output to the station must not leave two streams). */
+export function pauseListening() {
+  if (audio && !audio.paused) audio.pause();
+}
 let pendingSeek = 0;
 let resolving: AbortController | null = null;
 /** How many tracks of the queue are loaded ahead (`prefetchNext`): the next one whole, the rest only their start. */

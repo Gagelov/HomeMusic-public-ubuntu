@@ -76,6 +76,8 @@ import type {
   SearchRecent,
   SearchTracksOut,
   SoulseekStatusOut,
+  StationPlayIn,
+  StationStatus,
   TrackOut,
   StarIn,
   StarOut,
@@ -677,6 +679,11 @@ export const api = {
   chats: (signal?: AbortSignal) => request<ChatBriefOut[]>('GET', '/api/assistant/chats', { signal }),
   savedChat: (id: number, signal?: AbortSignal) => request<ChatSavedOut>('GET', `/api/assistant/chats/${id}`, { signal }),
   deleteChat: (id: number) => request<OkOut>('DELETE', `/api/assistant/chats/${id}`),
+
+  // Yandex Station Lite as the output
+  stationStatus: (signal?: AbortSignal) => request<StationStatus>('GET', '/api/station/status', { signal }),
+  stationCommand: (action: string) => request<StationStatus>('POST', '/api/station/command', { json: { action } }),
+  stationPlay: (body: StationPlayIn) => request<StationStatus>('POST', '/api/station/play', { json: body }),
 };
 
 export const libraryCoverUrl = (albumId: number, size = 300, bust?: string | number) =>
