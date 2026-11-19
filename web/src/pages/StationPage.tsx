@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { api, errorMessage } from '../api/client';
 import type { StationStatus } from '../api/types';
 import { Button, Field, Notice, PageHeader } from '../components/ui';
-import { saveStationConfig, stationConfig, stationHeaders } from '../lib/station';
+import { saveStationConfig, startStationWatch, stationConfig, stationHeaders } from '../lib/station';
 import { toast } from '../lib/ui';
 
 /** «Яндекс Станция» in the menu: the address of the station API and its token. */
@@ -16,11 +16,13 @@ export function StationPage() {
 
   const save = () => {
     saveStationConfig(url, token);
+    startStationWatch();
     toast('Настройки станции сохранены', 'success');
   };
 
   const test = async () => {
     saveStationConfig(url, token);
+    startStationWatch();
     setBusy(true);
     setError(null);
     setTested(null);

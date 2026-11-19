@@ -80,6 +80,17 @@ async def station_status(
     return await _call("GET", "/status", None, station_url, station_token)
 
 
+@router.get("/api/station/queue")
+async def station_queue(
+    user: User = Depends(current_user),
+    station_url: str | None = Header(default=None, alias="X-HM-Station-URL"),
+    station_token: str | None = Header(default=None, alias="X-HM-Station-Token"),
+):
+    # The station answers with a bare array; the app's client expects a named list.
+    tracks = await _call("GET", "/queue", None, station_url, station_token)
+    return {"tracks": tracks if isinstance(tracks, list) else []}
+
+
 @router.post("/api/station/command")
 async def station_command(
     body: StationCommandIn,

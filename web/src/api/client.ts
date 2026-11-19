@@ -77,6 +77,7 @@ import type {
   SearchTracksOut,
   SoulseekStatusOut,
   StationPlayIn,
+  StationQueue,
   StationStatus,
   TrackOut,
   StarIn,
@@ -683,6 +684,7 @@ export const api = {
 
   // Yandex Station Lite as the output
   stationStatus: (headers?: Record<string, string>, signal?: AbortSignal) => request<StationStatus>('GET', '/api/station/status', { headers, signal }),
+  stationQueue: (headers?: Record<string, string>, signal?: AbortSignal) => request<StationQueue>('GET', '/api/station/queue', { headers, signal }),
   stationCommand: (action: string, headers?: Record<string, string>, extra?: Record<string, unknown>) =>
     request<StationStatus>('POST', '/api/station/command', { json: { action, ...(extra ?? {}) }, headers }),
   stationPlay: (body: StationPlayIn, headers?: Record<string, string>) => request<StationStatus>('POST', '/api/station/play', { json: body, headers }),

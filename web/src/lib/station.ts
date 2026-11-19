@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { api, errorMessage } from '../api/client';
-import type { StationPlayIn, StationStatus, StationTrackIn } from '../api/types';
+import type { StationPlayIn, StationQueue, StationStatus, StationTrackIn } from '../api/types';
 import {
   getListenState,
   hideRemote,
@@ -73,14 +73,18 @@ const initial: StationSource = (() => {
 
 let state: StationState = { source: initial, status: null, busy: false, error: null };
 let timer: number | null = null;
+let watchTimer: number | null = null;
 let tick: number | null = null;
+let refreshing = false;
 let statusAt = 0;
 let basePosition = 0;
 // the user moved the volume: polls that started before the command must not pull the slider back
 let volumeSetAt = 0;
+// just left the station: its stop command may still be in flight, do not adopt the old session again
+let ignoreVoiceUntil = 0;
 // the page player was sounding when the user sent the queue to the station
 let resumeLocal = false;
-// the queue actually sent to the station (only Navidrome tracks, with covers and links)
+// the queue actually played on the station (covers and links when the page player sent it)
 let stationItems: ListenTrack[] = [];
 let remoteActive = false;
 let stationWasPlaying = false;
@@ -101,12 +105,23 @@ export function useStation<T>(select: (s: StationState) => T): T {
   return useSyncExternalStore(subscribe, () => select(state));
 }
 
+/** A station queue row as the page player's track: no page of its own, but the Navidrome id is kept. */
+function queueItems(tracks: readonly StationTrackIn[]): ListenTrack[] {
+  return tracks.map((t) => ({
+    ref: `station:${t.id || t.title}`,
+    nd_song_id: t.id || null,
+    title: t.title || 'Станция',
+    artist: t.artist || '',
+    duration_s: t.duration || null,
+  }));
+}
+
 function stationView(status: StationStatus) {
   if (!status.title && !status.id) return null;
   let items = stationItems;
   let index = status.index;
   let track = items[index];
-  if (!track) {
+  if (!track || (status.id && track.nd_song_id && track.nd_song_id !== status.id)) {
     track = {
       ref: `station:${status.id || 'current'}`,
       nd_song_id: status.id || null,
@@ -152,6 +167,23 @@ function showStatus(status: StationStatus) {
   basePosition = status.position;
 }
 
+/** The station's own queue: fetched when the app did not start the session (a voice command, another device). */
+async function ensureItems(status: StationStatus): Promise<void> {
+  const count = status.queue || 0;
+  const current = stationItems[status.index];
+  if (count > 0 && stationItems.length === count && (!status.id || current?.nd_song_id === status.id)) return;
+  if (count === 0) {
+    stationItems = [];
+    return;
+  }
+  try {
+    const queue: StationQueue = await api.stationQueue(stationHeaders());
+    stationItems = queueItems(queue.tracks ?? []);
+  } catch {
+    // keep what is known; the status still names the playing track
+  }
+}
+
 function startTicking() {
   if (tick !== null) return;
   tick = window.setInterval(() => {
@@ -167,33 +199,64 @@ function stopTicking() {
   }
 }
 
-export async function refreshStation() {
+/** Mirrors the station's session in the one player. `resume` — put the local queue back on return. */
+async function adoptStation(status: StationStatus, resume: boolean): Promise<void> {
+  const listen = getListenState();
+  resumeLocal = resume && (listen.phase === 'playing' || listen.phase === 'loading' || listen.phase === 'resolving');
+  stopStationWatch();
+  await ensureItems(status);
+  pauseListening();
+  stationWasPlaying = status.playing || status.paused;
+  try { localStorage.setItem(KEY, 'station'); } catch { /* storage is optional */ }
+  set({ source: 'station', status, busy: false, error: null });
+  showStatus(status);
+  startStationPolling();
+}
+
+/**
+ * `watch`: a quiet look from the device source, to notice a session started by voice.
+ * The station's queue is adopted, never replaced: the page player may be showing another list.
+ */
+async function refreshStation(watch = false): Promise<void> {
   if (!stationConfigured()) {
-    set({ status: null, error: 'Укажите токен станции в меню «Яндекс Станция»' });
+    if (!watch) set({ status: null, error: 'Укажите токен станции в меню «Яндекс Станция»' });
     return;
   }
+  if (refreshing) return;
+  refreshing = true;
   try {
     const status = await api.stationStatus(stationHeaders());
     set({ status, error: null });
-    if (state.source !== 'station') return;
-    if (stationWasPlaying && !status.playing && !status.paused) {
-      toast('Станция остановлена — звук снова на этом устройстве', 'info');
-      await releaseToDevice(false);
-      return;
+    if (state.source === 'station') {
+      if (stationWasPlaying && !status.playing && !status.paused) {
+        toast('Станция остановлена — звук снова на этом устройстве', 'info');
+        await releaseToDevice(false);
+        return;
+      }
+      if (status.playing || status.paused) stationWasPlaying = true;
+      if (status.title || status.id) {
+        await ensureItems(status);
+        showStatus(status);
+      }
+    } else if (watch && status.playing && (status.title || status.id) && Date.now() >= ignoreVoiceUntil) {
+      // «Включи … через сервер»: the station is already playing HomeMusic, show it here too.
+      await adoptStation(status, true);
     }
-    if (status.playing || status.paused) stationWasPlaying = true;
-    if (status.title || status.id) showStatus(status);
   } catch (e) {
-    set({ error: errorMessage(e) });
+    if (!watch) set({ error: errorMessage(e) });
+  } finally {
+    refreshing = false;
   }
 }
 
 export function startStationPolling() {
+  stopStationWatch();
   if (timer !== null) return;
   void refreshStation();
   timer = window.setInterval(() => {
     if (state.source !== 'station') {
       stopStationPolling();
+      startStationWatch();
       return;
     }
     void refreshStation();
@@ -207,6 +270,26 @@ export function stopStationPolling() {
     timer = null;
   }
   stopTicking();
+}
+
+/** A slow, quiet poll while this device plays: notice a HomeMusic session started by voice. */
+export function startStationWatch() {
+  if (!stationConfigured() || state.source === 'station' || watchTimer !== null) return;
+  void refreshStation(true);
+  watchTimer = window.setInterval(() => {
+    if (state.source !== 'device') {
+      stopStationWatch();
+      return;
+    }
+    void refreshStation(true);
+  }, 2000);
+}
+
+function stopStationWatch() {
+  if (watchTimer !== null) {
+    window.clearInterval(watchTimer);
+    watchTimer = null;
+  }
 }
 
 /** Queue of the page player, only the tracks the station can pull from Navidrome. */
@@ -238,6 +321,8 @@ function stationQueue(): {
 }
 
 async function releaseToDevice(stop: boolean) {
+  // the just-sent stop may take a moment; do not mistake the old session for a voice start
+  ignoreVoiceUntil = Date.now() + 5000;
   // the station's loudness stays: the one volume of the app carries over to this device
   const master = state.status?.master;
   if (remoteActive) {
@@ -253,6 +338,7 @@ async function releaseToDevice(stop: boolean) {
   if (stop) {
     try { await api.stationCommand('stop', stationHeaders()); } catch { /* station offline: still switch */ }
   }
+  startStationWatch();
 }
 
 export async function selectSource(next: StationSource): Promise<void> {
@@ -264,33 +350,33 @@ export async function selectSource(next: StationSource): Promise<void> {
   set({ busy: true, error: null });
   try {
     if (next === 'station') {
+      // A session is already sounding (voice, another app): mirror it instead of
+      // replacing its queue with the page player's current one.
+      const status = await api.stationStatus(stationHeaders());
+      if (status.playing && (status.title || status.id)) {
+        await adoptStation(status, true);
+        return;
+      }
       const queue = stationQueue();
       if (queue) {
         resumeLocal = queue.playing;
         stationItems = queue.items;
         const body: StationPlayIn = { index: queue.index, position: queue.position, tracks: queue.tracks };
-        const status = await api.stationPlay(body, stationHeaders());
+        const started = await api.stationPlay(body, stationHeaders());
         pauseListening();
-        stationWasPlaying = status.playing || status.paused;
+        stationWasPlaying = started.playing || started.paused;
         try { localStorage.setItem(KEY, 'station'); } catch { /* storage is optional */ }
-        set({ source: 'station', status, busy: false });
-        showStatus(status);
+        set({ source: 'station', status: started, busy: false });
+        showStatus(started);
         startStationPolling();
         return;
       }
-      // Nothing in the page player: show what the station already plays.
-      const status = await api.stationStatus(stationHeaders());
-      if (!status.title && !status.id) {
-        set({ busy: false, error: 'Сначала выберите трек в приложении' });
+      // Nothing in the page player: show what the station already has, even if paused.
+      if (status.title || status.id) {
+        await adoptStation(status, false);
         return;
       }
-      stationItems = [];
-      stationWasPlaying = status.playing || status.paused;
-      try { localStorage.setItem(KEY, 'station'); } catch { /* storage is optional */ }
-      set({ source: 'station', status, busy: false });
-      pauseListening();
-      showStatus(status);
-      startStationPolling();
+      set({ busy: false, error: 'Сначала выберите трек в приложении' });
       return;
     }
 
@@ -314,7 +400,10 @@ async function stationCommand(
     const status = await api.stationCommand(action, stationHeaders(), extra);
     set({ status, error: null });
     if (status.playing || status.paused) stationWasPlaying = true;
-    if (status.title || status.id) showStatus(status);
+    if (status.title || status.id) {
+      await ensureItems(status);
+      showStatus(status);
+    }
     if (action === 'stop') await releaseToDevice(false);
   } catch (e) {
     set({ error: errorMessage(e) });
@@ -350,8 +439,10 @@ export const stationNext = () => stationCommand('next');
 export const stationPrev = () => stationCommand('prev');
 export const stationToggle = () => stationCommand(state.status?.paused ? 'resume' : 'pause');
 
-// A reload keeps the station as the source: its status replaces the page player
-// as soon as the Hub and the station answer.
+// A reload keeps the station as the source: its status replaces the page player.
+// On the device source a quiet watch still notices a session started by voice.
 if (initial === 'station') {
   window.setTimeout(() => startStationPolling(), 0);
+} else {
+  window.setTimeout(() => startStationWatch(), 0);
 }

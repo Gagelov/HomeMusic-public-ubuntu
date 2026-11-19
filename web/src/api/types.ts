@@ -126,6 +126,11 @@ export interface StationTrackIn {
   duration: number;
 }
 
+/** The station's own queue, as it plays it (a session started by voice too). */
+export interface StationQueue {
+  tracks: StationTrackIn[];
+}
+
 export interface StationPlayIn {
   index: number;
   position: number;
