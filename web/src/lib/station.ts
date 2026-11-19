@@ -108,15 +108,27 @@ export function useStation<T>(select: (s: StationState) => T): T {
   return useSyncExternalStore(subscribe, () => select(state));
 }
 
-/** A station queue row as the page player's track: no page of its own, but the Navidrome id is kept. */
+/** A cover from the station queue: a Navidrome coverArt id (voice) or a ready URL (the app's own queue). */
+function coverImage(cover: string | null | undefined, size: number): string | null {
+  if (!cover) return null;
+  if (cover.startsWith('http') || cover.startsWith('/')) return cover;
+  return `/api/nd/cover/${encodeURIComponent(cover)}?size=${size}`;
+}
+
+/** A station queue row as the page player's track: no page of its own, but the Navidrome id and cover are kept. */
 function queueItems(tracks: readonly StationTrackIn[]): ListenTrack[] {
-  return tracks.map((t) => ({
-    ref: `station:${t.id || t.title}`,
-    nd_song_id: t.id || null,
-    title: t.title || 'Станция',
-    artist: t.artist || '',
-    duration_s: t.duration || null,
-  }));
+  return tracks.map((t) => {
+    const cover = coverImage(t.cover, 1000);
+    return {
+      ref: `station:${t.id || t.title}`,
+      nd_song_id: t.id || null,
+      title: t.title || 'Станция',
+      artist: t.artist || '',
+      duration_s: t.duration || null,
+      cover_url: cover,
+      cover_small_url: coverImage(t.cover, 160) ?? cover,
+    };
+  });
 }
 
 function stationView(status: StationStatus) {
@@ -131,6 +143,8 @@ function stationView(status: StationStatus) {
       title: status.title || 'Станция',
       artist: status.artist || '',
       duration_s: status.duration || null,
+      cover_url: coverImage(status.cover, 1000),
+      cover_small_url: coverImage(status.cover, 160),
     };
     items = [track];
     index = 0;
@@ -154,7 +168,10 @@ async function castStation(items: ListenTrack[], index: number): Promise<void> {
     const body: StationPlayIn = {
       index,
       position: 0,
-      tracks: items.map((t) => ({ id: t.nd_song_id!, artist: t.artist, title: t.title, duration: t.duration_s ?? 0 })),
+      tracks: items.map((t) => ({
+      id: t.nd_song_id!, artist: t.artist, title: t.title, duration: t.duration_s ?? 0,
+      cover: t.cover_url || t.cover_small_url || '',
+    })),
     };
     const status = await api.stationPlay(body, stationHeaders());
     stationItems = items;
@@ -375,7 +392,10 @@ function stationQueue(): {
   }
   if (!items.length) return null;
   return {
-    tracks: items.map((t) => ({ id: t.nd_song_id!, artist: t.artist, title: t.title, duration: t.duration_s ?? 0 })),
+    tracks: items.map((t) => ({
+      id: t.nd_song_id!, artist: t.artist, title: t.title, duration: t.duration_s ?? 0,
+      cover: t.cover_url || t.cover_small_url || '',
+    })),
     items,
     index,
     position: Math.max(0, Math.floor(listen.position || 0)),

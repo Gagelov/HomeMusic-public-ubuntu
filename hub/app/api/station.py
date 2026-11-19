@@ -26,6 +26,8 @@ class StationTrackIn(BaseModel):
     artist: str = ""
     title: str = ""
     duration: float = 0
+    # a Navidrome coverArt id (a voice queue) or a ready cover URL (the app sent its queue)
+    cover: str = ""
 
 
 class StationPlayIn(BaseModel):

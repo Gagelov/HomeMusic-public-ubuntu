@@ -113,6 +113,8 @@ export interface StationStatus {
   duration: number;
   /** the station's Master volume, percent */
   master: number;
+  /** a Navidrome coverArt id or a ready cover URL */
+  cover?: string | null;
   id: string;
   artist: string;
   title: string;
@@ -124,6 +126,8 @@ export interface StationTrackIn {
   artist: string;
   title: string;
   duration: number;
+  /** a Navidrome coverArt id or a ready cover URL */
+  cover?: string | null;
 }
 
 /** The station's own queue, as it plays it (a session started by voice too). */

@@ -133,7 +133,8 @@ export function PlayerPage() {
   const onWave = context.startsWith('wave:');
   const waiting = phase === 'resolving' || phase === 'loading';
   const playing = phase === 'playing' || waiting;
-  const owned = info?.kind === 'library';
+  // A station queue row has no `info`, but its Navidrome id means the file is already in the library.
+  const owned = info?.kind === 'library' || (!info && !!track.nd_song_id);
   // under the seek bar: only that this is a 30 s preview. Where the file came from is the card «Файл» below
   const source = info?.kind === 'preview' ? 'превью 30 сек' : null;
   const download = async () => {

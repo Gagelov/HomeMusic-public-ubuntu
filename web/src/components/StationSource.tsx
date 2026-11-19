@@ -31,7 +31,7 @@ export function StationSource() {
       title={station ? 'Играет на Станции — переключить на это устройство' : 'Играть на Яндекс Станции'}
       aria-label={station ? 'Переключить звук на это устройство' : 'Играть на Яндекс Станции'}
     >
-      <img src="/icons/station-source.png" alt="" className="h-[18px] w-[18px] object-contain invert" />
+      <span aria-hidden="true" className={cx('station-icon h-[18px] w-[18px]', station && 'text-fg')} />
     </button>
   );
 }

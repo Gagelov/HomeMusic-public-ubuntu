@@ -40,7 +40,7 @@ export function StationPage() {
       <PageHeader title="Яндекс Станция" back="/more" />
       <div className="space-y-4 px-4">
         <div className="flex items-center gap-3 rounded-2xl bg-surface p-4">
-          <img src="/icons/station-source.png" alt="" className="h-12 w-12 shrink-0 object-contain" />
+          <span aria-hidden="true" className="station-icon h-12 w-12 shrink-0 text-accent" />
           <div className="min-w-0">
             <div className="font-semibold">Звук на колонке</div>
             <div className="text-sm text-muted">
