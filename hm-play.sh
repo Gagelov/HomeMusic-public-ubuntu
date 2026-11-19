@@ -148,14 +148,15 @@ watch_loop() {
 }
 
 start_player() {
+    idx=${1:-0}; pos=${2:-0}
     [ -s "$LIST" ] || return 1
     [ -x "$DIR/music-block.sh" ] && "$DIR/music-block.sh" on >>"$LOG" 2>&1
     rm -f "$PAUSED"
-    idx=$(cat "$IDX" 2>/dev/null || echo 0)
+    echo "$idx" > "$IDX"
     id=$(sed -n "$((idx + 1))p" "$LIST" | cut -f1)
     [ -n "$id" ] || return 1
     start_watch
-    play_track "$id" 0
+    play_track "$id" "$pos"
     log "native player started, queue $(wc -l < "$LIST")"
 }
 
@@ -245,6 +246,22 @@ case "$1" in
     stop)
         halt_player
         rm -f "$IDX"
+        ;;
+    play-queue)
+        idx=${2:-0}; pos=${3:-0}
+        halt_player
+        start_player "$idx" "$pos"
+        ;;
+    json)
+        playing=false; running && playing=true
+        paused=false; [ -f "$PAUSED" ] && paused=true
+        "$JQ" -n --argjson playing "$playing" --argjson paused "$paused" \
+            --argjson index "$(cat "$IDX" 2>/dev/null || echo 0)" \
+            --argjson position "$(position)" \
+            --argjson duration "$(duration)" \
+            --arg id "$(field 1)" --arg artist "$(field 2)" --arg title "$(field 3)" \
+            --argjson queue "$(wc -l < "$LIST" 2>/dev/null || echo 0)" \
+            '{playing:$playing,paused:$paused,index:$index,position:$position,duration:$duration,id:$id,artist:$artist,title:$title,queue:$queue}'
         ;;
     seek)
         (alive || [ -f "$PAUSED" ]) || exit 1

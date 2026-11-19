@@ -62,7 +62,8 @@
 /opt/bin/opkg install jq socat curl
 mkdir -p /data/opt/homemusic
 # скопировать сюда: hm-native.sh hm-play.sh voice-bridge.sh command-watch.sh
-#                   mediad-guard.sh music-block.sh alice-text.sh alice-text.awk
+#                   mediad-guard.sh music-block.sh hm-api.sh hm-api-daemon.sh
+#                   alice-text.sh alice-text.awk
 chmod 755 /data/opt/homemusic/*.sh
 # config: SERVER=... USER=... PASSWORD=...
 chmod 600 /data/opt/homemusic/config
@@ -93,6 +94,20 @@ tail -f /data/opt/homemusic/voice.log
 /etc/init.d/S99zhomemusic stop
 # удалить /etc/init.d/S99zhomemusic и /data/opt/homemusic
 ```
+
+## API для приложения
+
+`hm-api.sh` под `socat TCP-LISTEN:8099` даёт Хабу управлять колонкой:
+
+- `GET /status` — что играет, позиция, очередь;
+- `POST /command` с `{"action":"next"|"prev"|"pause"|"resume"|"stop"}`;
+- `POST /play` с `{"index":0,"position":0,"tracks":[{"id","artist","title","duration"}]}`
+  — очередь из приложения.
+
+Все запросы требуют заголовок `X-HM-Token`, равный `API_TOKEN` из `config`
+(файл `600`). В `.env` Хаба укажите `STATION_URL=http://<ip>:8099` и
+`STATION_TOKEN=<API_TOKEN>`. Порт слушает LAN; токен не даёт управлять
+колонкой без него.
 
 ## Источник
 

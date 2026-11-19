@@ -24,7 +24,7 @@ matching() {
         case "$c" in *"
 "*) continue ;; esac
         case "$c" in
-            *"$DIR/voice-bridge.sh"*|*"$DIR/alice-text.sh"*|*"$DIR/mediad-guard.sh"*|*"$DIR/command-watch.sh"*|*"$DIR/hm-play.sh"*|*"socat -x -u TCP:127.0.0.1:9875"*|*"alice-text.awk"*)
+            *"$DIR/voice-bridge.sh"*|*"$DIR/alice-text.sh"*|*"$DIR/mediad-guard.sh"*|*"$DIR/command-watch.sh"*|*"$DIR/hm-play.sh"*|*"$DIR/hm-api.sh"*|*"$DIR/hm-api-daemon.sh"*|*"socat TCP-LISTEN:8099"*|*"socat -x -u TCP:127.0.0.1:9875"*|*"alice-text.awk"*)
                 kill -$sig "$p" 2>/dev/null ;;
         esac
     done
@@ -38,12 +38,14 @@ case "$1" in
         if [ ! -f /tmp/homemusic.booted ]; then
             rm -rf "$DIR"/*.lock "$DIR/native.pid" "$DIR/player.pid" "$DIR/guard.pid" \
                    "$DIR/paused" "$DIR/pos" "$DIR/started" "$DIR/index" \
-                   "$DIR/seek" "$DIR/duck" "$DIR/level" "$DIR/jump" "$DIR/cmdseq"
+                   "$DIR/seek" "$DIR/duck" "$DIR/level" "$DIR/jump" "$DIR/cmdseq" "$DIR/api.pid"
             [ -x "$DIR/music-block.sh" ] && "$DIR/music-block.sh" off >>"$DIR/music-block.log" 2>&1
             : > /tmp/homemusic.booted
         fi
         [ -x "$DIR/mediad-guard.sh" ] &&
             ( cd "$DIR" && setsid "$DIR/mediad-guard.sh" >>"$DIR/mediad-guard.log" 2>&1 </dev/null & )
+        [ -x "$DIR/hm-api-daemon.sh" ] &&
+            ( cd "$DIR" && setsid "$DIR/hm-api-daemon.sh" >>"$DIR/api.log" 2>&1 </dev/null & )
         [ -x "$DIR/command-watch.sh" ] &&
             ( cd "$DIR" && setsid "$DIR/command-watch.sh" >>"$DIR/command-watch.log" 2>&1 </dev/null & )
         ( cd "$DIR" && setsid "$DIR/voice-bridge.sh" >>"$DIR/voice.log" 2>&1 </dev/null & )
@@ -57,6 +59,7 @@ case "$1" in
         [ -x "$DIR/hm-play.sh" ] && "$DIR/hm-play.sh" stop >/dev/null 2>&1
         [ -x "$DIR/music-block.sh" ] && "$DIR/music-block.sh" off >>"$DIR/music-block.log" 2>&1
         rm -rf "$DIR/bridge.pid" "$DIR/mediad-guard.pid" "$DIR/command-watch.pid" \
+               "$DIR/api.pid" \
                "$DIR/voice-bridge.lock" "$DIR/mediad-guard.lock" "$DIR/command-watch.lock" "$DIR/command-watch.fifo" \
                "$DIR/native.pid" "$DIR/paused" "$DIR/index"
         ;;
