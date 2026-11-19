@@ -56,6 +56,15 @@ case "$method $path" in
         respond '200 OK' "$(json)" ;;
     'GET /queue')
         respond '200 OK' "$("$DIR/hm-play.sh" queue-json 2>/dev/null || printf '[]')" ;;
+    'POST /append')
+        # A wave's next picks: the native player reads the queue file at each track end,
+        # so appending here extends the session without restarting the current track.
+        if ! printf '%s' "$body" | /opt/bin/jq -e '.tracks and (.tracks | length > 0)' >/dev/null 2>&1; then
+            respond '400 Bad Request' '{"error":"empty tracks"}'
+            exit 0
+        fi
+        printf '%s' "$body" | /opt/bin/jq -r '.tracks[] | [(.id | tostring), (.artist // ""), (.title // ""), ((.duration // 0) | tonumber | floor), (.cover // "")] | @tsv' >> "$DIR/queue.tsv"
+        respond '200 OK' "$(json)" ;;
     'POST /command')
         action=$(printf '%s' "$body" | /opt/bin/jq -r '.action // empty' 2>/dev/null || true)
         case "$action" in
@@ -81,6 +90,13 @@ case "$method $path" in
         idx=$(printf '%s' "$body" | /opt/bin/jq -r '(.index // 0) | floor')
         pos=$(printf '%s' "$body" | /opt/bin/jq -r '(.position // 0) | floor')
         printf '%s' "$body" | /opt/bin/jq -r '.tracks[] | [(.id | tostring), (.artist // ""), (.title // ""), ((.duration // 0) | tonumber | floor), (.cover // "")] | @tsv' > "$DIR/queue.tsv"
+        # After a reboot the station wakes its media session only through Alice's dialog.
+        # The voice path sends cancel/mute/clear before playing; the app's path must do the same.
+        if [ -x "$DIR/hm-native.sh" ]; then
+            "$DIR/hm-native.sh" cancel >/dev/null 2>&1
+            "$DIR/hm-native.sh" mute >/dev/null 2>&1
+            "$DIR/hm-native.sh" clear >/dev/null 2>&1
+        fi
         if [ -s "$DIR/queue.tsv" ] && "$DIR/hm-play.sh" play-queue "$idx" "$pos" >/dev/null 2>&1; then
             respond '200 OK' "$(json)"
         else
