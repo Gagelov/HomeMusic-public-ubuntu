@@ -1,0 +1,2 @@
+# Station files are copied to Linux as-is and must keep LF.
+* text eol=lf
