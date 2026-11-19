@@ -147,7 +147,9 @@ start_player() {
     [ -s "$LIST" ] || return 1
     rm -f "$PAUSED" "$DUCK" "$DIR/jump"
     [ "$keep_seek" = "1" ] || rm -f "$SEEK"
-    l=$(master); [ "${l:-0}" -ge 10 ] || l=30; echo "$l" > "$LEVEL"
+    # Never raise the user's volume: at night it may be 5% or even 0.
+    # Only a failed/empty mixer read falls back to a safe level.
+    l=$(master); [ -n "$l" ] || l=30; echo "$l" > "$LEVEL"
     stop_mediad
     reset_dmix
     ( player_loop ) </dev/null >/dev/null 2>&1 &

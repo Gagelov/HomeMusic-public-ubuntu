@@ -5,9 +5,18 @@ DIR=/data/opt/homemusic
 
 matching() {
     sig=$1
+    # Never signal this script or any of its parents: an inline SSH command
+    # often contains the same paths and would kill its own shell.
+    anc=" $$ "
+    q=$$
+    while [ "$q" != "1" ]; do
+        q=$(awk '{print $4}' "/proc/$q/stat" 2>/dev/null)
+        [ -n "$q" ] || break
+        anc="$anc$q "
+    done
     for d in /proc/[0-9]*; do
         p=${d#/proc/}
-        [ "$p" = "$$" ] && continue
+        case "$anc" in *" $p "*) continue ;; esac
         [ -r "$d/cmdline" ] || continue
         c=$(cat "$d/cmdline" 2>/dev/null | tr '\0' ' ')
         # Skip shell wrappers that carry a whole multi-line script: their

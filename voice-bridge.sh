@@ -49,13 +49,22 @@ handle() {
             return ;;
     esac
 
+    # Resume must work while HomeMusic is paused: the player is stopped at that
+    # moment, so the playing-only block below would swallow the command.
+    case "$t" in
+        *продолж*|*"играй дальше"*|*"включи обратно"*)
+            if [ -f "$DIR/paused" ]; then
+                note "resume ($1)"; "$PLAY" resume >>"$LOG" 2>&1; return
+            fi ;;
+    esac
+
     playing || return
     # A normal Yandex Music request is not ours: stop the stream and let Alice
     # handle it. Transport/feedback commands are still ours.
     case "$t" in
         *включи*|*поставь*|*играй*|*найди*)
             case "$t" in
-                *следующ*|*предыдущ*|*пауза*|*продолж*|*стоп*|*останов*|*выключ*|*громче*|*тише*|*лайк*|*нрав*|*перемот*|*перемешай*|*вперемешку*) ;;
+                *следующ*|*предыдущ*|*пауза*|*продолж*|*стоп*|*останов*|*выключ*|*громче*|*тише*|*лайк*|*нрав*|*перемот*|*перемешай*|*вперемешку*|*обратно*) ;;
                 *) note "release to Yandex ($1)"; "$PLAY" stop >>"$LOG" 2>&1; return ;;
             esac ;;
     esac
