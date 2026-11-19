@@ -146,10 +146,64 @@ function stationView(status: StationStatus) {
   };
 }
 
+/** Sends a list to the station and starts at `index`: the queue the station plays becomes this list. */
+async function castStation(items: ListenTrack[], index: number): Promise<void> {
+  if (index < 0 || index >= items.length) return;
+  set({ busy: true });
+  try {
+    const body: StationPlayIn = {
+      index,
+      position: 0,
+      tracks: items.map((t) => ({ id: t.nd_song_id!, artist: t.artist, title: t.title, duration: t.duration_s ?? 0 })),
+    };
+    const status = await api.stationPlay(body, stationHeaders());
+    stationItems = items;
+    stoppedAt = 0;
+    stationWasPlaying = status.playing || status.paused;
+    try { localStorage.setItem(KEY, 'station'); } catch { /* storage is optional */ }
+    set({ source: 'station', status, busy: false, error: null });
+    showStatus(status);
+    startStationPolling();
+  } catch (e) {
+    set({ busy: false, error: errorMessage(e) });
+  }
+}
+
+/** A tap on a row of the station's queue: play that index there, not on this device. */
+function stationPlayAt(index: number): void {
+  const item = stationItems[index];
+  if (!item || !item.nd_song_id) return;
+  let at = 0;
+  for (let i = 0; i < index; i++) if (stationItems[i].nd_song_id) at++;
+  const items = stationItems.filter((t) => !!t.nd_song_id);
+  void castStation(items, at);
+}
+
+/** A tap on a track somewhere in the app while the station plays: send that list to the station. */
+function stationPlayList(track: ListenTrack, queue?: readonly ListenTrack[]): boolean {
+  const list = queue?.some((t) => t.ref === track.ref) ? queue : [track];
+  const items = list.filter((t) => !!t.nd_song_id);
+  let at = -1;
+  let byRef = -1;
+  let n = 0;
+  for (const t of list) {
+    if (!t.nd_song_id) continue;
+    if (t === track) { at = n; break; }
+    if (byRef < 0 && t.ref === track.ref) byRef = n;
+    n++;
+  }
+  if (at < 0) at = byRef;
+  if (at < 0) return false; // not in Navidrome: the station cannot pull it
+  void castStation(items, at);
+  return true;
+}
+
 const controls: RemoteControls = {
   toggle: () => void stationCommand(state.status?.paused ? 'resume' : 'pause'),
   next: () => void stationCommand('next'),
   prev: () => void stationCommand('prev'),
+  playAt: (index) => stationPlayAt(index),
+  playList: (track, queue) => stationPlayList(track, queue),
   seek: (seconds) => void stationSeek(seconds),
   volume: (value) => void stationVolume(value),
   release: () => void releaseToDevice(true),

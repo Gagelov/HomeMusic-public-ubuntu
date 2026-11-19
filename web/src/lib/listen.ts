@@ -154,6 +154,10 @@ export interface RemoteControls {
   toggle(): void;
   next(): void;
   prev(): void;
+  /** a track of the station's own queue was picked: play that index on the station */
+  playAt(index: number): void;
+  /** a list was picked here: true when the station took it, false when it has to play on this device */
+  playList(track: ListenTrack, queue?: readonly ListenTrack[]): boolean;
   seek(seconds: number): void;
   volume(value: number): void;
   /** the user started something here: stop the station, switch back to this device */
@@ -628,7 +632,12 @@ export function listen(track: ListenTrack, queue?: readonly ListenTrack[], conte
 }
 
 function startList(track: ListenTrack, queue?: readonly ListenTrack[], context?: string, origin?: LaunchOrigin, page?: string) {
-  if (remoteControls) remoteControls.release();
+  if (remoteControls) {
+    // The station plays: a track picked in a list is sent there, not started here.
+    // Only a track the station cannot pull from Navidrome brings the sound back.
+    if (remoteControls.playList(track, queue)) return;
+    remoteControls.release();
+  }
   listContext = context ?? routeContext();
   listPage = page ?? location.hash.replace(/^#/, '').split('?')[0];
   listLaunch = newLaunch(listContext, origin);
@@ -923,7 +932,11 @@ export function moveInQueue(from: number, to: number) {
 
 /** A tap on a track of the queue: it plays now, the queue stays as it is. */
 export function playQueueAt(index: number) {
-  if (remoteControls && index !== state.index) remoteControls.release();
+  if (remoteControls) {
+    if (index === state.index) return toggle();
+    remoteControls.playAt(index);
+    return;
+  }
   if (index === state.index) return toggle();
   if (index >= 0 && index < state.queue.length) start(state.queue, index);
 }
