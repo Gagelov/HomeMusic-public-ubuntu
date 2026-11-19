@@ -54,6 +54,8 @@ case "$method $path" in
         respond '200 OK' '{"ok":true}' ;;
     'GET /status')
         respond '200 OK' "$(json)" ;;
+    'GET /queue')
+        respond '200 OK' "$("$DIR/hm-play.sh" queue-json 2>/dev/null || printf '[]')" ;;
     'POST /command')
         action=$(printf '%s' "$body" | /opt/bin/jq -r '.action // empty' 2>/dev/null || true)
         case "$action" in

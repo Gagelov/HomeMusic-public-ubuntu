@@ -265,6 +265,14 @@ case "$1" in
             --argjson queue "$(wc -l < "$LIST" 2>/dev/null || echo 0)" \
             '{playing:$playing,paused:$paused,index:$index,position:$position,duration:$duration,master:$master,id:$id,artist:$artist,title:$title,queue:$queue}'
         ;;
+    queue-json)
+        # The whole queue, so an app that did not start the session (a voice command)
+        # can show it and keep the station's own order.
+        [ -s "$LIST" ] || { printf '[]'; exit 0; }
+        "$JQ" -R -s 'split("\n") | map(select(length > 0) | split("\t") |
+            {id: (.[0] // ""), artist: (.[1] // ""), title: (.[2] // ""),
+             duration: ((.[3] // 0) | tonumber? // 0)})' "$LIST" 2>/dev/null || printf '[]'
+        ;;
     seek)
         (alive || [ -f "$PAUSED" ]) || exit 1
         if [ "$2" = "0" ]; then to=0; else to=$(( $(position) + ${2:-10} )); [ "$to" -lt 0 ] && to=0; fi
