@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
 import { cx } from './ui';
+import { Link } from '../lib/router';
 import { selectSource, startStationPolling, stationNext, stationPrev, stationToggle, useStation } from '../lib/station';
 
 /** The radio icon in the player: choose whether the sound comes from this device or the Station. */
@@ -93,6 +94,16 @@ export function StationSource({ compact = false, drop = false }: { compact?: boo
               )}
             </div>
           )}
+
+          <div className="mt-2 border-t border-fg/10 pt-1">
+            <Link
+              to="/station"
+              onClick={() => setOpen(false)}
+              className="block rounded-lg px-2 py-2 text-xs text-muted hover:bg-fg/5 hover:text-fg"
+            >
+              Настроить станцию
+            </Link>
+          </div>
         </div>
       )}
     </div>

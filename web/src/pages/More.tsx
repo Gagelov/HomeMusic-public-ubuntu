@@ -8,6 +8,7 @@ import { useDislikes } from '../lib/dislikes';
 import { tracksWord } from '../lib/format';
 import { useAsync } from '../lib/hooks';
 import { useKeptLists } from '../lib/offline';
+import { stationConfigured } from '../lib/station';
 import { BrandIcon } from '../components/BrandIcon';
 import { Icon, type IconName } from '../components/Icon';
 import { PageHeader, cx } from '../components/ui';
@@ -149,6 +150,15 @@ export function MorePage() {
               {me.public_music_url && <Item icon="external" tint="bg-[#ef8b3a]" href={me.public_music_url} title="Navidrome" />}
             </Group>
           )}
+          <Group title="Устройства">
+            <Item
+              icon="wave"
+              tint="bg-[#d5483f]"
+              to="/station"
+              title="Яндекс Станция"
+              value={stationConfigured() ? 'токен задан' : 'токен не задан'}
+            />
+          </Group>
           <Group title="Это устройство">
             <Item icon="bell" tint="bg-[#d9534f]" title="Уведомления" value={permText[perm]} onClick={notifications} />
             {canInstall && !standalone && <Item icon="install" tint="bg-[#30b85c]" title="Установить приложение" onClick={install} />}

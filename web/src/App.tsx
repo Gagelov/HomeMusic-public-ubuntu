@@ -56,6 +56,7 @@ import { forgetAccount, initOffline } from './lib/offline';
 import { ForYouPage } from './pages/ForYou';
 import { TastePage } from './pages/Mix';
 import { MorePage } from './pages/More';
+import { StationPage } from './pages/StationPage';
 import { OpenPage } from './pages/Open';
 import { PlayerPage } from './pages/Player';
 import { PlaylistsPage } from './pages/Playlists';
@@ -147,6 +148,7 @@ const ROUTES: RouteDef[] = [
     'text',
   ],
   ['/more', 'more', () => <MorePage />, 'text'],
+  ['/station', 'more', () => <StationPage />, 'text'],
   ['/admin', 'more', () => <AdminPage />, 'text'],
   ['/lyrics-sources', 'more', () => <LyricsSettingsPage />, 'text'],
   ['/admin/user/:id', 'more', (p) => <AdminUserPage key={p.id} id={Number(p.id)} />, 'wide'],

@@ -173,10 +173,11 @@ interface RequestOpts {
   json?: unknown;
   form?: FormData;
   signal?: AbortSignal;
+  headers?: Record<string, string>;
 }
 
 export async function request<T>(method: string, path: string, opts: RequestOpts = {}): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { Accept: 'application/json', ...(opts.headers ?? {}) };
   let body: BodyInit | undefined;
   if (opts.json !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -681,9 +682,9 @@ export const api = {
   deleteChat: (id: number) => request<OkOut>('DELETE', `/api/assistant/chats/${id}`),
 
   // Yandex Station Lite as the output
-  stationStatus: (signal?: AbortSignal) => request<StationStatus>('GET', '/api/station/status', { signal }),
-  stationCommand: (action: string) => request<StationStatus>('POST', '/api/station/command', { json: { action } }),
-  stationPlay: (body: StationPlayIn) => request<StationStatus>('POST', '/api/station/play', { json: body }),
+  stationStatus: (headers?: Record<string, string>, signal?: AbortSignal) => request<StationStatus>('GET', '/api/station/status', { headers, signal }),
+  stationCommand: (action: string, headers?: Record<string, string>) => request<StationStatus>('POST', '/api/station/command', { json: { action }, headers }),
+  stationPlay: (body: StationPlayIn, headers?: Record<string, string>) => request<StationStatus>('POST', '/api/station/play', { json: body, headers }),
 };
 
 export const libraryCoverUrl = (albumId: number, size = 300, bust?: string | number) =>

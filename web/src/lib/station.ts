@@ -14,6 +14,38 @@ export interface StationState {
 }
 
 const KEY = 'hm:station-source';
+const TOKEN_KEY = 'hm:station-token';
+const URL_KEY = 'hm:station-url';
+const DEFAULT_URL = 'http://192.168.50.181:8099';
+
+export function stationConfig(): { url: string; token: string } {
+  try {
+    return {
+      url: (localStorage.getItem(URL_KEY) || DEFAULT_URL).trim(),
+      token: (localStorage.getItem(TOKEN_KEY) || '').trim(),
+    };
+  } catch {
+    return { url: DEFAULT_URL, token: '' };
+  }
+}
+
+export function saveStationConfig(url: string, token: string) {
+  try {
+    localStorage.setItem(URL_KEY, url.trim() || DEFAULT_URL);
+    localStorage.setItem(TOKEN_KEY, token.trim());
+  } catch {
+    /* private mode: the config lives until the page is closed */
+  }
+}
+
+export function stationConfigured(): boolean {
+  return !!stationConfig().token;
+}
+
+export function stationHeaders(): Record<string, string> {
+  const c = stationConfig();
+  return { 'X-HM-Station-URL': c.url, 'X-HM-Station-Token': c.token };
+}
 const saved = (() => {
   try {
     return localStorage.getItem(KEY) === 'station' ? 'station' : 'device';
@@ -44,8 +76,12 @@ export function useStation<T>(select: (s: StationState) => T): T {
 }
 
 export async function refreshStation() {
+  if (!stationConfigured()) {
+    set({ status: null, error: 'Укажите токен станции в меню «Яндекс Станция»' });
+    return;
+  }
   try {
-    set({ status: await api.stationStatus(), error: null });
+    set({ status: await api.stationStatus(stationHeaders()), error: null });
   } catch (e) {
     set({ error: errorMessage(e) });
   }
@@ -93,6 +129,10 @@ function stationQueue(): { tracks: StationTrackIn[]; index: number; position: nu
 
 export async function selectSource(next: StationSource): Promise<void> {
   if (next === state.source && (next === 'device' || state.status)) return;
+  if (next === 'station' && !stationConfigured()) {
+    set({ error: 'Укажите токен станции в меню «Яндекс Станция»' });
+    return;
+  }
   set({ busy: true, error: null });
   try {
     if (next === 'station') {
@@ -100,7 +140,7 @@ export async function selectSource(next: StationSource): Promise<void> {
       if (queue) {
         resumeLocal = queue.playing;
         const body: StationPlayIn = { index: queue.index, position: queue.position, tracks: queue.tracks };
-        await api.stationPlay(body);
+        await api.stationPlay(body, stationHeaders());
         pauseListening();
       } else {
         // Nothing in the page player: show what the station already plays.
@@ -117,7 +157,7 @@ export async function selectSource(next: StationSource): Promise<void> {
     }
 
     // back to this device: the station stops and the page player resumes
-    try { await api.stationCommand('stop'); } catch { /* station offline: still switch */ }
+    try { await api.stationCommand('stop', stationHeaders()); } catch { /* station offline: still switch */ }
     stopStationPolling();
     try { localStorage.setItem(KEY, 'device'); } catch { /* private mode */ }
     set({ source: 'device', status: null, busy: false });
@@ -134,7 +174,7 @@ export async function stationCommand(action: 'next' | 'prev' | 'pause' | 'resume
   if (state.source !== 'station') return;
   set({ busy: true });
   try {
-    set({ status: await api.stationCommand(action), error: null });
+    set({ status: await api.stationCommand(action, stationHeaders()), error: null });
   } catch (e) {
     set({ error: errorMessage(e) });
   } finally {

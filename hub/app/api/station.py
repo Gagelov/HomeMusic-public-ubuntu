@@ -9,7 +9,7 @@ browser.
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth import current_user
@@ -38,15 +38,26 @@ class StationCommandIn(BaseModel):
     action: str
 
 
-async def _call(method: str, path: str, body: dict | None = None) -> dict:
+async def _call(
+    method: str,
+    path: str,
+    body: dict | None = None,
+    station_url: str | None = None,
+    station_token: str | None = None,
+) -> dict:
     settings = get_settings()
-    if not settings.station_url or not settings.station_token:
-        raise HTTPException(status_code=503, detail="Station is not configured (STATION_URL/STATION_TOKEN)")
-    url = settings.station_url.rstrip("/") + path
+    url = (station_url or settings.station_url or "").strip().rstrip("/")
+    token = (station_token or settings.station_token or "").strip()
+    if not url:
+        raise HTTPException(status_code=503, detail="Station URL is not configured (set it in the app)")
+    if not token:
+        raise HTTPException(status_code=401, detail="Station token is not configured (set it in the app)")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="Station URL must be http(s)")
     try:
         async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
             response = await client.request(
-                method, url, json=body, headers={"X-HM-Token": settings.station_token}
+                method, url + path, json=body, headers={"X-HM-Token": token}
             )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Station is unreachable: {exc}") from exc
@@ -59,18 +70,32 @@ async def _call(method: str, path: str, body: dict | None = None) -> dict:
 
 
 @router.get("/api/station/status")
-async def station_status(user: User = Depends(current_user)):
-    return await _call("GET", "/status")
+async def station_status(
+    user: User = Depends(current_user),
+    station_url: str | None = Header(default=None, alias="X-HM-Station-URL"),
+    station_token: str | None = Header(default=None, alias="X-HM-Station-Token"),
+):
+    return await _call("GET", "/status", None, station_url, station_token)
 
 
 @router.post("/api/station/command")
-async def station_command(body: StationCommandIn, user: User = Depends(current_user)):
+async def station_command(
+    body: StationCommandIn,
+    user: User = Depends(current_user),
+    station_url: str | None = Header(default=None, alias="X-HM-Station-URL"),
+    station_token: str | None = Header(default=None, alias="X-HM-Station-Token"),
+):
     action = body.action.strip().lower()
     if action not in ACTIONS:
         raise HTTPException(status_code=400, detail="Unknown station action")
-    return await _call("POST", "/command", {"action": action})
+    return await _call("POST", "/command", {"action": action}, station_url, station_token)
 
 
 @router.post("/api/station/play")
-async def station_play(body: StationPlayIn, user: User = Depends(current_user)):
-    return await _call("POST", "/play", body.model_dump())
+async def station_play(
+    body: StationPlayIn,
+    user: User = Depends(current_user),
+    station_url: str | None = Header(default=None, alias="X-HM-Station-URL"),
+    station_token: str | None = Header(default=None, alias="X-HM-Station-Token"),
+):
+    return await _call("POST", "/play", body.model_dump(), station_url, station_token)
