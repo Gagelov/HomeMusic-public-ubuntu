@@ -4,7 +4,7 @@ import { cx } from './ui';
 import { selectSource, startStationPolling, stationNext, stationPrev, stationToggle, useStation } from '../lib/station';
 
 /** The radio icon in the player: choose whether the sound comes from this device or the Station. */
-export function StationSource({ compact = false }: { compact?: boolean }) {
+export function StationSource({ compact = false, drop = false }: { compact?: boolean; drop?: boolean }) {
   const source = useStation((s) => s.source);
   const status = useStation((s) => s.status);
   const busy = useStation((s) => s.busy);
@@ -39,7 +39,7 @@ export function StationSource({ compact = false }: { compact?: boolean }) {
       </button>
 
       {open && (
-        <div className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-fg/10 bg-raised p-2 shadow-2xl" role="menu">
+        <div className={cx('absolute right-0 z-50 w-72 rounded-xl border border-fg/10 bg-raised p-2 shadow-2xl', drop ? 'top-full mt-2' : 'bottom-full mb-2')} role="menu">
           <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-dim">Звук идёт</div>
           <button
             type="button"
