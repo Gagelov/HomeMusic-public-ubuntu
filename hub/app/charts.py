@@ -54,7 +54,7 @@ class Chart:
     title: str  # the card's
     name: str  # the page's and the wave's («Волна: <name>»)
     kind: str  # "country" | "genre"
-    group: str  # the Home screen's rows: "main", "europe", "ru_genres", "genres"
+    group: str  # the Home screen's rows: "main", "europe", "ru_genres", "genres", "moods"
     source: str  # shown under the title
     deezer_playlist: int | None = None
     deezer_genre: int | None = None
@@ -62,6 +62,8 @@ class Chart:
     yandex_tag: str | None = None
     apple: str | None = None  # Apple Music's country: the chart when Yandex's fails
     parts: tuple[str, ...] = ()  # charts merged by turns («Европа»)
+    lastfm_tag: str = ""  # a mood's tag on Last.fm
+    personal: bool = False  # built per user from their library and taste (not cached globally)
 
 
 def _country(id_: str, title: str, name: str, playlist: int, group: str = "europe") -> Chart:
@@ -74,6 +76,22 @@ def _genre(id_: str, title: str, genre: int) -> Chart:
 
 def _ru_genre(id_: str, title: str, tag: str) -> Chart:
     return Chart(id_, title, title, "genre", "ru_genres", "Яндекс Музыка", yandex_tag=tag)
+
+
+def _mood(id_: str, title: str, tag: str, playlist: int) -> Chart:
+    return Chart(id_, title, title, "genre", "moods", "Deezer и ваша библиотека", deezer_playlist=playlist,
+                 lastfm_tag=tag, personal=True)
+
+
+# What a mood's artists sound like on Last.fm, for matching the library's own artists.
+_MOOD_WORDS: dict[str, tuple[str, ...]] = {
+    "mood_calm": ("chill", "calm", "relax", "ambient", "mellow", "soft", "sleep", "dream", "acoustic", "instrumental"),
+    "mood_energy": ("energetic", "energy", "upbeat", "dance", "party", "workout", "pump", "power", "hype"),
+    "mood_sad": ("sad", "melanchol", "depress", "heartbreak", "lonely", "sorrow", "blue"),
+    "mood_happy": ("happy", "feel good", "joy", "fun", "sunny", "uplifting", "positive"),
+    "mood_romantic": ("romantic", "love", "sensual", "sexy", "intimate"),
+    "mood_focus": ("focus", "study", "concentrat", "instrumental", "ambient", "lofi", "lo-fi", "classical", "piano"),
+}
 
 
 EUROPE = ("gb", "de", "fr", "it", "es", "pl", "nl")
@@ -94,6 +112,12 @@ CHARTS: dict[str, Chart] = {c.id: c for c in [
     _ru_genre("rusrap", "Русский рэп", "rusrap"),
     _ru_genre("ruspop", "Русская поп-музыка", "ruspop"),
     _ru_genre("phonk", "Фонк", "phonk"),
+    _mood("mood_calm", "Спокойное", "chill", 1925105902),
+    _mood("mood_energy", "Энергичное", "energetic", 1368504915),
+    _mood("mood_sad", "Грустное", "sad", 1910358422),
+    _mood("mood_happy", "Весёлое", "happy", 1479458365),
+    _mood("mood_romantic", "Романтичное", "romantic", 12351625391),
+    _mood("mood_focus", "Для фокуса", "focus", 12783906481),
     _genre("pop", "Поп", 132),
     _genre("hiphop", "Хип-хоп", 116),
     _genre("rock", "Рок", 152),
@@ -149,12 +173,19 @@ async def cached(chart_id: str) -> Built | None:
         return None
 
 
-async def tracks(chart_id: str) -> Built:
+async def tracks(chart_id: str, user_id: int | None = None) -> Built:
     """The chart, its tracks without a full file left out. Made now when none is kept (it may take a minute: Yandex's
     names are matched with the catalog); an old one is served while a new one is made in the background. Raises
-    ChartError when it can't be made."""
-    if chart_id not in CHARTS:
+    ChartError when it can't be made. A mood chart is built for the user, not cached."""
+    c = CHARTS.get(chart_id)
+    if c is None:
         raise ChartError("такого чарта нет")
+    if c.personal:
+        if user_id is None:
+            raise ChartError("нужен пользователь")
+        built = await personal_tracks(c, user_id)
+        kept = [(i, t) for i, t in enumerate(built.tracks, 1) if not no_full.has(t.ref)]
+        return Built([t for _, t in kept], built.at, [i for i, _ in kept])
     built = await cached(chart_id)
     if built is None:
         built = await refresh(chart_id)
@@ -202,6 +233,8 @@ async def charts_loop() -> None:
     await asyncio.sleep(LOOP_START_S)
     while True:
         for cid in CHARTS:
+            if CHARTS[cid].personal:
+                continue  # built per user, nothing to keep fresh
             try:
                 built = await cached(cid)
                 if built is None or not _fresh(built):
@@ -296,6 +329,116 @@ async def _resolve(source: str, hits: list) -> list[CatalogTrack]:
             seen.add(t.ref)
             out.append(t)
     return out[:SIZE]
+
+
+async def _lastfm_tag(tag: str, limit: int = SIZE) -> list:
+    """The tag's top tracks as names, to be matched with the catalog."""
+    from app.mixes.sources import Hit, _as_list, _lastfm, lastfm_configured
+
+    if not lastfm_configured():
+        return []
+    body = await _lastfm("tag.getTopTracks", tag=tag, limit=limit)
+    hits: list[Hit] = []
+    for t in _as_list((body.get("tracks") or {}).get("track")):
+        artist = t.get("artist")
+        if isinstance(artist, dict):
+            artist = artist.get("name") or ""
+        title = t.get("name") or ""
+        if artist and title:
+            hits.append(Hit(artist=artist, title=title))
+    return hits[:limit]
+
+
+def _library_to_catalog(t: Any) -> CatalogTrack | None:
+    """A library track as the catalog would name it: its own ref when known, else its Navidrome song."""
+    ref = (t.ref or "").strip() or (f"nd:{t.nd_song_id}" if t.nd_song_id else "")
+    if not ref:
+        return None
+    source = "dz" if ref.startswith("dz:") else "nd"
+    artist = t.artist or ""
+    cover = (t.catalog or {}).get("cover_url") if t.catalog else None
+    return CatalogTrack(ref=ref, source=source, id=ref.split(":", 1)[-1], title=t.title, artist=artist,
+                        artists=[artist] if artist else [], album_title=t.album, duration_s=t.duration_s,
+                        isrc=t.isrc, explicit=t.explicit, cover_url=cover)
+
+
+async def _personal_library_tracks(chart_id: str, user_id: int, limit: int = 50) -> list[CatalogTrack]:
+    """The user's own tracks whose artists sound like the mood: Last.fm's tags of the artists they play."""
+    from sqlalchemy import desc, func, or_, select
+
+    from app.db import session_scope
+    from app.mixes.sources import lastfm_artist_tags, lastfm_configured
+    from app.models import PlayEvent, Track
+
+    words = _MOOD_WORDS.get(chart_id) or ()
+    async with session_scope() as s:
+        rows = (await s.execute(
+            select(Track.artist, func.count(PlayEvent.id).label("plays"))
+            .join(Track, Track.id == PlayEvent.track_id)
+            .where(PlayEvent.user_id == user_id, PlayEvent.kind.in_(("start", "finish", "like")))
+            .group_by(Track.artist).order_by(desc("plays")).limit(40)
+        )).all()
+        artists = [a for a, _ in rows if a]
+        if not artists:  # a new listener: whatever the library has
+            artists = [a for (a,) in (await s.execute(select(Track.artist).distinct().limit(40))).all() if a]
+        matched: set[str] = set()
+        if lastfm_configured() and words:
+            found = await asyncio.gather(*(lastfm_artist_tags(a) for a in artists[:12]), return_exceptions=True)
+            for artist, tags in zip(artists[:12], found, strict=True):
+                blob = " ".join(t.casefold() for t in tags) if isinstance(tags, list) else ""
+                if any(w in blob for w in words):
+                    matched.add(artist)
+        if not matched:  # no tags (or no Last.fm): the genre the files say; no signal — no own tracks
+            rows = []
+            if words:
+                rows = (await s.execute(
+                    select(Track).where(or_(*(func.lower(Track.genre).contains(w) for w in words)))
+                    .order_by(desc(Track.id)).limit(400)
+                )).scalars().all()
+        else:
+            rows = (await s.execute(
+                select(Track).where(Track.artist.in_(list(matched))).order_by(desc(Track.id)).limit(400)
+            )).scalars().all()
+    seen: set[str] = set()
+    out: list[CatalogTrack] = []
+    for t in rows:
+        found = _library_to_catalog(t)
+        if found is None:
+            continue
+        fp = fingerprint(found.artist, found.title)
+        if not fp or fp in seen:
+            continue
+        seen.add(fp)
+        out.append(found)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def personal_tracks(c: Chart, user_id: int) -> Built:
+    """A mood for this listener: their own matching tracks and the tag's catalog ones, by turns."""
+    catalog: list[CatalogTrack] = []
+    if c.lastfm_tag:
+        try:
+            hits = await _lastfm_tag(c.lastfm_tag)
+            if hits:
+                catalog = await _resolve("lastfm", hits)
+        except Exception as e:
+            log.warning("chart %s: Last.fm tag %r failed: %r", c.id, c.lastfm_tag, e)
+    if not catalog and c.deezer_playlist is not None:
+        try:
+            catalog = await _deezer(lambda: svc.deezer.playlist_tracks(c.deezer_playlist, SIZE))
+        except Exception as e:
+            log.warning("chart %s: Deezer playlist %s failed: %r", c.id, c.deezer_playlist, e)
+    try:
+        mine = await _personal_library_tracks(c.id, user_id)
+    except Exception as e:
+        log.warning("chart %s: personal library failed: %r", c.id, e)
+        mine = []
+    mixed = by_turns([mine, catalog]) if mine and catalog else (mine or catalog)
+    if not mixed:
+        raise ChartError("не удалось подобрать треки по настроению")
+    return Built(mixed[:SIZE], time.time(), list(range(1, len(mixed[:SIZE]) + 1)))
 
 
 def _yandex_chart_sync(name: str) -> list:

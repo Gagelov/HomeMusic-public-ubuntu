@@ -21,11 +21,26 @@ export function loudnessEnabled(): boolean {
   return true;
 }
 
-let ctx: AudioContext | null = null;
+let ctx: OutputAudioContext | null = null;
+let pendingContext: OutputAudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let source: MediaElementAudioSourceNode | null = null;
 let connecting = false;
 let buf: Float32Array<ArrayBuffer> | null = null;
+let outputId = '';
+
+type OutputAudioContext = AudioContext & { setSinkId?: (id: string) => Promise<void> };
+
+/** Once connected, Web Audio owns the sound, so switching only the media element is not enough. */
+export async function setLoudnessOutput(id: string): Promise<void> {
+  const context = ctx ?? pendingContext;
+  if (context) {
+    if (typeof context.setSinkId !== 'function') {
+      if (id) throw new Error('AudioContext output selection is unavailable');
+    } else await context.setSinkId(id);
+  }
+  outputId = id;
+}
 
 /** Connects the analyser to `a` (once). Safe to call on every `playing`; does nothing when it isn't safe. */
 export async function attachLoudness(a: HTMLAudioElement): Promise<void> {
@@ -35,7 +50,12 @@ export async function attachLoudness(a: HTMLAudioElement): Promise<void> {
   } catch { return; }
   connecting = true;
   try {
-    const c = new AudioContext();
+    const c: OutputAudioContext = new AudioContext();
+    pendingContext = c;
+    if (outputId) {
+      if (typeof c.setSinkId !== 'function') { await c.close(); return; }
+      try { await c.setSinkId(outputId); } catch { await c.close(); return; }
+    }
     if (c.state !== 'running') await c.resume().catch(() => undefined);
     // Still not running (no user gesture yet): connecting would silence the player, so leave it as it is.
     if (c.state !== 'running' || a.paused) { void c.close().catch(() => undefined); return; }
@@ -54,6 +74,7 @@ export async function attachLoudness(a: HTMLAudioElement): Promise<void> {
   } catch (e) {
     console.warn('Wave loudness is unavailable', e);
   } finally {
+    pendingContext = null;
     connecting = false;
   }
 }

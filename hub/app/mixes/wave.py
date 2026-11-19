@@ -583,8 +583,21 @@ def pick(st: State, p: Profile, mode: str, vectors: dict[str, list[float]], n: i
     `values` gets the `value` of every candidate ranked, by ref (the analytics of `wave_items`)."""
     pos = _weighted_center(st.positive_weights, vectors) if st.taste_model == "v2" else _center(st.pos, vectors)
     neg = None if st.taste_model == "v2" else _center(st.neg, vectors)
-    pool = [c for c in [*st.out.values(), *st.pool.values()]
-            if c is not first and not _disliked(c, p) and fp_of(c) not in st.recent]
+    candidates = [c for c in [*st.out.values(), *st.pool.values()]
+                  if c is not first and not _disliked(c, p)]
+    # The library's `nd:` copy and the catalog's `dz:` copy are one song: never both in a batch, never a song
+    # already heard, and never another copy of a song still queued by the client.
+    seen = set(st.recent) | set(st.heard)
+    seen.update(fp_of(c) for ref, c in st.out.items() if ref in queued)
+    if first is not None:
+        seen.add(fp_of(first))
+    pool: list[build.Cand] = []
+    for c in candidates:
+        fp = fp_of(c)
+        if not fp or (fp in seen and c.track.ref not in queued):
+            continue
+        seen.add(fp)
+        pool.append(c)
     vals = {id(c): value(c, st, vectors, pos, neg, c.track.ref in queued) for c in pool}
     if values is not None:
         values.update((c.track.ref, vals[id(c)]) for c in pool)

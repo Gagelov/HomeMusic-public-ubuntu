@@ -1424,7 +1424,7 @@ class ChartOut(BaseModel):
     title: str
     name: str
     kind: Literal["country", "genre"]
-    group: Literal["main", "europe", "ru_genres", "genres"]
+    group: Literal["main", "europe", "ru_genres", "genres", "moods"]
     source: str
     covers: list[str] = []
     updated_at: datetime | None = None

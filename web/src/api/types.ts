@@ -1736,7 +1736,7 @@ export interface ChartOut {
   title: string;
   name: string;
   kind: 'country' | 'genre';
-  group: 'main' | 'europe' | 'ru_genres' | 'genres';
+  group: 'main' | 'europe' | 'ru_genres' | 'genres' | 'moods';
   source: string;
   covers: string[];
   updated_at?: string | null;

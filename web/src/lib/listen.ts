@@ -6,6 +6,8 @@ import { api, errorMessage, isAbort, listenStreamUrl } from '../api/client';
 import type { LaunchOrigin, ListenOut } from '../api/types';
 import { startDownload } from './actions';
 import { hubEvents } from './events';
+import { clearAudioPreload, preloadAudio, takePreloadedAudio } from './audioPreload';
+import { attachAudioOutput } from './audioOutput';
 import { NATIVE_PLAYING_EVENT, canPlayAll, pauseNative, webPlayerShown } from './player';
 import { listeningAccount, newEventId, newLaunch, playEvent, routeContext, type Launch } from './plays';
 
@@ -259,12 +261,15 @@ export const listenAudio = (): HTMLAudioElement | null => audio;
 
 /** Pauses the page player (switching the output to the station must not leave two streams). */
 export function pauseListening() {
+  clearAudioPreload();
   if (audio && !audio.paused) audio.pause();
   // In the Android app the native player is a second player: the station must be the only one sounding.
   pauseNative();
 }
 let pendingSeek = 0;
 let resolving: AbortController | null = null;
+/** The object URL of the file preloaded whole for the playing track (null: streaming it). */
+let playingBlob: string | null = null;
 /** How many tracks of the queue are loaded ahead (`prefetchNext`): the next one whole, the rest only their start. */
 const AHEAD = 3;
 /** What the Hub was asked to load ahead: ref -> how much of it, and the request. */
@@ -421,6 +426,7 @@ function el(): HTMLAudioElement {
   const a = new Audio();
   a.preload = 'auto';
   a.volume = state.volume;
+  attachAudioOutput(a);
   const sync = () => {
     if (remoteMode) return;
     set({ position: pendingSeek || a.currentTime, duration: Number.isFinite(a.duration) && a.duration > 0 ? a.duration : state.duration });
@@ -440,6 +446,7 @@ function el(): HTMLAudioElement {
     set({ phase: 'playing', error: null });
     refreshInfo();
     reportStart();
+    preloadUpcomingAudio();
     if (played?.started && played.anchor === null) played.anchor = performance.now();
   });
   const suspendClock = () => { if (played?.started) { accrue(played); played.anchor = null; checkpoint(); } };
@@ -448,6 +455,7 @@ function el(): HTMLAudioElement {
     if (played?.started && !a.paused && a.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) played.anchor = performance.now();
   });
   a.addEventListener('waiting', () => {
+    clearAudioPreload();
     if (remoteMode) return;
     suspendClock();
     if (state.phase === 'playing') set({ phase: 'loading' });
@@ -497,7 +505,10 @@ function start(queue: readonly ListenTrack[], index: number, auto = false, posit
   resolving = ctl;
   pendingSeek = position;
   set({ track, queue, index, context: listContext, page: listPage, phase: autoplay ? 'resolving' : 'paused', info: null, error: null, position, duration: track.duration_s ?? 0 });
-  a.src = listenStreamUrl(track.ref);
+  const previousBlob = playingBlob;
+  playingBlob = takePreloadedAudio(track.ref);
+  a.src = playingBlob ?? listenStreamUrl(track.ref);
+  if (previousBlob) URL.revokeObjectURL(previousBlob);
   if (autoplay) play(a);
   else a.load();
   mediaSession(track);
@@ -542,6 +553,7 @@ function refreshInfo() {
 
 /** Asks the Hub to pick the next track's file now (it remembers the pick), so it starts at once. */
 function prefetchNext() {
+  preloadUpcomingAudio();
   // the tracks the queue plays next, the nearest first: the Hub opens their files now (opening a source is what
   // takes seconds) — the next one whole, the ones after it only their start, so skipping through them is instant
   const ahead: ListenTrack[] = [];
@@ -563,6 +575,16 @@ function prefetchNext() {
       /* the track itself will show the error when it is reached */
     });
   }
+}
+
+/** Loads the next file whole, so the change of tracks has no gap. Never while the station plays: its stream is the
+ * only sound, and its timeline is not this player's. */
+function preloadUpcomingAudio() {
+  if (remoteMode) { clearAudioPreload(); return; }
+  const next = state.repeat === 'one' ? undefined : state.queue[state.index + 1] ??
+    (state.repeat === 'all' && !onWave() ? state.queue[0] : undefined);
+  if (state.phase === 'playing') preloadAudio(next?.ref ?? null);
+  else clearAudioPreload();
 }
 
 // --- tracks on screen -------------------------------------------------------------------------------------
@@ -1047,12 +1069,15 @@ export function stopListening() {
   resolving = null;
   for (const p of prefetching.values()) p.ctl.abort();
   prefetching.clear();
+  clearAudioPreload();
   pendingSeek = 0;
   if (audio) {
     audio.pause();
     audio.removeAttribute('src');
     audio.load();
   }
+  if (playingBlob) URL.revokeObjectURL(playingBlob);
+  playingBlob = null;
   unshuffled = null;
   smartHooks?.end();
   set({ track: null, queue: [], index: 0, info: null, error: null, phase: 'paused', position: 0, duration: 0, smart: false });

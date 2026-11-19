@@ -13,6 +13,7 @@ import { fmtDuration, fmtSize, fmtWhen, plural, tracksWord } from '../lib/format
 import { useAsync, useInterval } from '../lib/hooks';
 import { listen, type ListenTrack } from '../lib/listen';
 import { TrackMenuButton } from '../components/TrackMenu';
+import { openFindFile } from '../lib/findFile';
 import { canPlay, canPlayAll, playList, playMixed } from '../lib/player';
 import { Link, navigate } from '../lib/router';
 import { copyText } from '../lib/share';
@@ -751,6 +752,10 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
     setBusyId(null);
     if (r) res.reload(true);
   };
+  const change = (it: ImportItemOut) => {
+    if (it.track_id && it.nd_song_id) openFindFile({ library_track_id: it.track_id, title: it.title, artist: it.artist });
+    else void pick(it);
+  };
 
   return (
     <div>
@@ -773,7 +778,7 @@ export function ImportItemsPage({ id, collectionId, match, status }: { id: numbe
       ) : (
         <ul className="mx-4 overflow-hidden rounded-2xl bg-surface lg:mx-6">
           {items.map((it, i) => (
-            <ItemRow key={it.id} n={i + 1} it={it} review={collectionId == null} busy={busyId === it.id} onPlay={it.kind === 'track' && (it.nd_song_id || it.ref) ? () => play(it) : undefined} onPick={() => pick(it)} onSkip={() => skip(it)} />
+            <ItemRow key={it.id} n={i + 1} it={it} review={collectionId == null} busy={busyId === it.id} onPlay={it.kind === 'track' && (it.nd_song_id || it.ref) ? () => play(it) : undefined} onPick={() => pick(it)} onChange={() => change(it)} onSkip={() => skip(it)} />
           ))}
         </ul>
       )}
@@ -793,7 +798,7 @@ const listenItem = (x: ImportItemOut): ListenTrack => ({ ref: x.ref as string, t
 /** `review`: a part of the report — a probable match offers to pick the file (in a collection it plays). A row whose
  * download waits for the user's choice of a file leads to that choice; one the user has to decide about can be left
  * out («Пропустить»). */
-function ItemRow({ n, it, review, busy, onPlay, onPick, onSkip }: { n: number; it: ImportItemOut; review: boolean; busy: boolean; onPlay?: () => void; onPick: () => void; onSkip: () => void }) {
+function ItemRow({ n, it, review, busy, onPlay, onPick, onChange, onSkip }: { n: number; it: ImportItemOut; review: boolean; busy: boolean; onPlay?: () => void; onPick: () => void; onChange: () => void; onSkip: () => void }) {
   const choosing = it.status === 'queued' && it.download_status === 'needs_review' && it.download_item_id != null;
   const needsPick = it.kind === 'track' && (it.status === 'not_found' || it.status === 'failed' || (review && it.match === 'probable' && it.status !== 'queued'));
   const href = it.kind === 'album' && it.ref ? `/album/${encodeURIComponent(it.ref)}` : it.kind === 'artist' && it.ref ? `/artist/${encodeURIComponent(it.ref)}` : it.download_item_id ? `/downloads/${it.download_item_id}` : null;
@@ -821,6 +826,9 @@ function ItemRow({ n, it, review, busy, onPlay, onPick, onSkip }: { n: number; i
         <div className="flex min-w-0 flex-1 items-center gap-3">{inner}</div>
       )}
       {it.kind === 'track' && (it.ref?.startsWith('dz:') || it.nd_song_id) && <TrackMenuButton track={{ title: it.title, artist: it.artist, ref: it.ref, nd_song_id: it.nd_song_id, library_track_id: it.track_id }} />}
+      {it.kind === 'track' && it.track_id && it.nd_song_id && !choosing && !needsPick && (
+        <Button small icon="refresh" disabled={busy} onClick={onChange}>Сменить аудио</Button>
+      )}
       {choosing ? (
         <Button small onClick={() => navigate(`/downloads/${it.download_item_id}`)}>
           Выбрать файл

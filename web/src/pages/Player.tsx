@@ -8,6 +8,7 @@ import { LikeButton } from '../components/LikeButton';
 import { Lyrics } from '../components/Lyrics';
 import { SaveButton } from '../components/PlaylistsButton';
 import { StationSource } from '../components/StationSource';
+import { AudioOutputButton } from '../components/AudioOutput';
 import { TrackMenuButton } from '../components/TrackMenu';
 import { Cover, Empty, IconButton, Sheet, Spinner, cx } from '../components/ui';
 import { fmtDuration, tracksWord } from '../lib/format';
@@ -168,6 +169,7 @@ export function PlayerPage() {
         <PlayingFrom context={context} page={page} />
         {/* as much on the right as on the left: the name stays in the middle */}
         {wide && canFull && <span className="w-11 shrink-0" />}
+        {!stationSource && <AudioOutputButton compact />}
         <StationSource />
         <IconButton icon="lyrics" label={textShown ? 'Скрыть текст' : 'Показать текст'} aria-pressed={textShown} onClick={toggleLyrics} className={textShown ? '!text-accent' : 'text-muted'} />
       </div>

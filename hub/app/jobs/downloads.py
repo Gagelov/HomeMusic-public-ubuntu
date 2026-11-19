@@ -572,14 +572,18 @@ async def search_provider(p, q: TrackQuery, item_id: int, *, limit: int = 15,
     except Exception as e:
         log.warning("provider %s search failed: %r", p.name, e, extra={"item_id": item_id})
         return [], f"{p.name}: {e!r}"
-    ranked = rank_candidates(q, [c for c in raw if uploaded_in_time(c, cutoffs)], cfg)
+    filtered = [c for c in raw if uploaded_in_time(c, cutoffs)]
+    ranked = rank_candidates(q, filtered, cfg)
     if ranked and n_enrich:
         top = ranked[:n_enrich]
         enriched = await asyncio.gather(*(p.enrich(c) for c in top), return_exceptions=True)
         top = [e if isinstance(e, Candidate) else c for c, e in zip(top, enriched, strict=True)]
         # the track page may tell the upload date the search didn't
-        ranked = rank_candidates(q, [c for c in top if uploaded_in_time(c, cutoffs)] + ranked[n_enrich:], cfg)
-    return ranked, None
+        reranked = rank_candidates(q, [c for c in top if uploaded_in_time(c, cutoffs)] + ranked[n_enrich:], cfg)
+        ranked = reranked or ranked
+    # Strict ranking may reject everything (duration or a name mismatch) while the provider did return files:
+    # keep them as a fallback, the post-check and the source order still filter out bad ones.
+    return (ranked or filtered), None
 
 
 async def search_reuploads(q: TrackQuery, item_id: int, *, searched: list | None = None) -> list[Candidate]:

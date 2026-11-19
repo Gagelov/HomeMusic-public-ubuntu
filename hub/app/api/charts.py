@@ -39,7 +39,7 @@ async def chart(chart_id: str, user: User = Depends(current_user)):
     if c is None:
         raise HTTPException(404, "Чарт не найден")
     try:
-        built = await charts.tracks(chart_id)  # no DB connection held meanwhile
+        built = await charts.tracks(chart_id, user.id)  # no DB connection held meanwhile
     except charts.ChartError as e:
         raise HTTPException(502, f"Чарт недоступен: {e}") from e
     async with session_scope() as s:

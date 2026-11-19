@@ -59,6 +59,19 @@ export function ChartsSection() {
           </div>
         )}
       </section>
+      {!!of('moods').length && (
+        <section aria-label="Настроения">
+          <SectionTitle>Настроения</SectionTitle>
+          <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-1">
+            {of('moods').map((c, i) => (
+              <Link key={c.id} to={`/chart/${enc(c.id)}`} aria-label={c.name} style={{ background: tone(i + 3) }}
+                className="flex min-h-11 shrink-0 items-center rounded-full px-4 text-sm font-bold text-white shadow-sm transition hover:brightness-110">
+                {c.title}
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
     </>
   );
 }

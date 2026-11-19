@@ -643,7 +643,8 @@ class YtdlpProvider:
     async def _search_music_ytdlp(self, text: str, limit: int) -> list[Candidate]:
         """Flat entries only carry id + title, so each hit gets a metadata lookup."""
         url = YTM_SEARCH_URL.format(q=quote_plus(text))
-        info = await self._run(self._extract, url, extract_flat="in_playlist", playlistend=limit, noplaylist=False)
+        info = await self._run(self._extract, url, extract_flat="in_playlist", playlistend=limit, noplaylist=False,
+                               ignoreerrors=True)
         ids = [e["id"] for e in (info.get("entries") or []) if e and e.get("id")][:limit]
         if not ids:
             return []
@@ -711,7 +712,7 @@ class YtdlpProvider:
 
     async def _search_youtube(self, q: TrackQuery, limit: int) -> list[Candidate]:
         query = ytsearch_query(self.cfg.search_prefix, search_text(q), limit)
-        info = await self._run(self._extract, query, extract_flat="in_playlist", noplaylist=False)
+        info = await self._run(self._extract, query, extract_flat="in_playlist", noplaylist=False, ignoreerrors=True)
         out: list[Candidate] = []
         for e in info.get("entries") or []:
             if e and (c := entry_to_candidate(e, source="ytsearch")):
