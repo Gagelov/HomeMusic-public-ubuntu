@@ -8,6 +8,7 @@ import { Icon } from './Icon';
 import { SaveButton } from './PlaylistsButton';
 import { StationSource } from './StationSource';
 import { AudioOutputButton } from './AudioOutput';
+import { useStation } from '../lib/station';
 import { Cover, Spinner } from './ui';
 
 /** What plays, above the tabs of a phone (inside the app: at the bottom of the Hub page, which the app keeps above
@@ -22,6 +23,7 @@ export function MiniPlayer() {
   const position = useListen((s) => s.position);
   const duration = useListen((s) => s.duration);
   const onWave = useListen((s) => s.context.startsWith('wave:'));
+  const station = useStation((s) => s.source === 'station');
   const touchY = useRef<number | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const shown = !!track;
@@ -100,7 +102,7 @@ export function MiniPlayer() {
             <div className="flex min-w-0 flex-1 items-center gap-3">{head}</div>
           )}
           {!isUpload(track) && <SaveButton songId={info?.nd_song_id} refId={track.ref} listKey={tagKey({ library_track_id: info?.track_id ?? track.library_track_id })} title={track.title} data={{ ...track }} size={22} />}
-          <div className="hidden shrink-0 sm:block"><AudioOutputButton compact /></div>
+          {!station && <div className="hidden shrink-0 sm:block"><AudioOutputButton compact /></div>}
           <StationSource />
           <button
             type="button"

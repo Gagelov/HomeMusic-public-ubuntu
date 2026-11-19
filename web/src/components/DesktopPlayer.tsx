@@ -13,6 +13,7 @@ import { SeekLine } from './SeekLine';
 import { TrackMenuButton } from './TrackMenu';
 import { StationSource } from './StationSource';
 import { AudioOutputButton } from './AudioOutput';
+import { useStation } from '../lib/station';
 import { Cover, IconButton, Marquee, Spinner, cx } from './ui';
 
 /** The player of a computer: a bar along the bottom of the window (where a phone has its tab bar), always there —
@@ -31,6 +32,7 @@ export function DesktopPlayer() {
   const smart = useListen((s) => s.smart);
   const repeat = useListen((s) => s.repeat);
   const onWave = useListen((s) => s.context.startsWith('wave:'));
+  const station = useStation((s) => s.source === 'station');
   const canNext = useListen((s) => hasNext(s) || (s.repeat === 'all' && !s.context.startsWith('wave:')));
   const canPrev = useListen(hasPrev);
   const { shownPos, aim, aimPct, range } = useSeek(position, duration);
@@ -139,7 +141,7 @@ export function DesktopPlayer() {
 
         <div className="flex min-w-0 items-center justify-end gap-1">
           <StationSource />
-          <AudioOutputButton compact />
+          {!station && <AudioOutputButton compact />}
           {track && !isUpload(track) && <TrackMenuButton track={{ ...track, nd_song_id: info?.nd_song_id, library_track_id: info?.track_id ?? track.library_track_id }} className="!h-9 !w-9" inPlayer lean noTags />}
           {track && !isUpload(track) && <IconButton icon="share" size={18} label="Поделиться" onClick={() => openShare({ title: track.title, artist: track.artist, ref: track.ref, nd_song_id: info?.nd_song_id })} className="!h-9 !w-9 text-muted hover:text-fg" />}
           {/* the tags of the track: its own mark here, not a line of ⋯ (a track the library has not got has none) */}
