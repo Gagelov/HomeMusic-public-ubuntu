@@ -60,6 +60,14 @@ case "$method $path" in
             next|prev|pause|resume|stop|like|dislike)
                 "$DIR/hm-play.sh" "$action" >/dev/null 2>&1
                 respond '200 OK' "$(json)" ;;
+            seek)
+                pos=$(printf '%s' "$body" | /opt/bin/jq -r '(.position // 0) | floor')
+                "$DIR/hm-play.sh" seek-to "$pos" >/dev/null 2>&1
+                respond '200 OK' "$(json)" ;;
+            volume)
+                value=$(printf '%s' "$body" | /opt/bin/jq -r '(.value // 0) | floor')
+                "$DIR/hm-play.sh" volume "$value" >/dev/null 2>&1
+                respond '200 OK' "$(json)" ;;
             *)
                 respond '400 Bad Request' '{"error":"unknown action"}' ;;
         esac ;;

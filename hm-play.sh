@@ -255,17 +255,24 @@ case "$1" in
     json)
         playing=false; running && playing=true
         paused=false; [ -f "$PAUSED" ] && paused=true
+        m=$(master); [ -n "$m" ] || m=0
         "$JQ" -n --argjson playing "$playing" --argjson paused "$paused" \
             --argjson index "$(cat "$IDX" 2>/dev/null || echo 0)" \
             --argjson position "$(position)" \
             --argjson duration "$(duration)" \
+            --argjson master "$m" \
             --arg id "$(field 1)" --arg artist "$(field 2)" --arg title "$(field 3)" \
             --argjson queue "$(wc -l < "$LIST" 2>/dev/null || echo 0)" \
-            '{playing:$playing,paused:$paused,index:$index,position:$position,duration:$duration,id:$id,artist:$artist,title:$title,queue:$queue}'
+            '{playing:$playing,paused:$paused,index:$index,position:$position,duration:$duration,master:$master,id:$id,artist:$artist,title:$title,queue:$queue}'
         ;;
     seek)
         (alive || [ -f "$PAUSED" ]) || exit 1
         if [ "$2" = "0" ]; then to=0; else to=$(( $(position) + ${2:-10} )); [ "$to" -lt 0 ] && to=0; fi
+        if [ -f "$PAUSED" ]; then echo "$to" > "$PAUSED"; else rm -f "$PAUSED"; play_track "$(field 1)" "$to"; fi
+        ;;
+    seek-to)
+        (alive || [ -f "$PAUSED" ]) || exit 1
+        to=${2:-0}; [ "$to" -lt 0 ] && to=0
         if [ -f "$PAUSED" ]; then echo "$to" > "$PAUSED"; else rm -f "$PAUSED"; play_track "$(field 1)" "$to"; fi
         ;;
     seek-phrase)
