@@ -141,6 +141,10 @@ export interface StationPlayIn {
   tracks: StationTrackIn[];
 }
 
+export interface StationAppendIn {
+  tracks: StationTrackIn[];
+}
+
 // --- providers ------------------------------------------------------------------------------
 
 export interface Candidate {

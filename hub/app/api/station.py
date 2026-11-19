@@ -36,6 +36,10 @@ class StationPlayIn(BaseModel):
     tracks: list[StationTrackIn] = Field(min_length=1)
 
 
+class StationAppendIn(BaseModel):
+    tracks: list[StationTrackIn] = Field(min_length=1)
+
+
 class StationCommandIn(BaseModel):
     action: str
     position: float | None = None
@@ -114,3 +118,14 @@ async def station_play(
     station_token: str | None = Header(default=None, alias="X-HM-Station-Token"),
 ):
     return await _call("POST", "/play", body.model_dump(), station_url, station_token)
+
+
+@router.post("/api/station/append")
+async def station_append(
+    body: StationAppendIn,
+    user: User = Depends(current_user),
+    station_url: str | None = Header(default=None, alias="X-HM-Station-URL"),
+    station_token: str | None = Header(default=None, alias="X-HM-Station-Token"),
+):
+    """A wave's next picks: extends the station's queue without touching the playing track."""
+    return await _call("POST", "/append", body.model_dump(), station_url, station_token)

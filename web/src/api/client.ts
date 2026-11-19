@@ -76,6 +76,7 @@ import type {
   SearchRecent,
   SearchTracksOut,
   SoulseekStatusOut,
+  StationAppendIn,
   StationPlayIn,
   StationQueue,
   StationStatus,
@@ -688,6 +689,7 @@ export const api = {
   stationCommand: (action: string, headers?: Record<string, string>, extra?: Record<string, unknown>) =>
     request<StationStatus>('POST', '/api/station/command', { json: { action, ...(extra ?? {}) }, headers }),
   stationPlay: (body: StationPlayIn, headers?: Record<string, string>) => request<StationStatus>('POST', '/api/station/play', { json: body, headers }),
+  stationAppend: (body: StationAppendIn, headers?: Record<string, string>) => request<StationStatus>('POST', '/api/station/append', { json: body, headers }),
 };
 
 export const libraryCoverUrl = (albumId: number, size = 300, bust?: string | number) =>

@@ -87,6 +87,8 @@ let ignoreVoiceUntil = 0;
 let stoppedAt = 0;
 // the page player was sounding when the user sent the queue to the station
 let resumeLocal = false;
+// the list the station plays, for «играет из»: a wave's session, a playlist, or «Станция»
+let remoteContext: string | null = null;
 // the queue actually played on the station (covers and links when the page player sent it)
 let stationItems: ListenTrack[] = [];
 let remoteActive = false;
@@ -161,7 +163,7 @@ function stationView(status: StationStatus) {
 }
 
 /** Sends a list to the station and starts at `index`: the queue the station plays becomes this list. */
-async function castStation(items: ListenTrack[], index: number): Promise<void> {
+async function castStation(items: ListenTrack[], index: number, context?: string): Promise<void> {
   if (index < 0 || index >= items.length) return;
   set({ busy: true });
   try {
@@ -175,6 +177,7 @@ async function castStation(items: ListenTrack[], index: number): Promise<void> {
     };
     const status = await api.stationPlay(body, stationHeaders());
     stationItems = items;
+    remoteContext = context ?? getListenState().context;
     stoppedAt = 0;
     stationWasPlaying = status.playing || status.paused;
     try { localStorage.setItem(KEY, 'station'); } catch { /* storage is optional */ }
@@ -183,6 +186,28 @@ async function castStation(items: ListenTrack[], index: number): Promise<void> {
     startStationPolling();
   } catch (e) {
     set({ busy: false, error: errorMessage(e) });
+  }
+}
+
+/** Extends the station's queue (a wave's next picks) without restarting the playing track. */
+export async function stationAppend(items: ListenTrack[]): Promise<boolean> {
+  if (state.source !== 'station') return false;
+  const appended = items.filter((t) => !!t.nd_song_id);
+  if (!appended.length) return false;
+  try {
+    const status = await api.stationAppend({
+      tracks: appended.map((t) => ({
+        id: t.nd_song_id!, artist: t.artist, title: t.title, duration: t.duration_s ?? 0,
+        cover: t.cover_url || t.cover_small_url || '',
+      })),
+    }, stationHeaders());
+    stationItems = [...stationItems, ...appended];
+    set({ status, error: null });
+    showStatus(status);
+    return true;
+  } catch (e) {
+    set({ error: errorMessage(e) });
+    return false;
   }
 }
 
@@ -197,7 +222,7 @@ function stationPlayAt(index: number): void {
 }
 
 /** A tap on a track somewhere in the app while the station plays: send that list to the station. */
-function stationPlayList(track: ListenTrack, queue?: readonly ListenTrack[]): boolean {
+function stationPlayList(track: ListenTrack, queue?: readonly ListenTrack[], context?: string): boolean {
   const list = queue?.some((t) => t.ref === track.ref) ? queue : [track];
   const items = list.filter((t) => !!t.nd_song_id);
   let at = -1;
@@ -210,8 +235,13 @@ function stationPlayList(track: ListenTrack, queue?: readonly ListenTrack[]): bo
     n++;
   }
   if (at < 0) at = byRef;
-  if (at < 0) return false; // not in Navidrome: the station cannot pull it
-  void castStation(items, at);
+  if (at < 0) {
+    // «Моя волна» begins with tracks the station cannot pull (previews): play the first one it can,
+    // instead of dropping the broadcast back to this device.
+    if (!items.length || !context?.startsWith('wave:')) return false;
+    at = 0;
+  }
+  void castStation(items, at, context);
   return true;
 }
 
@@ -220,7 +250,7 @@ const controls: RemoteControls = {
   next: () => void stationCommand('next'),
   prev: () => void stationCommand('prev'),
   playAt: (index) => stationPlayAt(index),
-  playList: (track, queue) => stationPlayList(track, queue),
+  playList: (track, queue, context) => stationPlayList(track, queue, context),
   seek: (seconds) => void stationSeek(seconds),
   volume: (value) => void stationVolume(value),
   release: () => void releaseToDevice(true),
@@ -236,7 +266,7 @@ function showStatus(status: StationStatus) {
   // While the user is moving the slider, keep their value: a status request sent before the
   // volume command answers with the old Master and would make the handle jump back.
   if (Date.now() - volumeSetAt < 2500) view.volume = getListenState().volume;
-  showRemote(view);
+  showRemote({ ...view, context: remoteContext ?? undefined });
   statusAt = Date.now();
   basePosition = status.position;
 }
@@ -281,6 +311,7 @@ async function adoptStation(status: StationStatus, resume: boolean): Promise<voi
   stopStationWatch();
   await ensureItems(status);
   pauseListening();
+  remoteContext = 'station';
   stationWasPlaying = status.playing || status.paused;
   try { localStorage.setItem(KEY, 'station'); } catch { /* storage is optional */ }
   set({ source: 'station', status, busy: false, error: null });
@@ -416,6 +447,7 @@ async function releaseToDevice(stop: boolean) {
   }
   stopStationPolling();
   stationWasPlaying = false;
+  remoteContext = null;
   try { localStorage.setItem(KEY, 'device'); } catch { /* storage is optional */ }
   set({ source: 'device', status: null, busy: false, error: null });
   if (master !== undefined && master !== null) setVolume(master / 100);
@@ -448,6 +480,7 @@ export async function selectSource(next: StationSource): Promise<void> {
         const body: StationPlayIn = { index: queue.index, position: queue.position, tracks: queue.tracks };
         const started = await api.stationPlay(body, stationHeaders());
         pauseListening();
+        remoteContext = getListenState().context;
         stoppedAt = 0;
         stationWasPlaying = started.playing || started.paused;
         try { localStorage.setItem(KEY, 'station'); } catch { /* storage is optional */ }

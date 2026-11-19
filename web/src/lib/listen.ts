@@ -157,7 +157,7 @@ export interface RemoteControls {
   /** a track of the station's own queue was picked: play that index on the station */
   playAt(index: number): void;
   /** a list was picked here: true when the station took it, false when it has to play on this device */
-  playList(track: ListenTrack, queue?: readonly ListenTrack[]): boolean;
+  playList(track: ListenTrack, queue?: readonly ListenTrack[], context?: string): boolean;
   seek(seconds: number): void;
   volume(value: number): void;
   /** the user started something here: stop the station, switch back to this device */
@@ -186,6 +186,8 @@ export function showRemote(view: {
   duration: number;
   phase: ListenPhase;
   volume: number;
+  /** the list the station plays (a wave's session, a playlist): keeps the player's «играет из» right */
+  context?: string;
 }) {
   if (!remoteMode) {
     localSnapshot = {
@@ -200,6 +202,7 @@ export function showRemote(view: {
   set({
     track: view.track, queue: view.queue, index: view.index, position: view.position,
     duration: view.duration, phase: view.phase, volume: view.volume, info: null, error: null,
+    ...(view.context ? { context: view.context } : {}),
   });
 }
 
@@ -638,7 +641,7 @@ function startList(track: ListenTrack, queue?: readonly ListenTrack[], context?:
   if (remoteControls) {
     // The station plays: a track picked in a list is sent there, not started here.
     // Only a track the station cannot pull from Navidrome brings the sound back.
-    if (remoteControls.playList(track, queue)) return;
+    if (remoteControls.playList(track, queue, context)) return;
     remoteControls.release();
   }
   listContext = context ?? routeContext();

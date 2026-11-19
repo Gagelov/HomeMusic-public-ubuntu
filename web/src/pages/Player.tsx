@@ -404,7 +404,7 @@ function contextLabel(context: string): string {
   if (context.startsWith('wave:')) return 'Моя волна';
   if (context.startsWith('mix:')) return 'Микс дня';
   return (
-    { album: 'Альбом', artist: 'Исполнитель', playlist: 'Плейлист', liked: 'Любимое', search: 'Поиск', queue: 'Очередь' } as Record<string, string>
+    { album: 'Альбом', artist: 'Исполнитель', playlist: 'Плейлист', liked: 'Любимое', search: 'Поиск', queue: 'Очередь', station: 'Станция' } as Record<string, string>
   )[context] ?? 'Сейчас играет';
 }
 

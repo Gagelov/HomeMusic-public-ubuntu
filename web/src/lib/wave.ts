@@ -2,8 +2,9 @@ import { useSyncExternalStore } from 'react';
 import { ApiError, api } from '../api/client';
 import type { PlayEventIn, WaveOrigin, WaveOut, WaveSeedIn, WaveTrackOut } from '../api/types';
 import { EMBEDDED } from './embedded';
-import { getListenState, listenAll, replaceUpcoming, type ListenTrack } from './listen';
+import { getListenState, isRemote, listenAll, replaceUpcoming, type ListenTrack } from './listen';
 import { canPlayAll, canPlayWave, playWave } from './player';
+import { stationAppend } from './station';
 import { onPlayEvent } from './plays';
 import { navigate } from './router';
 import { tastePath } from './taste';
@@ -119,6 +120,9 @@ export function artistSeed(t: SeedTrack): WaveSeedIn | null {
 
 const listenTrack = (t: WaveTrackOut): ListenTrack => ({
   ref: t.ref,
+  // The station plays only Navidrome songs: the wave's picks that are in the library carry this id.
+  nd_song_id: t.nd_song_id,
+  library_track_id: t.library_track_id,
   title: t.title,
   artist: t.artists?.length ? t.artists.join(', ') : t.artist,
   cover_url: t.cover_url,
@@ -208,6 +212,39 @@ async function ask() {
     }
   }
 }
+
+/** The wave on the station: when its queue is nearly done, ask the Hub for the next picks and append them there.
+ * The station's native player reads its queue file at each track end, so the stream goes on without a restart. */
+const STATION_AHEAD = 2;
+let stationAsking = false;
+let stationAskedAt = 0;
+
+async function askStation() {
+  const s = session;
+  if (!s || s.busy || stationAsking || !isRemote()) return;
+  const st = getListenState();
+  if (!st.context.startsWith('wave:')) return;
+  if (st.queue.length - st.index > STATION_AHEAD) return;
+  if (Date.now() - stationAskedAt < 10_000) return;
+  stationAsking = true;
+  stationAskedAt = Date.now();
+  try {
+    const w = await api.waveNext(s.id, {
+      played: [],
+      queued: st.queue.slice(st.index + 1).map((t) => t.ref),
+    });
+    if (session !== s) return;
+    remember(s, w);
+    const items = w.tracks.map(listenTrack).filter((t) => !!t.nd_song_id);
+    if (items.length) await stationAppend(items);
+  } catch {
+    /* the next tick tries again */
+  } finally {
+    stationAsking = false;
+  }
+}
+
+if (typeof window !== 'undefined') window.setInterval(() => void askStation(), 3000);
 
 function end() {
   session = null;
