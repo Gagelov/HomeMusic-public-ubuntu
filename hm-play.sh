@@ -30,6 +30,7 @@ master() { amixer sget Master 2>/dev/null | grep -o '\[[0-9]*%\]' | head -n 1 | 
 running() { [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null && [ ! -f "$PAUSED" ]; }
 alive() { [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; }
 active() { [ -f "$PAUSED" ] || alive; }
+last_stream() { tail -n 400 /data/quasar/daemons_logs/maind.log 2>/dev/null | sed -n 's/.*AUDIO_PLAY streamId=\([^,]*\).*/\1/p' | tail -1; }
 position() {
     [ -f "$PAUSED" ] && { cat "$PAUSED"; return; }
     [ -f "$T0" ] || { echo 0; return; }
@@ -113,6 +114,7 @@ watch_loop() {
                 log "queue finished"
                 "$NATIVE" stop
                 rm -f "$PID" "$PAUSED"
+                [ -x "$DIR/music-block.sh" ] && "$DIR/music-block.sh" off >>"$LOG" 2>&1
                 break
             fi
             play_track "$id" 0
@@ -124,6 +126,7 @@ watch_loop() {
 
 start_player() {
     [ -s "$LIST" ] || return 1
+    [ -x "$DIR/music-block.sh" ] && "$DIR/music-block.sh" on >>"$LOG" 2>&1
     rm -f "$PAUSED"
     idx=$(cat "$IDX" 2>/dev/null || echo 0)
     id=$(sed -n "$((idx + 1))p" "$LIST" | cut -f1)
@@ -137,6 +140,7 @@ halt_player() {
     "$NATIVE" stop
     [ -f "$PID" ] && kill "$(cat "$PID")" 2>/dev/null
     rm -f "$PID" "$PAUSED" "$POS0" "$T0"
+    [ -x "$DIR/music-block.sh" ] && "$DIR/music-block.sh" off >>"$LOG" 2>&1
 }
 
 like() {
@@ -239,6 +243,23 @@ case "$1" in
     dislike) dislike ;;
     shuffle) shuffle ;;
     duck) : ;;
+    now)
+        active || exit 0
+        a=$(field 2); t=$(field 3)
+        if [ -n "$a" ]; then printf '%s — %s\n' "$a" "$t"; else printf '%s\n' "$t"; fi
+        ;;
+    reassert)
+        active || exit 0
+        if [ -f "$PAUSED" ]; then
+            "$NATIVE" pause
+        else
+            id=$(field 1)
+            # The cloud sometimes sends its own next/continue after ours. Only
+            # replace the session if our stream is no longer the active one.
+            [ "$(last_stream)" = "$id" ] && exit 0
+            play_track "$id" "$(position)"
+        fi
+        ;;
     status)
         t=$(active && field 3)
         printf 'playing=%s index=%s position=%s master=%s title=%s\n' \

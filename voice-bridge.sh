@@ -12,6 +12,20 @@ PID=$DIR/bridge.pid
 note() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 active() { [ -f "$DIR/paused" ] || { [ -f "$DIR/native.pid" ] && kill -0 "$(cat "$DIR/native.pid")" 2>/dev/null; }; }
 playing() { [ ! -f "$DIR/paused" ] && active; }
+NATIVE=$DIR/hm-native.sh
+suppress() { "$NATIVE" cancel >>"$LOG" 2>&1; "$NATIVE" mute >>"$LOG" 2>&1; "$NATIVE" clear >>"$LOG" 2>&1; }
+act() { suppress; "$PLAY" "$@" >>"$LOG" 2>&1; }
+schedule_reassert() {
+    seq=$(cat "$DIR/cmdseq" 2>/dev/null || echo 0)
+    seq=$((seq + 1)); echo "$seq" > "$DIR/cmdseq"
+    (
+        sleep 2
+        [ "$(cat "$DIR/cmdseq" 2>/dev/null)" = "$seq" ] || exit 0
+        suppress
+        "$PLAY" reassert >>"$LOG" 2>&1
+    ) &
+}
+act_reassert() { act "$@"; schedule_reassert; }
 
 query_after() {
     # $1 = full phrase, $2 = regexp-ish word to remove before the query
@@ -32,6 +46,7 @@ handle() {
             # before we spend a second fetching the queue from Navidrome.
             "$DIR/hm-native.sh" cancel >>"$LOG" 2>&1
             "$DIR/hm-native.sh" mute >>"$LOG" 2>&1
+            "$DIR/hm-native.sh" clear >>"$LOG" 2>&1
             q=$(query_after "$t")
             case "$t" in
                 *любим*|*избранн*|*сердеч*)
@@ -59,11 +74,23 @@ handle() {
     case "$t" in
         *продолж*|*"играй дальше"*|*"включи обратно"*)
             if [ -f "$DIR/paused" ]; then
-                note "resume ($1)"; "$PLAY" resume >>"$LOG" 2>&1; return
+                note "resume ($1)"; act_reassert resume; return
             fi ;;
     esac
 
     active || return
+    # "What is playing" is answered locally: the cloud does not know the
+    # Navidrome track and otherwise starts audio recognition (Shazam-style).
+    case "$t" in
+        *"что сейчас"*|*"что играет"*|*"что за песн"*|*"какая песн"*|*"это за песн"*|*"что за трек"*)
+            suppress
+            now=$("$PLAY" now 2>/dev/null)
+            if [ -n "$now" ]; then
+                note "now playing ($1): $now"
+                "$NATIVE" say "Сейчас играет $now" >>"$LOG" 2>&1
+            fi
+            return ;;
+    esac
     # A normal Yandex Music request is not ours: stop the stream and let Alice
     # handle it. Transport/feedback commands are still ours.
     case "$t" in
@@ -75,23 +102,23 @@ handle() {
     esac
     case "$t" in
         *перемот*|*секунд*|*минут*|*назад*на*|*вперёд*на*)
-            note "seek ($1)"; "$PLAY" seek-phrase "$1" >>"$LOG" 2>&1 ;;
+            note "seek ($1)"; act_reassert seek-phrase "$1" ;;
         *не*нрав*|*дизлайк*|*дислайк*)
-            note "dislike ($1)"; "$PLAY" dislike >>"$LOG" 2>&1 ;;
+            note "dislike ($1)"; act dislike ;;
         *лайк*|*нрав*)
-            note "like ($1)"; "$PLAY" like >>"$LOG" 2>&1 ;;
+            note "like ($1)"; act like ;;
         *следующ*|*дальше*|*переключ*)
-            note "next ($1)"; "$PLAY" next >>"$LOG" 2>&1 ;;
+            note "next ($1)"; act_reassert next ;;
         *предыдущ*|*верни*|*назад*)
-            note "prev ($1)"; "$PLAY" prev >>"$LOG" 2>&1 ;;
+            note "prev ($1)"; act_reassert prev ;;
         *пауза*)
-            note "pause ($1)"; "$PLAY" pause >>"$LOG" 2>&1 ;;
+            note "pause ($1)"; act_reassert pause ;;
         *стоп*|*останов*|*выключ*|*хватит*)
-            note "stop ($1)"; "$PLAY" stop >>"$LOG" 2>&1 ;;
+            note "stop ($1)"; act stop ;;
         *продолж*|*играй*дальше*|*включи*обратно*)
-            note "resume ($1)"; "$PLAY" resume >>"$LOG" 2>&1 ;;
+            note "resume ($1)"; act_reassert resume ;;
         *перемешай*|*вперемешку*|*случайн*)
-            note "shuffle ($1)"; "$PLAY" shuffle >>"$LOG" 2>&1 ;;
+            note "shuffle ($1)"; act_reassert shuffle ;;
     esac
 }
 

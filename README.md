@@ -20,6 +20,12 @@
 один трек. Когда трек доигрывает, сторож `hm-play.sh` отправляет следующую
 директиву с тем же потоком.
 
+Пока HomeMusic играет, `music-block.sh` временно переводит домены Яндекс Музыки
+(`music.yandex.net/ru/com`, `strm.yandex.net`) в NXDOMAIN через штатный
+`unbound`. Это не даёт облаку Алисы перебить наш поток своим треком и убирает
+попытки сопряжения с сервисом музыки. Голос Алисы, uniproxy и остальной
+`yandex.net` не блокируются; после остановки HomeMusic конфиг возвращается.
+
 ## Что умеет
 
 Фразы с явной привязкой к серверу:
@@ -37,6 +43,7 @@
 - «пауза», «продолжи», «стоп», «выключи»;
 - «лайк», «нравится», «дизлайк», «не нравится»;
 - «перемотай на 30 секунд», «назад на минуту»;
+- «что сейчас играет» / «что за песня» — отвечает сама станция, без Shazam;
 - громкость — **штатная**, её обрабатывает сама станция.
 
 Короткие команды без «Алиса» («дальше», «пауза», «лайк», «тише») берутся из
@@ -55,7 +62,7 @@
 /opt/bin/opkg install jq socat curl
 mkdir -p /data/opt/homemusic
 # скопировать сюда: hm-native.sh hm-play.sh voice-bridge.sh command-watch.sh
-#                   mediad-guard.sh alice-text.sh alice-text.awk
+#                   mediad-guard.sh music-block.sh alice-text.sh alice-text.awk
 chmod 755 /data/opt/homemusic/*.sh
 # config: SERVER=... USER=... PASSWORD=...
 chmod 600 /data/opt/homemusic/config
