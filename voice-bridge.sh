@@ -38,8 +38,22 @@ query_after() {
         -e 's/^ *//; s/ *$//'
 }
 
+# BusyBox tr/y is byte-wise and mangles Cyrillic, so lower the letters one by
+# one with sed.  The ASR capitalizes the first word ("Стоп", "Продолжи"), and
+# the command patterns are lowercase.
+lower() {
+    printf '%s' "$1" | sed \
+        -e 's/А/а/g' -e 's/Б/б/g' -e 's/В/в/g' -e 's/Г/г/g' -e 's/Д/д/g' \
+        -e 's/Е/е/g' -e 's/Ё/ё/g' -e 's/Ж/ж/g' -e 's/З/з/g' -e 's/И/и/g' \
+        -e 's/Й/й/g' -e 's/К/к/g' -e 's/Л/л/g' -e 's/М/м/g' -e 's/Н/н/g' \
+        -e 's/О/о/g' -e 's/П/п/g' -e 's/Р/р/g' -e 's/С/с/g' -e 's/Т/т/g' \
+        -e 's/У/у/g' -e 's/Ф/ф/g' -e 's/Х/х/g' -e 's/Ц/ц/g' -e 's/Ч/ч/g' \
+        -e 's/Ш/ш/g' -e 's/Щ/щ/g' -e 's/Ъ/ъ/g' -e 's/Ы/ы/g' -e 's/Ь/ь/g' \
+        -e 's/Э/э/g' -e 's/Ю/ю/g' -e 's/Я/я/g'
+}
+
 handle() {
-    t=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+    t=$(lower "$1")
     case "$t" in
         *через*сервер*|*с*сервер*|*из*сервер*|*homemusic*|*home?music*|"*home music*"|*хоммьюзик*|"*хом мьюзик*")
             # Alice also hears the phrase; stop her "track not found" reply
@@ -101,7 +115,7 @@ handle() {
             esac ;;
     esac
     case "$t" in
-        *перемот*|*секунд*|*минут*|*назад*на*|*вперёд*на*)
+        *перемот*|*отмотай*|*промотай*|*назад*на*|*вперёд*на*)
             note "seek ($1)"; act_reassert seek-phrase "$1" ;;
         *не*нрав*|*дизлайк*|*дислайк*)
             note "dislike ($1)"; act dislike ;;

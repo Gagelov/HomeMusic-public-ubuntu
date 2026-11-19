@@ -30,7 +30,18 @@ master() { amixer sget Master 2>/dev/null | grep -o '\[[0-9]*%\]' | head -n 1 | 
 running() { [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null && [ ! -f "$PAUSED" ]; }
 alive() { [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; }
 active() { [ -f "$PAUSED" ] || alive; }
-last_stream() { tail -n 400 /data/quasar/daemons_logs/maind.log 2>/dev/null | sed -n 's/.*AUDIO_PLAY streamId=\([^,]*\).*/\1/p' | tail -1; }
+session_ok() {
+    id=$(field 1)
+    [ -n "$id" ] || return 1
+    tail -n 1000 /data/quasar/daemons_logs/maind.log 2>/dev/null | awk -v id="$id" '
+        /AUDIO_PLAY streamId=/ {
+            if (index($0, "AUDIO_PLAY streamId=" id) > 0) ok = 1
+            else ok = 0
+        }
+        /Erase audio player session|Music session changed to player_finish|Music session changed to player_failed/ { if (ok) ok = 0 }
+        END { exit(ok ? 0 : 1) }
+    '
+}
 position() {
     [ -f "$PAUSED" ] && { cat "$PAUSED"; return; }
     [ -f "$T0" ] || { echo 0; return; }
@@ -100,6 +111,7 @@ start_watch() {
 watch_loop() {
     # start_watch writes native.pid right after forking; do not exit before it.
     sleep 1
+    last_fix=0
     while [ -f "$PID" ]; do
         if [ -f "$PAUSED" ]; then sleep 1; continue; fi
         d=$(duration)
@@ -119,6 +131,17 @@ watch_loop() {
             fi
             play_track "$id" 0
             continue
+        fi
+        # The cloud can clear our session with its own "stop"/"next" directive.
+        # Re-assert the current Navidrome track if the native session is gone.
+        if ! session_ok; then
+            now=$(date +%s)
+            if [ $((now - last_fix)) -ge 3 ]; then
+                last_fix=$now
+                log "session lost, re-asserting $(field 1) at $(position)s"
+                play_track "$(field 1)" "$(position)"
+                continue
+            fi
         fi
         sleep 2
     done
@@ -254,9 +277,7 @@ case "$1" in
             "$NATIVE" pause
         else
             id=$(field 1)
-            # The cloud sometimes sends its own next/continue after ours. Only
-            # replace the session if our stream is no longer the active one.
-            [ "$(last_stream)" = "$id" ] && exit 0
+            session_ok && exit 0
             play_track "$id" "$(position)"
         fi
         ;;
