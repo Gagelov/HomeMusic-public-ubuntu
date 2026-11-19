@@ -149,11 +149,80 @@ let state: ListenState = {
 };
 const subscribers = new Set<() => void>();
 
+/** The station plays: the page player's controls go there instead of the `<audio>`. */
+export interface RemoteControls {
+  toggle(): void;
+  next(): void;
+  prev(): void;
+  seek(seconds: number): void;
+  volume(value: number): void;
+  /** the user started something here: stop the station, switch back to this device */
+  release(): void;
+}
+
+let remoteControls: RemoteControls | null = null;
+let remoteMode = false;
+let localSnapshot: Pick<ListenState, 'track' | 'queue' | 'index' | 'context' | 'page' | 'phase' | 'info' | 'error' | 'position' | 'duration' | 'volume'> | null = null;
+let savedUnshuffled: readonly ListenTrack[] | null = null;
+/** The queue in its own order while shuffle is on (tracks added since go after it when shuffle is turned off). */
+let unshuffled: readonly ListenTrack[] | null = null;
+
+export function setRemoteControls(controls: RemoteControls | null) {
+  remoteControls = controls;
+}
+
+export const isRemote = () => remoteMode;
+
+/** Shows what the station plays in the one player of the app: track, queue, timeline, volume. */
+export function showRemote(view: {
+  track: ListenTrack;
+  queue: readonly ListenTrack[];
+  index: number;
+  position: number;
+  duration: number;
+  phase: ListenPhase;
+  volume: number;
+}) {
+  if (!remoteMode) {
+    localSnapshot = {
+      track: state.track, queue: state.queue, index: state.index, context: state.context, page: state.page,
+      phase: state.phase, info: state.info, error: state.error, position: state.position, duration: state.duration,
+      volume: state.volume,
+    };
+    savedUnshuffled = unshuffled;
+    remoteMode = true;
+    pauseListening();
+  }
+  set({
+    track: view.track, queue: view.queue, index: view.index, position: view.position,
+    duration: view.duration, phase: view.phase, volume: view.volume, info: null, error: null,
+  });
+}
+
+/** The station is no longer the source: the page player's own queue and place are back. */
+export function hideRemote() {
+  if (!remoteMode) return;
+  remoteMode = false;
+  unshuffled = savedUnshuffled;
+  savedUnshuffled = null;
+  const saved = localSnapshot;
+  localSnapshot = null;
+  if (!saved) return;
+  // The station paused the page player, so it cannot come back claiming to play:
+  // the play button would then pause the silence instead of resuming the track.
+  const sounding = saved.phase === 'playing' || saved.phase === 'loading' || saved.phase === 'resolving';
+  set({ ...saved, phase: sounding ? 'paused' : saved.phase });
+}
+
+export function updateRemotePosition(position: number) {
+  if (remoteMode) set({ position });
+}
+
 function set(patch: Partial<ListenState>) {
   const shown = !!state.track;
   state = { ...state, ...patch };
   // Time updates are frequent; queue edits and controls must survive an immediate reload.
-  persistListening(Object.keys(patch).some((key) => key !== 'position' && key !== 'duration'));
+  if (!remoteMode) persistListening(Object.keys(patch).some((key) => key !== 'position' && key !== 'duration'));
   if (!!state.track !== shown) webPlayerShown(!!state.track);
   for (const fn of subscribers) fn();
 }
@@ -342,8 +411,10 @@ function el(): HTMLAudioElement {
   const a = new Audio();
   a.preload = 'auto';
   a.volume = state.volume;
-  const sync = () =>
+  const sync = () => {
+    if (remoteMode) return;
     set({ position: pendingSeek || a.currentTime, duration: Number.isFinite(a.duration) && a.duration > 0 ? a.duration : state.duration });
+  };
   a.addEventListener('loadedmetadata', () => {
     if (pendingSeek > 0) {
       a.currentTime = Number.isFinite(a.duration) ? Math.min(pendingSeek, Math.max(0, a.duration - 0.1)) : pendingSeek;
@@ -355,6 +426,7 @@ function el(): HTMLAudioElement {
   a.addEventListener('durationchange', sync);
   a.addEventListener('play', pauseNative);
   a.addEventListener('playing', () => {
+    if (remoteMode) return;
     set({ phase: 'playing', error: null });
     refreshInfo();
     reportStart();
@@ -366,16 +438,19 @@ function el(): HTMLAudioElement {
     if (played?.started && !a.paused && a.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) played.anchor = performance.now();
   });
   a.addEventListener('waiting', () => {
+    if (remoteMode) return;
     suspendClock();
     if (state.phase === 'playing') set({ phase: 'loading' });
   });
   // Pauses from outside (audio focus, lock screen); switching tracks also fires one, during 'resolving'.
   a.addEventListener('pause', () => {
+    if (remoteMode) return;
     suspendClock();
     if (!a.ended && (state.phase === 'playing' || state.phase === 'loading')) set({ phase: 'paused' });
   });
   // the same element plays on: it was unlocked by the first tap, so the next track may start without one
   a.addEventListener('ended', () => {
+    if (remoteMode) return;
     reportEnd(true);
     const after = ahead(state.index);
     if (state.repeat === 'one') start(state.queue, state.index, true);
@@ -384,6 +459,7 @@ function el(): HTMLAudioElement {
     else set({ phase: 'ended' });
   });
   a.addEventListener('error', () => {
+    if (remoteMode) return;
     if (a.getAttribute('src')) { reportEnd(false, true); set({ phase: 'error', error: state.error ?? 'Не удалось воспроизвести' }); }
   });
   // the app's player started: one player on screen, so this one closes (the app shows its own again)
@@ -552,6 +628,7 @@ export function listen(track: ListenTrack, queue?: readonly ListenTrack[], conte
 }
 
 function startList(track: ListenTrack, queue?: readonly ListenTrack[], context?: string, origin?: LaunchOrigin, page?: string) {
+  if (remoteControls) remoteControls.release();
   listContext = context ?? routeContext();
   listPage = page ?? location.hash.replace(/^#/, '').split('?')[0];
   listLaunch = newLaunch(listContext, origin);
@@ -585,9 +662,6 @@ export function listenAll(list: readonly ListenTrack[], opts: { shuffle?: boolea
 }
 
 // --- the queue: shuffle, repeat, «Играть следующим», «В очередь» -----------------------------------------
-
-/** The queue in its own order while shuffle is on (tracks added since go after it when shuffle is turned off). */
-let unshuffled: readonly ListenTrack[] | null = null;
 
 const SESSION_KEY = 'hm-listen-session:';
 let sessionAccount: number | null = null;
@@ -646,8 +720,10 @@ export function restoreListening(account: number | null) {
     listLaunch = saved.launch && typeof saved.launch.id === 'string' && saved.launch.id
       ? { id: saved.launch.id, origin: typeof saved.launch.origin === 'string' ? saved.launch.origin : null }
       : newLaunch(saved.context);
+    let stationSource = false;
+    try { stationSource = localStorage.getItem('hm:station-source') === 'station'; } catch { /* storage is optional */ }
     set({ shuffle: saved.shuffle === true, smart: saved.smart === true, repeat: saved.repeat === 'all' || saved.repeat === 'one' ? saved.repeat : 'off' });
-    start(saved.queue, saved.index, false, saved.position, saved.autoplay === true);
+    start(saved.queue, saved.index, false, saved.position, saved.autoplay === true && !stationSource);
     smartHooks?.restored();
   } catch { /* Ignore an incomplete or obsolete snapshot. */ }
 }
@@ -709,6 +785,7 @@ export function setShuffle(on: boolean) {
 /** The shuffle button: off → shuffle → smart shuffle (only where the playing list can have one: a playlist or
  * «Любимое», and the setting on) → off. */
 export function cycleShuffle() {
+  if (remoteControls) return;
   if (onWave()) return;
   if (!state.shuffle) return setShuffle(true);
   if (state.smart) return setShuffle(false);
@@ -788,6 +865,7 @@ export function markOwn(ref: string) {
 
 /** off → all → one → off. */
 export function cycleRepeat() {
+  if (remoteControls) return;
   setModes({ repeat: state.repeat === 'off' ? 'all' : state.repeat === 'all' ? 'one' : 'off' });
   prefetchNext();
 }
@@ -843,6 +921,7 @@ export function moveInQueue(from: number, to: number) {
 
 /** A tap on a track of the queue: it plays now, the queue stays as it is. */
 export function playQueueAt(index: number) {
+  if (remoteControls && index !== state.index) remoteControls.release();
   if (index === state.index) return toggle();
   if (index >= 0 && index < state.queue.length) start(state.queue, index);
 }
@@ -871,6 +950,7 @@ export const hasPrev = (s: ListenState) => s.index > 0;
 
 /** Plays the next track of the queue; false at its end. */
 export function next(): boolean {
+  if (remoteControls) { remoteControls.next(); return true; }
   const after = ahead(state.index);
   if (after < state.queue.length) start(state.queue, after);
   else if (state.repeat === 'all' && state.track && !onWave() && ahead(-1) < state.queue.length) start(state.queue, ahead(-1));
@@ -889,6 +969,7 @@ function ahead(from: number, step: 1 | -1 = 1): number {
 
 /** ⏮: back to the start of the track, or (near its start) the previous track. */
 export function prev() {
+  if (remoteControls) { remoteControls.prev(); return; }
   if (hasPrev(state) && ahead(state.index, -1) >= 0 && (state.position < RESTART_AFTER_S || state.phase === 'error')) start(state.queue, ahead(state.index, -1));
   else if (state.track) {
     seek(0);
@@ -897,6 +978,7 @@ export function prev() {
 }
 
 export function toggle() {
+  if (remoteControls) { remoteControls.toggle(); return; }
   if (state.phase === 'playing' || state.phase === 'loading' || state.phase === 'resolving') pause();
   else resume();
 }
@@ -920,13 +1002,16 @@ export function pause() {
 export function setVolume(volume: number) {
   if (!Number.isFinite(volume)) return;
   const value = Math.max(0, Math.min(1, volume));
+  if (remoteControls) { remoteControls.volume(value); set({ volume: value }); return; }
   if (audio) audio.volume = value;
   set({ volume: value });
   try { localStorage.setItem(VOLUME_KEY, String(value)); } catch { /* storage is optional */ }
 }
 
 export function seek(seconds: number) {
-  if (!audio || !Number.isFinite(seconds)) return;
+  if (!Number.isFinite(seconds)) return;
+  if (remoteControls) { remoteControls.seek(seconds); set({ position: seconds }); return; }
+  if (!audio) return;
   if (audio.readyState === HTMLMediaElement.HAVE_NOTHING) pendingSeek = Math.max(0, seconds);
   else { pendingSeek = 0; audio.currentTime = seconds; }
   set({ position: seconds });
@@ -935,6 +1020,7 @@ export function seek(seconds: number) {
 
 /** Stops and hides the player. */
 export function stopListening() {
+  if (remoteControls) { remoteControls.release(); return; }
   reportEnd();
   resolving?.abort();
   resolving = null;

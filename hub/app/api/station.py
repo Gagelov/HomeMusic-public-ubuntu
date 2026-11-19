@@ -18,7 +18,7 @@ from app.models import User
 
 router = APIRouter(tags=["station"])
 
-ACTIONS = {"next", "prev", "pause", "resume", "stop", "like", "dislike"}
+ACTIONS = {"next", "prev", "pause", "resume", "stop", "like", "dislike", "seek", "volume"}
 
 
 class StationTrackIn(BaseModel):
@@ -36,6 +36,8 @@ class StationPlayIn(BaseModel):
 
 class StationCommandIn(BaseModel):
     action: str
+    position: float | None = None
+    value: int | None = None
 
 
 async def _call(
@@ -88,7 +90,7 @@ async def station_command(
     action = body.action.strip().lower()
     if action not in ACTIONS:
         raise HTTPException(status_code=400, detail="Unknown station action")
-    return await _call("POST", "/command", {"action": action}, station_url, station_token)
+    return await _call("POST", "/command", body.model_dump(exclude_none=True), station_url, station_token)
 
 
 @router.post("/api/station/play")

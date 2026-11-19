@@ -6,6 +6,7 @@ import { STANDALONE } from '../lib/embedded';
 import { Link, enc } from '../lib/router';
 import { Icon } from './Icon';
 import { SaveButton } from './PlaylistsButton';
+import { StationSource } from './StationSource';
 import { Cover, Spinner } from './ui';
 
 /** What plays, above the tabs of a phone (inside the app: at the bottom of the Hub page, which the app keeps above
@@ -98,6 +99,7 @@ export function MiniPlayer() {
             <div className="flex min-w-0 flex-1 items-center gap-3">{head}</div>
           )}
           {!isUpload(track) && <SaveButton songId={info?.nd_song_id} refId={track.ref} listKey={tagKey({ library_track_id: info?.track_id ?? track.library_track_id })} title={track.title} data={{ ...track }} size={22} />}
+          <StationSource />
           <button
             type="button"
             onClick={toggle}

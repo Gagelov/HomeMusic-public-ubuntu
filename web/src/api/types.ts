@@ -111,6 +111,8 @@ export interface StationStatus {
   index: number;
   position: number;
   duration: number;
+  /** the station's Master volume, percent */
+  master: number;
   id: string;
   artist: string;
   title: string;

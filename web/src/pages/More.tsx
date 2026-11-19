@@ -244,7 +244,7 @@ function Item({
   const inner = (
     <>
       <span className={cx('flex h-[1.875rem] w-[1.875rem] shrink-0 items-center justify-center rounded-lg text-white', brand ? 'bg-fg/10' : (tint ?? 'bg-[#6b7684]'))}>
-        {brand ? <BrandIcon service={brand} size={19} /> : iconSrc ? <img src={iconSrc} alt="" className="h-[19px] w-[19px] object-contain" /> : <Icon name={icon} size={17} />}
+        {brand ? <BrandIcon service={brand} size={19} /> : iconSrc ? <img src={iconSrc} alt="" className="h-[19px] w-[19px] object-contain invert" /> : <Icon name={icon} size={17} />}
       </span>
       <span className="flex min-h-12 min-w-0 flex-1 items-center gap-2 border-b border-fg/[0.07] pr-3.5 group-last/item:border-0">
         <span className="min-w-0 flex-1 truncate">{title}</span>

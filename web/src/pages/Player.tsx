@@ -163,7 +163,7 @@ export function PlayerPage() {
         <PlayingFrom context={context} page={page} />
         {/* as much on the right as on the left: the name stays in the middle */}
         {wide && canFull && <span className="w-11 shrink-0" />}
-        <StationSource drop />
+        <StationSource />
         <IconButton icon="lyrics" label={textShown ? 'Скрыть текст' : 'Показать текст'} aria-pressed={textShown} onClick={toggleLyrics} className={textShown ? '!text-accent' : 'text-muted'} />
       </div>
 
