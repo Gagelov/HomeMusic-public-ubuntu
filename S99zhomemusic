@@ -1,5 +1,5 @@
 #!/bin/sh
-# Start the HomeMusic voice bridge after Quasar/Alice on a rooted Station Lite.
+# Start the HomeMusic native bridge after Quasar/Alice on a rooted Station Lite.
 # Every daemon takes its own lock directory, so repeated starts are harmless.
 DIR=/data/opt/homemusic
 
@@ -36,8 +36,9 @@ case "$1" in
         # /tmp is tmpfs, so this marker only survives within one boot. After a
         # reboot every lock and player state is stale and must be dropped.
         if [ ! -f /tmp/homemusic.booted ]; then
-            rm -rf "$DIR"/*.lock "$DIR/player.pid" "$DIR/guard.pid" \
-                   "$DIR/paused" "$DIR/seek" "$DIR/duck" "$DIR/level" "$DIR/jump"
+            rm -rf "$DIR"/*.lock "$DIR/native.pid" "$DIR/player.pid" "$DIR/guard.pid" \
+                   "$DIR/paused" "$DIR/pos" "$DIR/started" "$DIR/index" \
+                   "$DIR/seek" "$DIR/duck" "$DIR/level" "$DIR/jump"
             : > /tmp/homemusic.booted
         fi
         [ -x "$DIR/mediad-guard.sh" ] &&
@@ -50,9 +51,12 @@ case "$1" in
         matching TERM
         sleep 2
         matching KILL
+        # End the native session on the station, but keep mediad (Alice and the
+        # native player live there) running.
         [ -x "$DIR/hm-play.sh" ] && "$DIR/hm-play.sh" stop >/dev/null 2>&1
         rm -rf "$DIR/bridge.pid" "$DIR/mediad-guard.pid" "$DIR/command-watch.pid" \
-               "$DIR/voice-bridge.lock" "$DIR/mediad-guard.lock" "$DIR/command-watch.lock" "$DIR/command-watch.fifo"
+               "$DIR/voice-bridge.lock" "$DIR/mediad-guard.lock" "$DIR/command-watch.lock" "$DIR/command-watch.fifo" \
+               "$DIR/native.pid" "$DIR/paused" "$DIR/index"
         ;;
     restart)
         "$0" stop; sleep 1; "$0" start ;;

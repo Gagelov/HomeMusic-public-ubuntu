@@ -10,7 +10,8 @@ LOG=$DIR/voice.log
 PID=$DIR/bridge.pid
 
 note() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
-playing() { [ -f "$DIR/player.pid" ] && kill -0 "$(cat "$DIR/player.pid")" 2>/dev/null; }
+active() { [ -f "$DIR/paused" ] || { [ -f "$DIR/native.pid" ] && kill -0 "$(cat "$DIR/native.pid")" 2>/dev/null; }; }
+playing() { [ ! -f "$DIR/paused" ] && active; }
 
 query_after() {
     # $1 = full phrase, $2 = regexp-ish word to remove before the query
@@ -27,6 +28,9 @@ handle() {
     t=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
     case "$t" in
         *через*сервер*|*с*сервер*|*из*сервер*|*homemusic*|*home?music*|"*home music*"|*хоммьюзик*|"*хом мьюзик*")
+            # Alice also hears the phrase; stop her "track not found" reply
+            # before we spend a second fetching the queue from Navidrome.
+            "$DIR/hm-native.sh" cancel >>"$LOG" 2>&1
             q=$(query_after "$t")
             case "$t" in
                 *любим*|*избранн*|*сердеч*)
@@ -58,7 +62,7 @@ handle() {
             fi ;;
     esac
 
-    playing || return
+    active || return
     # A normal Yandex Music request is not ours: stop the stream and let Alice
     # handle it. Transport/feedback commands are still ours.
     case "$t" in
@@ -87,10 +91,6 @@ handle() {
             note "resume ($1)"; "$PLAY" resume >>"$LOG" 2>&1 ;;
         *перемешай*|*вперемешку*|*случайн*)
             note "shuffle ($1)"; "$PLAY" shuffle >>"$LOG" 2>&1 ;;
-        *громче*)
-            note "volume +10 ($1)"; "$PLAY" volume +10 >>"$LOG" 2>&1 ;;
-        *тише*)
-            note "volume -10 ($1)"; "$PLAY" volume -10 >>"$LOG" 2>&1 ;;
     esac
 }
 
@@ -118,8 +118,6 @@ echo $$ > "$PID"
 note "bridge started"
 "$DIR/alice-text.sh" | while IFS= read -r line; do
     case "$line" in
-        "@state 1") playing && "$PLAY" duck on >>"$LOG" 2>&1; continue ;;
-        "@state 0") playing && "$PLAY" duck off >>"$LOG" 2>&1; continue ;;
         "@state "*) continue ;;
     esac
     handle "$(printf '%b' "$line")"
