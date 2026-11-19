@@ -80,7 +80,7 @@ case "$method $path" in
         fi
         idx=$(printf '%s' "$body" | /opt/bin/jq -r '(.index // 0) | floor')
         pos=$(printf '%s' "$body" | /opt/bin/jq -r '(.position // 0) | floor')
-        printf '%s' "$body" | /opt/bin/jq -r '.tracks[] | [(.id | tostring), (.artist // ""), (.title // ""), ((.duration // 0) | tonumber | floor)] | @tsv' > "$DIR/queue.tsv"
+        printf '%s' "$body" | /opt/bin/jq -r '.tracks[] | [(.id | tostring), (.artist // ""), (.title // ""), ((.duration // 0) | tonumber | floor), (.cover // "")] | @tsv' > "$DIR/queue.tsv"
         if [ -s "$DIR/queue.tsv" ] && "$DIR/hm-play.sh" play-queue "$idx" "$pos" >/dev/null 2>&1; then
             respond '200 OK' "$(json)"
         else

@@ -52,20 +52,20 @@ field() { row | cut -f"$1"; }
 duration() { d=$(field 4); [ -n "$d" ] || d=0; echo "$d"; }
 
 curl_json() { "$CURL" -sS --max-time 25 "$1"; }
-rows() { "$JQ" -r '.[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0)] | @tsv' 2>/dev/null; }
+rows() { "$JQ" -r '.[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0), (.coverArt // "")] | @tsv' 2>/dev/null; }
 
 list_liked() {
     curl_json "$BASE/getStarred2?$Q" |
-        "$JQ" -r '.["subsonic-response"].starred2.song[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0)] | @tsv'
+        "$JQ" -r '.["subsonic-response"].starred2.song[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0), (.coverArt // "")] | @tsv'
 }
 list_random() {
     curl_json "$BASE/getRandomSongs?$Q&size=$LIMIT" |
-        "$JQ" -r '.["subsonic-response"].randomSongs.song[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0)] | @tsv'
+        "$JQ" -r '.["subsonic-response"].randomSongs.song[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0), (.coverArt // "")] | @tsv'
 }
 list_search() {
     q=$("$JQ" -rn --arg q "$1" '$q|@uri')
     curl_json "$BASE/search3?$Q&query=$q&songCount=50&artistCount=0&albumCount=0" |
-        "$JQ" -r '.["subsonic-response"].searchResult3.song[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0)] | @tsv'
+        "$JQ" -r '.["subsonic-response"].searchResult3.song[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0), (.coverArt // "")] | @tsv'
 }
 list_playlist() {
     name=$("$JQ" -rn --arg q "$1" '$q|ascii_downcase')
@@ -73,7 +73,7 @@ list_playlist() {
         "$JQ" -r --arg q "$name" '.["subsonic-response"].playlists.playlist[]? | select((.name // "" | ascii_downcase) == $q) | .id' | head -1)
     [ -n "$pid" ] || return 1
     curl_json "$BASE/getPlaylist?$Q&id=$pid" |
-        "$JQ" -r '.["subsonic-response"].playlist.entry[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0)] | @tsv'
+        "$JQ" -r '.["subsonic-response"].playlist.entry[]? | [(.id // ""), (.artist // ""), (.title // ""), (.duration // 0), (.coverArt // "")] | @tsv'
 }
 stream_url() {
     echo "$BASE/stream?$Q&id=$1&format=mp3&maxBitRate=192"
@@ -261,9 +261,10 @@ case "$1" in
             --argjson position "$(position)" \
             --argjson duration "$(duration)" \
             --argjson master "$m" \
+            --arg cover "$(field 5)" \
             --arg id "$(field 1)" --arg artist "$(field 2)" --arg title "$(field 3)" \
             --argjson queue "$(wc -l < "$LIST" 2>/dev/null || echo 0)" \
-            '{playing:$playing,paused:$paused,index:$index,position:$position,duration:$duration,master:$master,id:$id,artist:$artist,title:$title,queue:$queue}'
+            '{playing:$playing,paused:$paused,index:$index,position:$position,duration:$duration,master:$master,cover:$cover,id:$id,artist:$artist,title:$title,queue:$queue}'
         ;;
     queue-json)
         # The whole queue, so an app that did not start the session (a voice command)
@@ -271,7 +272,7 @@ case "$1" in
         [ -s "$LIST" ] || { printf '[]'; exit 0; }
         "$JQ" -R -s 'split("\n") | map(select(length > 0) | split("\t") |
             {id: (.[0] // ""), artist: (.[1] // ""), title: (.[2] // ""),
-             duration: ((.[3] // 0) | tonumber? // 0)})' "$LIST" 2>/dev/null || printf '[]'
+             duration: ((.[3] // 0) | tonumber? // 0), cover: (.[4] // "")})' "$LIST" 2>/dev/null || printf '[]'
         ;;
     seek)
         (alive || [ -f "$PAUSED" ]) || exit 1
