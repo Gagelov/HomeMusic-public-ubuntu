@@ -113,5 +113,8 @@ export function startUpdateWatcher() {
   window.addEventListener(RESUME_EVENT, () => void onResume());
   window.addEventListener('hashchange', onRouteChange);
   window.addEventListener(ROUTE_EVENT, onRouteChange);
-  void check(false);
+  // An old page that was just opened (a new PWA launch, a reloaded tab) takes the new build at once.
+  void check(false).then(() => {
+    if (newer && !holdsState() && canReload()) window.location.reload();
+  });
 }

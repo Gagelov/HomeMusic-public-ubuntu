@@ -239,7 +239,8 @@ function subscribe(fn: () => void) {
 }
 
 /** The page's own player is playing or about to (a reload would cut the sound). */
-export const listenBusy = () => !!state.track && (state.phase === 'playing' || state.phase === 'resolving' || state.phase === 'loading');
+export const listenBusy = () => !remoteMode && !!state.track
+  && (state.phase === 'playing' || state.phase === 'resolving' || state.phase === 'loading');
 
 export const getListenState = (): ListenState => state;
 
@@ -256,6 +257,8 @@ export const listenAudio = (): HTMLAudioElement | null => audio;
 /** Pauses the page player (switching the output to the station must not leave two streams). */
 export function pauseListening() {
   if (audio && !audio.paused) audio.pause();
+  // In the Android app the native player is a second player: the station must be the only one sounding.
+  pauseNative();
 }
 let pendingSeek = 0;
 let resolving: AbortController | null = null;
