@@ -82,6 +82,9 @@ let basePosition = 0;
 let volumeSetAt = 0;
 // just left the station: its stop command may still be in flight, do not adopt the old session again
 let ignoreVoiceUntil = 0;
+// the station is replacing its session (a new voice command, another device): it may be
+// silent for a moment, so a stop counts only after it lasts longer than that gap
+let stoppedAt = 0;
 // the page player was sounding when the user sent the queue to the station
 let resumeLocal = false;
 // the queue actually played on the station (covers and links when the page player sent it)
@@ -203,6 +206,7 @@ function stopTicking() {
 async function adoptStation(status: StationStatus, resume: boolean): Promise<void> {
   const listen = getListenState();
   resumeLocal = resume && (listen.phase === 'playing' || listen.phase === 'loading' || listen.phase === 'resolving');
+  stoppedAt = 0;
   stopStationWatch();
   await ensureItems(status);
   pauseListening();
@@ -229,9 +233,14 @@ async function refreshStation(watch = false): Promise<void> {
     set({ status, error: null });
     if (state.source === 'station') {
       if (stationWasPlaying && !status.playing && !status.paused) {
-        toast('Станция остановлена — звук снова на этом устройстве', 'info');
-        await releaseToDevice(false);
-        return;
+        if (!stoppedAt) stoppedAt = Date.now();
+        if (Date.now() - stoppedAt >= 2500) {
+          toast('Станция остановлена — звук снова на этом устройстве', 'info');
+          await releaseToDevice(false);
+          return;
+        }
+      } else {
+        stoppedAt = 0;
       }
       if (status.playing || status.paused) stationWasPlaying = true;
       if (status.title || status.id) {
@@ -323,6 +332,7 @@ function stationQueue(): {
 async function releaseToDevice(stop: boolean) {
   // the just-sent stop may take a moment; do not mistake the old session for a voice start
   ignoreVoiceUntil = Date.now() + 5000;
+  stoppedAt = 0;
   // the station's loudness stays: the one volume of the app carries over to this device
   const master = state.status?.master;
   if (remoteActive) {
@@ -364,6 +374,7 @@ export async function selectSource(next: StationSource): Promise<void> {
         const body: StationPlayIn = { index: queue.index, position: queue.position, tracks: queue.tracks };
         const started = await api.stationPlay(body, stationHeaders());
         pauseListening();
+        stoppedAt = 0;
         stationWasPlaying = started.playing || started.paused;
         try { localStorage.setItem(KEY, 'station'); } catch { /* storage is optional */ }
         set({ source: 'station', status: started, busy: false });

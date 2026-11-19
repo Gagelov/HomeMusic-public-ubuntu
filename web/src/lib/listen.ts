@@ -688,7 +688,8 @@ function persistListening(force = false) {
   if (sessionAccount === null || (!force && Date.now() - lastSaved < 1000)) return;
   try {
     const key = SESSION_KEY + sessionAccount;
-    if (!state.track) localStorage.removeItem(key);
+    // A station queue is not this device's session: never save it as one.
+    if (!state.track || state.track.ref.startsWith('station:')) localStorage.removeItem(key);
     else {
       const saved: SavedSession = {
         version: 1, queue: [...state.queue], index: state.index, context: state.context, page: state.page, launch: listLaunch,
@@ -709,7 +710,8 @@ export function restoreListening(account: number | null) {
   if (account === null || canPlayAll()) return;
   try {
     const saved = JSON.parse(localStorage.getItem(SESSION_KEY + account) ?? 'null') as SavedSession | null;
-    const validTrack = (t: ListenTrack) => t && typeof t.ref === 'string' && !!t.ref && typeof t.title === 'string' && typeof t.artist === 'string';
+    const validTrack = (t: ListenTrack) => t && typeof t.ref === 'string' && !!t.ref && !t.ref.startsWith('station:')
+      && typeof t.title === 'string' && typeof t.artist === 'string';
     if (!saved || saved.version !== 1 || !Array.isArray(saved.queue) || !saved.queue.length || !saved.queue.every(validTrack)
       || !Number.isInteger(saved.index) || saved.index < 0 || saved.index >= saved.queue.length
       || typeof saved.context !== 'string' || !Number.isFinite(saved.position) || saved.position < 0) return;
