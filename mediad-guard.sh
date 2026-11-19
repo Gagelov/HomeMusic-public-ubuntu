@@ -7,14 +7,25 @@
 # ALSA and mute Alice) and starts one if the launcher has not.
 DIR=$(cd "$(dirname "$0")" && pwd)
 PID=$DIR/mediad-guard.pid
+LOCK=$DIR/mediad-guard.lock
 LOG=$DIR/mediad-guard.log
 
-if [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
-    exit 0
+# A directory is atomic: two hm-play.sh calls can start the guard at the same moment,
+# and a pidfile check alone would let both through.
+if ! mkdir "$LOCK" 2>/dev/null; then
+    i=0
+    while [ $i -lt 3 ]; do
+        owner=$(cat "$LOCK/pid" 2>/dev/null)
+        [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null && exit 0
+        sleep 1
+        i=$((i + 1))
+    done
+    rm -rf "$LOCK"
+    mkdir "$LOCK" 2>/dev/null || exit 0
 fi
-
+echo $$ > "$LOCK/pid"
 echo $$ > "$PID"
-trap '[ "$(cat "$PID" 2>/dev/null)" = "$$" ] && rm -rf "$PID"; exit 0' 1 2 15
+trap '[ "$(cat "$PID" 2>/dev/null)" = "$$" ] && rm -rf "$PID" "$LOCK"; exit 0' 1 2 15
 
 pids() {
     for d in /proc/[0-9]*; do
