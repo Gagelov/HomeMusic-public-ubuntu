@@ -13,7 +13,8 @@ note() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 active() { [ -f "$DIR/paused" ] || { [ -f "$DIR/native.pid" ] && kill -0 "$(cat "$DIR/native.pid")" 2>/dev/null; }; }
 playing() { [ ! -f "$DIR/paused" ] && active; }
 NATIVE=$DIR/hm-native.sh
-suppress() { "$NATIVE" cancel >>"$LOG" 2>&1; "$NATIVE" mute >>"$LOG" 2>&1; "$NATIVE" clear >>"$LOG" 2>&1; }
+suppress() { "$NATIVE" cancel >>"$LOG" 2>&1; "$NATIVE" mute >>"$LOG" 2>&1; }
+suppress_clear() { suppress; "$NATIVE" clear >>"$LOG" 2>&1; }
 act() { suppress; "$PLAY" "$@" >>"$LOG" 2>&1; }
 schedule_reassert() {
     seq=$(cat "$DIR/cmdseq" 2>/dev/null || echo 0)
@@ -21,7 +22,6 @@ schedule_reassert() {
     (
         sleep 2
         [ "$(cat "$DIR/cmdseq" 2>/dev/null)" = "$seq" ] || exit 0
-        suppress
         "$PLAY" reassert >>"$LOG" 2>&1
     ) &
 }
@@ -97,7 +97,7 @@ handle() {
     # Navidrome track and otherwise starts audio recognition (Shazam-style).
     case "$t" in
         *"что сейчас"*|*"что играет"*|*"что за песн"*|*"какая песн"*|*"это за песн"*|*"что за трек"*)
-            suppress
+            suppress_clear
             now=$("$PLAY" now 2>/dev/null)
             if [ -n "$now" ]; then
                 note "now playing ($1): $now"
