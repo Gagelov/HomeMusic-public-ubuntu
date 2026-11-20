@@ -1,10 +1,11 @@
 # The Hub over HTTPS in the home network: no VPS, no public 80/443.
-# The certificate is made once by make-cert.sh; the CA is what a device installs:
+# One certificate for the public name (Let's Encrypt, from the router) and one local CA for LAN addresses.
+# A device that opens the public name needs nothing installed; a LAN IP needs the local CA:
 #   http://<this host>/ca.crt
 {
 	admin off
 	auto_https disable_redirects
-	# A browser has no SNI when it opens https://<ip>: the certificate still has the IP in its SAN.
+	# A browser has no SNI when it opens https://<ip>: the LAN certificate still has the IP in its SAN.
 	default_sni {$HUB_NAME}
 }
 
@@ -23,8 +24,14 @@
 	}
 }
 
-# LAN by IP or name, and the public DDNS name on the router's forwarded port.
-https://{$HUB_IP}, https://{$HUB_NAME}, https://{$PUBLIC_HOST} {
+# The router's Let's Encrypt certificate for the public DDNS name.
+https://{$PUBLIC_HOST} {
+	tls /etc/caddy/certs/le.crt /etc/caddy/certs/le.key
+	import common
+}
+
+# LAN by IP or name: the local CA, so the Hub is reachable even when the router is offline.
+https://{$HUB_IP}, https://{$HUB_NAME} {
 	tls /etc/caddy/certs/homemusic.crt /etc/caddy/certs/homemusic.key
 	import common
 }
