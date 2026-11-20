@@ -117,5 +117,5 @@ tail -f /data/opt/homemusic/voice.log
 штатному плееру станции по HTTPS. Для «любимых» используется `getStarred2`;
 для поиска — `search3`; для плейлистов — `getPlaylists`/`getPlaylist`.
 
-`SERVER` — адрес Navidrome по HTTPS, например `https://192.168.50.107:4533`.
+`SERVER` — адрес Navidrome по HTTPS, например `https://192.168.50.107:8444`.
 Для него на станцию нужно поставить локальный CA HomeMusic.
