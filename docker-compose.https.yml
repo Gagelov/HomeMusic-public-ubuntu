@@ -4,8 +4,8 @@
 #   ./gateway/local/make-cert.sh
 #   http://<host>/ca.crt   -- install this root once on every device
 #
-# The Hub has no host port any more: only Caddy publishes it. Ports 80/443 serve the LAN,
-# 8080 and 8445 are the router's forwarded HTTPS ports (both lead to Caddy's 443).
+# The Hub has no host port any more: only Caddy publishes it. The two old ports keep their numbers:
+# 8080 serves the LAN, 8445 is the router's forwarded public port; both are HTTPS now.
 services:
   hub:
     # Caddy reaches hub:8080 over the compose network; nothing else needs it on the host.
@@ -19,9 +19,6 @@ services:
     security_opt:
       - apparmor=unconfined
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
       - "8080:443"
       - "8445:443"
     environment:

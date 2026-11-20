@@ -1,12 +1,16 @@
 # The Hub over HTTPS in the home network: no VPS, no public 80/443.
 # One certificate for the public name (Let's Encrypt, from the router) and one local CA for LAN addresses.
 # A device that opens the public name needs nothing installed; a LAN IP needs the local CA:
-#   http://<this host>/ca.crt
+#   https://glvservice.asuscomm.com:8445/ca.crt
 {
 	admin off
 	auto_https disable_redirects
 	# A browser has no SNI when it opens https://<ip>: the LAN certificate still has the IP in its SAN.
 	default_sni {$HUB_NAME}
+	# Only TCP ports are published: HTTP/3 on 443 would be advertised but unreachable.
+	servers {
+		protocols h1 h2
+	}
 }
 
 (common) {
@@ -18,9 +22,16 @@
 		Referrer-Policy same-origin
 		-Server
 	}
+	# The local CA for LAN addresses, downloadable from the trusted public address too.
+	handle /ca.crt {
+		root * /etc/caddy/certs
+		file_server
+	}
 	# SSE (/api/events) is flushed at once; uploads are streamed without a body limit.
-	reverse_proxy hub:8080 {
-		flush_interval -1
+	handle {
+		reverse_proxy hub:8080 {
+			flush_interval -1
+		}
 	}
 }
 
@@ -34,15 +45,4 @@ https://{$PUBLIC_HOST} {
 https://{$HUB_IP}, https://{$HUB_NAME} {
 	tls /etc/caddy/certs/homemusic.crt /etc/caddy/certs/homemusic.key
 	import common
-}
-
-# The CA certificate is the only thing plain HTTP still serves, then everything else goes to HTTPS.
-http://{$HUB_IP}, http://{$HUB_NAME} {
-	handle /ca.crt {
-		root * /etc/caddy/certs
-		file_server
-	}
-	handle {
-		redir https://{host}{uri}
-	}
 }
