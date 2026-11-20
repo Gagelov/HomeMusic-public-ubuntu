@@ -5,8 +5,8 @@
 #   ./gateway/local/use-le.sh cert.pem key.pem
 #
 # The Hub and Navidrome have no host ports any more: only Caddy publishes them.
-# The old numbers stay the same, now HTTPS: 8080/4533 internally, and the same
-# services are also reachable on 8445/8444 (the ports the router forwards).
+# The old numbers stay the same, now HTTPS: 8080 Hub, 4533 Navidrome
+# (the router forwards 8445->8080 and 8444->4533).
 services:
   hub:
     # Caddy reaches hub:8080 over the compose network; nothing else needs it on the host.
@@ -25,9 +25,7 @@ services:
       - apparmor=unconfined
     ports:
       - "8080:8080"
-      - "8445:8080"
       - "4533:4533"
-      - "8444:4533"
     environment:
       HUB_IP: ${HTTPS_HUB_IP:-192.168.50.107}
       HUB_NAME: ${HTTPS_HUB_NAME:-music.example.local}
