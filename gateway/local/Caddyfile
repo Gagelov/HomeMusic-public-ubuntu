@@ -1,7 +1,5 @@
-# The Hub over HTTPS in the home network: no VPS, no public 80/443.
-# One certificate for the public name (Let's Encrypt, from the router) and one local CA for LAN addresses.
-# A device that opens the public name needs nothing installed; a LAN IP needs the local CA:
-#   https://glvservice.asuscomm.com:8445/ca.crt
+﻿# The Hub and Navidrome over HTTPS in the home network: no VPS, no public 80/443.
+# The Hub keeps 8080 on the LAN (the router's 8445 leads here), Navidrome keeps 4533 (8444 leads here).
 {
 	admin off
 	auto_https disable_redirects
@@ -13,15 +11,18 @@
 	}
 }
 
-(common) {
+(headers) {
 	encode zstd gzip
-	# No HSTS: the same host still serves Navidrome over plain HTTP on 8444, and HSTS would upgrade it to a dead port.
+	# No HSTS: the same host still has plain-HTTP clients on other ports.
 	header {
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy same-origin
 		-Server
 	}
+}
+
+(hub) {
 	# The local CA for LAN addresses, downloadable from the trusted public address too.
 	handle /ca.crt {
 		root * /etc/caddy/certs
@@ -35,14 +36,32 @@
 	}
 }
 
-# The router's Let's Encrypt certificate for the public DDNS name.
-https://{$PUBLIC_HOST} {
-	tls /etc/caddy/certs/le.crt /etc/caddy/certs/le.key
-	import common
+(navidrome) {
+	reverse_proxy navidrome:4533 {
+		flush_interval -1
+	}
 }
 
-# LAN by IP or name: the local CA, so the Hub is reachable even when the router is offline.
-https://{$HUB_IP}, https://{$HUB_NAME} {
+# The Hub: 8080 on the LAN, the router's 8445 outside (both arrive on this listener).
+https://{$PUBLIC_HOST}:8080 {
+	tls /etc/caddy/certs/le.crt /etc/caddy/certs/le.key
+	import headers
+	import hub
+}
+https://{$HUB_IP}:8080, https://{$HUB_NAME}:8080 {
 	tls /etc/caddy/certs/homemusic.crt /etc/caddy/certs/homemusic.key
-	import common
+	import headers
+	import hub
+}
+
+# Navidrome: 4533 on the LAN, the router's 8444 outside (both arrive on this listener).
+https://{$PUBLIC_HOST}:4533 {
+	tls /etc/caddy/certs/le.crt /etc/caddy/certs/le.key
+	import headers
+	import navidrome
+}
+https://{$HUB_IP}:4533, https://{$HUB_NAME}:4533 {
+	tls /etc/caddy/certs/homemusic.crt /etc/caddy/certs/homemusic.key
+	import headers
+	import navidrome
 }

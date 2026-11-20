@@ -1,14 +1,19 @@
-# HTTPS in front of the Hub. Run together with the ordinary compose file:
+# HTTPS in front of the Hub and Navidrome. Run together with the ordinary compose file:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --no-build --no-deps hub caddy-https
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --no-build --no-deps hub navidrome caddy-https
 #   ./gateway/local/make-cert.sh
-#   http://<host>/ca.crt   -- install this root once on every device
+#   ./gateway/local/use-le.sh cert.pem key.pem
 #
-# The Hub has no host port any more: only Caddy publishes it. The two old ports keep their numbers:
-# 8080 serves the LAN, 8445 is the router's forwarded public port; both are HTTPS now.
+# The Hub and Navidrome have no host ports any more: only Caddy publishes them.
+# The old numbers stay the same, now HTTPS: 8080 Hub (router 8445 leads here),
+# 4533 Navidrome (router 8444 leads here).
 services:
   hub:
     # Caddy reaches hub:8080 over the compose network; nothing else needs it on the host.
+    ports: !reset []
+
+  navidrome:
+    # Caddy reaches navidrome:4533 over the compose network.
     ports: !reset []
 
   caddy-https:
@@ -19,8 +24,8 @@ services:
     security_opt:
       - apparmor=unconfined
     ports:
-      - "8080:443"
-      - "8445:443"
+      - "8080:8080"
+      - "4533:4533"
     environment:
       HUB_IP: ${HTTPS_HUB_IP:-192.168.50.107}
       HUB_NAME: ${HTTPS_HUB_NAME:-music.example.local}
