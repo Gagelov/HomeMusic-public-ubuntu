@@ -8,7 +8,7 @@
 export PATH=/opt/bin:/opt/sbin:/usr/bin:/bin:/usr/sbin:/sbin
 DIR=$(cd "$(dirname "$0")" && pwd)
 [ -f "$DIR/config" ] && . "$DIR/config"
-SERVER=${SERVER:-https://glvservice.asuscomm.com:8444}
+SERVER=${SERVER:-https://192.168.50.107:4533}
 USER=${USER:-admin}
 PASSWORD=${PASSWORD:-}
 LIMIT=${LIMIT:-100}

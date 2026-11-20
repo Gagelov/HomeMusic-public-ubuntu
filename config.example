@@ -1,5 +1,5 @@
 ﻿# HomeMusic station bridge. Keep this file at /data/opt/homemusic/config (mode 600).
-SERVER=https://glvservice.asuscomm.com:8444
+SERVER=https://192.168.50.107:4533
 USER=admin
 PASSWORD=change-me
 LIMIT=100

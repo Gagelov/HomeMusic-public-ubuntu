@@ -44,6 +44,7 @@ case "$1" in
         fi
         [ -x "$DIR/mediad-guard.sh" ] &&
             ( cd "$DIR" && setsid "$DIR/mediad-guard.sh" >>"$DIR/mediad-guard.log" 2>&1 </dev/null & )
+        [ -x "$DIR/hm-ca.sh" ] && "$DIR/hm-ca.sh" >>"$DIR/ca.log" 2>&1
         [ -x "$DIR/hm-api-daemon.sh" ] &&
             ( cd "$DIR" && setsid "$DIR/hm-api-daemon.sh" >>"$DIR/api.log" 2>&1 </dev/null & )
         [ -x "$DIR/command-watch.sh" ] &&
