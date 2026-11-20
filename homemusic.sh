@@ -50,8 +50,8 @@ show_urls() {
   local hub music
   hub="$(public_url PUBLIC_HUB_URL)"
   music="$(public_url PUBLIC_MUSIC_URL)"
-  say "  Хаб:       http://localhost:8080${hub:+  (снаружи: $hub)}"
-  say "  Navidrome: http://localhost:4533${music:+  (снаружи: $music)}"
+  say "  Хаб:       https://localhost:8080${hub:+  (снаружи: $hub)}"
+  say "  Navidrome: https://localhost:4533${music:+  (снаружи: $music)}"
 }
 
 wait_hub() {
@@ -103,7 +103,7 @@ stop_stack() {
 
 status_stack() {
   compose ps
-  if hub_healthy; then say "Хаб отвечает: http://localhost:8080/healthz"; fi
+  if hub_healthy; then say "Хаб отвечает: https://localhost:8080/healthz"; fi
 }
 
 case "${1:-toggle}" in

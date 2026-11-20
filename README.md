@@ -95,7 +95,7 @@ API Хаба — [hub/API.md](hub/API.md).
    ```
 7. Первый запуск Navidrome: установщик сам создаёт администратора через `/auth/createAdmin` с логином и паролем из
    `.env` и печатает их. Если база Navidrome уже была (в ней есть пользователи), создайте или проверьте администратора
-   в `http://localhost:4533`: его логин/пароль должны совпадать с `NAVIDROME_ADMIN_USER` / `NAVIDROME_ADMIN_PASSWORD`,
+   в `https://glvservice.asuscomm.com:8444`: его логин/пароль должны совпадать с `NAVIDROME_ADMIN_USER` / `NAVIDROME_ADMIN_PASSWORD`,
    иначе Хаб не сможет запускать сканирование библиотеки. Остальных пользователей заводит админ в Navidrome → «Пользователи».
 8. Телефон:
    - **Tempus** (https://github.com/eddyizm/tempus/releases, `app-tempus-release.apk`): сервер `https://glvservice.asuscomm.com:8444`.
@@ -420,7 +420,7 @@ docker compose ps
 docker logs --tail 50 homemusic_hub          # JSON-логи Хаба
 docker logs --tail 20 homemusic_tunnel       # подключения туннеля (профиль vps)
 docker compose restart tunnel
-curl http://localhost:8080/healthz
+curl -k https://localhost:8080/healthz
 ```
 
 - Бэкапы: база Хаба — `MUSIC_ROOT/.backups/hub/` (каждый день в 4:00, 7 копий), база Navidrome —
