@@ -114,5 +114,10 @@ tail -f /data/opt/homemusic/voice.log
 
 `hm-play.sh` ходит в Subsonic API Navidrome (`/rest/...`) с администратором из
 `config`; поток запрашивается как `format=mp3&maxBitRate=192` и отдаётся
-штатному плееру станции по HTTP. Для «любимых» используется `getStarred2`;
+штатному плееру станции по HTTPS. Для «любимых» используется `getStarred2`;
 для поиска — `search3`; для плейлистов — `getPlaylists`/`getPlaylist`.
+
+`SERVER` — публичный адрес Navidrome по HTTPS, например
+`https://glvservice.asuscomm.com:8444`: у станции уже есть корневой сертификат
+Let's Encrypt. Локальный адрес `https://192.168.50.107:4533` тоже работает,
+но только если на станцию установлен локальный CA HomeMusic.

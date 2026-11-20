@@ -1,4 +1,4 @@
-#!/bin/sh
+﻿#!/bin/sh
 # HomeMusic for Yandex Station Lite, native mode.
 #
 # Tracks are not downloaded: the station's own GStreamer player receives an
@@ -8,7 +8,7 @@
 export PATH=/opt/bin:/opt/sbin:/usr/bin:/bin:/usr/sbin:/sbin
 DIR=$(cd "$(dirname "$0")" && pwd)
 [ -f "$DIR/config" ] && . "$DIR/config"
-SERVER=${SERVER:-http://192.168.50.107:4533}
+SERVER=${SERVER:-https://glvservice.asuscomm.com:8444}
 USER=${USER:-admin}
 PASSWORD=${PASSWORD:-}
 LIMIT=${LIMIT:-100}
@@ -185,9 +185,9 @@ shuffle() {
 }
 
 seek_seconds() {
-    n=$(printf '%s' "$1" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) *минут.*/\1/p')
+    n=$(printf '%s' "$1" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) *РјРёРЅСѓС‚.*/\1/p')
     [ -n "$n" ] && { echo $((n * 60)); return; }
-    n=$(printf '%s' "$1" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) *сек.*/\1/p')
+    n=$(printf '%s' "$1" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) *СЃРµРє.*/\1/p')
     [ -n "$n" ] && { echo "$n"; return; }
     echo 10
 }
@@ -286,7 +286,7 @@ case "$1" in
         ;;
     seek-phrase)
         (alive || [ -f "$PAUSED" ]) || exit 1
-        s=$(seek_seconds "$*"); case "$*" in *назад*|*"назад "*) s=-$s ;; esac
+        s=$(seek_seconds "$*"); case "$*" in *РЅР°Р·Р°Рґ*|*"РЅР°Р·Р°Рґ "*) s=-$s ;; esac
         to=$(( $(position) + s )); [ "$to" -lt 0 ] && to=0
         if [ -f "$PAUSED" ]; then echo "$to" > "$PAUSED"; else rm -f "$PAUSED"; play_track "$(field 1)" "$to"; fi
         ;;
@@ -302,7 +302,7 @@ case "$1" in
     now)
         active || exit 0
         a=$(field 2); t=$(field 3)
-        if [ -n "$a" ]; then printf '%s — %s\n' "$a" "$t"; else printf '%s\n' "$t"; fi
+        if [ -n "$a" ]; then printf '%s вЂ” %s\n' "$a" "$t"; else printf '%s\n' "$t"; fi
         ;;
     reassert)
         active || exit 0
@@ -324,6 +324,7 @@ case "$1" in
             "$t"
         ;;
     *)
-        echo "usage: $0 play liked|random|search <q>|playlist <q> | next | prev | pause | resume | stop | seek <±s> | like | dislike | shuffle" >&2
+        echo "usage: $0 play liked|random|search <q>|playlist <q> | next | prev | pause | resume | stop | seek <В±s> | like | dislike | shuffle" >&2
         exit 2 ;;
 esac
+
