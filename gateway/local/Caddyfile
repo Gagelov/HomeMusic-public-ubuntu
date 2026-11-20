@@ -1,0 +1,41 @@
+# The Hub over HTTPS in the home network: no VPS, no public 80/443.
+# The certificate is made once by make-cert.sh; the CA is what a device installs:
+#   http://<this host>/ca.crt
+{
+	admin off
+	auto_https disable_redirects
+	# A browser has no SNI when it opens https://<ip>: the certificate still has the IP in its SAN.
+	default_sni {$HUB_NAME}
+}
+
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+		-Server
+	}
+	# SSE (/api/events) is flushed at once; uploads are streamed without a body limit.
+	reverse_proxy hub:8080 {
+		flush_interval -1
+	}
+}
+
+# LAN by IP or name, and the public DDNS name on the router's forwarded port.
+https://{$HUB_IP}, https://{$HUB_NAME}, https://{$PUBLIC_HOST} {
+	tls /etc/caddy/certs/homemusic.crt /etc/caddy/certs/homemusic.key
+	import common
+}
+
+# The CA certificate is the only thing plain HTTP still serves, then everything else goes to HTTPS.
+http://{$HUB_IP}, http://{$HUB_NAME} {
+	handle /ca.crt {
+		root * /etc/caddy/certs
+		file_server
+	}
+	handle {
+		redir https://{host}{uri}
+	}
+}

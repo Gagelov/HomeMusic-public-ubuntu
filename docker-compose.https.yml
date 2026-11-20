@@ -1,0 +1,44 @@
+# HTTPS in front of the Hub. Run together with the ordinary compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --no-build --no-deps hub caddy-https
+#   ./gateway/local/make-cert.sh
+#   http://<host>/ca.crt   -- install this root once on every device
+#
+# The Hub has no host port any more: only Caddy publishes it. Ports 80/443 serve the LAN,
+# 8080 and 8445 are the router's forwarded HTTPS ports (both lead to Caddy's 443).
+services:
+  hub:
+    # Caddy reaches hub:8080 over the compose network; nothing else needs it on the host.
+    ports: !reset []
+
+  caddy-https:
+    image: caddy:2.8.4-alpine
+    container_name: homemusic_caddy
+    restart: unless-stopped
+    # Some Ubuntu hosts cannot load the docker-default AppArmor profile for new containers.
+    security_opt:
+      - apparmor=unconfined
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+      - "8080:443"
+      - "8445:443"
+    environment:
+      HUB_IP: ${HTTPS_HUB_IP:-192.168.50.107}
+      HUB_NAME: ${HTTPS_HUB_NAME:-music.example.local}
+      PUBLIC_HOST: ${HTTPS_PUBLIC_HOST:-glvservice.asuscomm.com}
+    volumes:
+      - ./gateway/local/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./gateway/local/certs:/etc/caddy/certs:ro
+      - caddy-https-data:/data
+      - caddy-https-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+volumes:
+  caddy-https-data:
+  caddy-https-config:

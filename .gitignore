@@ -4,6 +4,7 @@ config.yaml
 gateway/tunnel/tunnel_key
 gateway/tunnel/tunnel_key.pub
 gateway/tunnel/known_hosts
+gateway/local/certs/
 .youtube-cookies.txt
 
 # python
