@@ -11,8 +11,8 @@
 
 (common) {
 	encode zstd gzip
+	# No HSTS: the same host still serves Navidrome over plain HTTP on 8444, and HSTS would upgrade it to a dead port.
 	header {
-		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy same-origin
