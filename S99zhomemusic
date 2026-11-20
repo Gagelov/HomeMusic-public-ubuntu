@@ -44,7 +44,15 @@ case "$1" in
         fi
         [ -x "$DIR/mediad-guard.sh" ] &&
             ( cd "$DIR" && setsid "$DIR/mediad-guard.sh" >>"$DIR/mediad-guard.log" 2>&1 </dev/null & )
-        [ -x "$DIR/hm-ca.sh" ] && "$DIR/hm-ca.sh" >>"$DIR/ca.log" 2>&1
+        if [ -x "$DIR/hm-ca.sh" ]; then
+            "$DIR/hm-ca.sh" >>"$DIR/ca.log" 2>&1
+            # A CA added just now is not yet in maind's trust store: let the guard start it again.
+            if [ -f "$DIR/ca.changed" ]; then
+                rm -f "$DIR/ca.changed"
+                pid=$(ps | awk '/maind --mediad/ && !/awk/ {print $1; exit}')
+                [ -n "$pid" ] && kill "$pid" 2>/dev/null
+            fi
+        fi
         [ -x "$DIR/hm-api-daemon.sh" ] &&
             ( cd "$DIR" && setsid "$DIR/hm-api-daemon.sh" >>"$DIR/api.log" 2>&1 </dev/null & )
         [ -x "$DIR/command-watch.sh" ] &&
